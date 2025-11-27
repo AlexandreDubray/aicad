@@ -15,19 +15,26 @@ impl Variable {
             probabilities,
         }
     }
-}
 
-impl Variable {
-
-    pub fn get_value(&self, value: ValueIndex) -> isize {
-        self.domain[value.0]
+    /// Returns the value of the domain at the given index
+    pub fn get_value(&self, index: ValueIndex) -> isize {
+        self.domain[index.0]
     }
 
-    pub fn get_probability(&self, value: ValueIndex) -> f64 {
-        self.probabilities[value.0]
+    /// Returns the probability that the variable takes the value from its domain at the given
+    /// index.
+    pub fn get_probability(&self, index: ValueIndex) -> f64 {
+        self.probabilities[index.0]
     }
 
+    /// Returns the number of elements in the domain
     pub fn domain_size(&self) -> usize {
         self.domain.len()
     }
+
+    /// Iterates over the domain of the variable
+    pub fn iter_domain(&self) -> impl Iterator<Item = isize> {
+        self.domain.iter().copied()
+    }
+
 }

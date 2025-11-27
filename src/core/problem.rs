@@ -48,6 +48,13 @@ impl Problem {
     }
 
     /**
+     * Returns the number of constraints in the problem
+     */
+    pub fn number_constraints(&self) -> usize {
+        self.constraints.len()
+    }
+
+    /**
      * Iterates over the constraints
      */
     pub fn iter_constraints(&self) -> impl Iterator<Item = ConstraintIndex> {
