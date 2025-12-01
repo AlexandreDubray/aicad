@@ -1,4 +1,4 @@
-use crate::core::*;
+use super::*;
 
 pub struct Variable {
     domain: Vec<isize>,
@@ -35,6 +35,14 @@ impl Variable {
     /// Iterates over the domain of the variable
     pub fn iter_domain(&self) -> impl Iterator<Item = isize> {
         self.domain.iter().copied()
+    }
+
+    /// Sets the domain of the variable to the given values
+    pub fn set_domain(&mut self, domain: Vec<isize>) {
+        let n = domain.len();
+        let probabilities = (0..n).map(|_| 1.0 / n as f64).collect::<Vec<f64>>();
+        self.probabilities = probabilities;
+        self.domain = domain;
     }
 
 }

@@ -1,23 +1,29 @@
 use super::*;
 
 pub struct Edge {
+    layer_from: LayerIndex,
     from: NodeIndex,
     to: NodeIndex,
-    value: isize,
+    assignment: isize,
     next_parent: Option<EdgeIndex>,
     next_child: Option<EdgeIndex>,
 }
 
 impl Edge {
     
-    pub fn new(from: NodeIndex, to: NodeIndex, value: isize, next_parent: Option<EdgeIndex>, next_child: Option<EdgeIndex>) -> Self {
+    pub fn new(layer_from: LayerIndex, from: NodeIndex, to: NodeIndex, assignment: isize, next_parent: Option<EdgeIndex>, next_child: Option<EdgeIndex>) -> Self {
         Self {
+            layer_from,
             from,
             to,
-            value,
+            assignment,
             next_parent,
             next_child,
         }
+    }
+
+    pub fn layer_from(&self) -> LayerIndex {
+        self.layer_from
     }
 
     pub fn from(&self) -> NodeIndex {
@@ -28,8 +34,8 @@ impl Edge {
         self.to
     }
 
-    pub fn value(&self) -> isize {
-        self.value
+    pub fn assignment(&self) -> isize {
+        self.assignment
     }
 
     pub fn next_parent(&self) -> Option<EdgeIndex> {

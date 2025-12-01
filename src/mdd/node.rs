@@ -1,41 +1,30 @@
-use super::mdd::EdgeIndex;
+use super::*;
 
 #[derive(Default)]
 pub struct Node {
+    layer: LayerIndex,
+    index_in_layer: usize,
     first_parent: Option<EdgeIndex>,
     first_child: Option<EdgeIndex>,
-    top_down_properties: Vec<Vec<u64>>,
-    bottom_up_properties: Vec<Vec<u64>>,
 }
 
 impl Node {
 
-    /// Returns a reference to the top-down local properties of a constraint
-    pub fn top_down_properties(&self, constraint: usize) -> &Vec<u64> {
-        &self.top_down_properties[constraint]
+    pub fn new(layer: LayerIndex, index_in_layer: usize) -> Self {
+        Self {
+            layer,
+            index_in_layer,
+            first_parent: None,
+            first_child: None,
+        }
     }
 
-    /// Returns a mutable reference to the top-down local properties of a constraint
-    pub fn top_down_properties_mut(&mut self, constraint: usize) -> &mut Vec<u64> {
-        &mut self.top_down_properties[constraint]
+    pub fn layer(&self) -> LayerIndex {
+        self.layer
     }
 
-    pub fn add_top_down_property(&mut self, property: Vec<u64>) {
-        self.top_down_properties.push(property);
-    }
-
-    /// Returns a reference to the bottom-up local properties of a constraint
-    pub fn bottom_up_properties(&self, constraint: usize) -> &Vec<u64> {
-        &self.bottom_up_properties[constraint]
-    }
-
-    /// Returns a mutable reference to the bottom-up local properties of a constraint
-    pub fn bottom_up_properties_mut(&mut self, constraint: usize) -> &mut Vec<u64> {
-        &mut self.bottom_up_properties[constraint]
-    }
-
-    pub fn add_bottom_up_property(&mut self, property: Vec<u64>) {
-        self.bottom_up_properties.push(property);
+    pub fn index_in_layer(&self) -> usize {
+        self.index_in_layer
     }
 
     pub fn first_child(&self) -> Option<EdgeIndex> {
