@@ -9,6 +9,7 @@ pub struct Edge {
     prev_parent: Option<EdgeIndex>,
     next_child: Option<EdgeIndex>,
     prev_child: Option<EdgeIndex>,
+    active: bool,
 }
 
 impl Edge {
@@ -29,6 +30,7 @@ impl Edge {
             prev_parent: None,
             next_child,
             prev_child: None,
+            active: true,
         }
     }
 
@@ -78,5 +80,13 @@ impl Edge {
 
     pub fn set_next_child(&mut self, child: Option<EdgeIndex>) {
         self.next_child = child;
+    }
+
+    pub fn deactivate(&mut self) {
+        self.active = false;
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.active
     }
 }

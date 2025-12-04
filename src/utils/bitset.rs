@@ -56,6 +56,12 @@ impl Bitset {
         }
     }
 
+    pub fn reset(&mut self, value: u64) {
+        for word in 0..self.words.len() {
+            self.words[word] = value;
+        }
+    }
+
 }
 
 pub struct SparseBitset<T: Eq + Hash + Copy> {
@@ -108,6 +114,9 @@ impl<T: Eq + Hash + Copy> SparseBitset<T> {
         self.plain.intersect(&other.plain);
     }
 
+    pub fn reset(&mut self, value: u64) {
+        self.plain.reset(value);
+    }
 }
 
 impl std::fmt::Display for Bitset {

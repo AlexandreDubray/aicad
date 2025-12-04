@@ -17,21 +17,33 @@ mod tests {
         let vars = problem.add_variables(16, vec![0, 1, 2, 3]);
 
         // Row constraints
+        // C0
         all_different(&mut problem, vec![vars[0], vars[1], vars[2], vars[3]]);
+        // C1
         all_different(&mut problem, vec![vars[4], vars[5], vars[6], vars[7]]);
+        // C2
         all_different(&mut problem, vec![vars[8], vars[9], vars[10], vars[11]]);
+        // C3
         all_different(&mut problem, vec![vars[12], vars[13], vars[14], vars[15]]);
 
         // Column constraints
+        // C4
         all_different(&mut problem, vec![vars[0], vars[4], vars[8], vars[12]]);
+        // C5
         all_different(&mut problem, vec![vars[1], vars[5], vars[9], vars[13]]);
+        // C6
         all_different(&mut problem, vec![vars[2], vars[6], vars[10], vars[14]]);
+        // C7
         all_different(&mut problem, vec![vars[3], vars[7], vars[11], vars[15]]);
 
         // Block constraints
+        // C8
         all_different(&mut problem, vec![vars[0], vars[1], vars[4], vars[5]]);
+        // C9
         all_different(&mut problem, vec![vars[2], vars[3], vars[6], vars[7]]);
+        // C10
         all_different(&mut problem, vec![vars[8], vars[9], vars[12], vars[13]]);
+        // C11
         all_different(&mut problem, vec![vars[10], vars[11], vars[14], vars[15]]);
 
         // Evidence
@@ -54,8 +66,7 @@ mod tests {
 
         let mut mdd = Mdd::new(&problem);
         mdd.propagate_constraints(&mut problem);
-        //mdd.to_file("mdd.txt");
-        //println!("{}", count_number_solution(&mdd));
+        println!("{}", count_number_solution(&mdd));
         assert!(count_number_solution(&mdd) == 1);
     }
 }

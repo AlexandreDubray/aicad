@@ -99,29 +99,27 @@ impl Mdd {
             problem[constraint].update_property_top_down(self);
             problem[constraint].update_property_bottom_up(self);
             for layer in (0..self.layers.len() - 1).map(LayerIndex) {
-                for constraint in problem.iter_constraints() {
-                    if problem[constraint].is_layer_in_scope(layer) {
-                        let mut to_schedule = false;
-                        for node_index in 0..self[layer].number_nodes() {
-                            let node = self[layer].node_at(node_index);
-                            let mut edge_ptr = self[node].first_child();
-                            while let Some(edge) = edge_ptr {
-                                // We first update the pointer, in case the edge is removed
-                                edge_ptr = self[edge].next_child();
-                                if problem[constraint].is_assignment_invalid(self, edge) {
-                                    println!("Removing edge with assignment {} at layer {}", self[edge].assignment(), layer.0);
-                                    self.remove_edge(edge);
-                                    to_schedule = true;
-                                }
+                if problem[constraint].is_layer_in_scope(layer) {
+                    let mut to_schedule = false;
+                    for node_index in 0..self[layer].number_nodes() {
+                        let node = self[layer].node_at(node_index);
+                        let mut edge_ptr = self[node].first_child();
+                        while let Some(edge) = edge_ptr {
+                            // We first update the pointer, in case the edge is removed
+                            edge_ptr = self[edge].next_child();
+                            println!("Checking assignment {} at layer {}",self[edge].assignment(), layer.0);
+                            if problem[constraint].is_assignment_invalid(self, edge) {
+                                self.remove_edge(edge);
+                                to_schedule = true;
                             }
                         }
-                        if to_schedule {
-                            let decision = self[layer].decision();
-                            for constraint in problem[decision].iter_constraints() {
-                                if !self.scheduled_constraint.contains(constraint.0) {
-                                    self.scheduled_constraint.insert(constraint.0);
-                                    self.propagation_queue.push(constraint);
-                                }
+                    }
+                    if to_schedule {
+                        let decision = self[layer].decision();
+                        for constraint in problem[decision].iter_constraints() {
+                            if !self.scheduled_constraint.contains(constraint.0) {
+                                self.scheduled_constraint.insert(constraint.0);
+                                self.propagation_queue.push(constraint);
                             }
                         }
                     }
@@ -131,6 +129,7 @@ impl Mdd {
     }
 
     fn remove_edge(&mut self, edge: EdgeIndex) {
+        self[edge].deactivate();
         let prev_parent = self[edge].prev_parent();
         let next_parent = self[edge].next_parent();
         let prev_child = self[edge].prev_child();
@@ -183,14 +182,14 @@ impl Mdd {
         out.push_str("digraph {\ntranksep = 3;\n\n");
 
         for layer in (0..self.layers.len()).map(LayerIndex) {
-            for node in self[layer].iter_nodes() {
+            for node in self[layer].iter_nodes().filter(|n| self[*n].is_active()) {
                 let id = format!("{}", node.0);
                 let variable = self[layer].decision().0;
                 out.push_str(&format!("\t{id} [label=\"x{variable}\"];\n"));
             }
         }
 
-        for edge in self.edges.iter() {
+        for edge in self.edges.iter().filter(|e| e.is_active()) {
             let from = edge.from();
             let to = edge.to();
             let assignment = edge.assignment();
@@ -293,7 +292,6 @@ pub mod test_mdd {
                     let number_paths_to_parents = *map_count.get(&n).unwrap();
                     number_edges*number_paths_to_parents
                 }).sum::<usize>();
-                println!("Number of solutions to node at layer {} is {}", layer.0, count_path_to_node);
                 map_count.insert(node, count_path_to_node);
             }
         }

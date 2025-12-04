@@ -6,6 +6,7 @@ pub struct Node {
     index_in_layer: usize,
     first_parent: Option<EdgeIndex>,
     first_child: Option<EdgeIndex>,
+    active: bool,
 }
 
 impl Node {
@@ -16,6 +17,7 @@ impl Node {
             index_in_layer,
             first_parent: None,
             first_child: None,
+            active: true,
         }
     }
 
@@ -41,5 +43,13 @@ impl Node {
 
     pub fn set_first_parent(&mut self, parent: Option<EdgeIndex>) {
         self.first_parent = parent;
+    }
+
+    pub fn deactivate(&mut self) {
+        self.active = false;
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.active
     }
 }
