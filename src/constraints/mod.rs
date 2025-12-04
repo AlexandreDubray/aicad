@@ -1,21 +1,20 @@
 pub mod all_different;
 pub mod equals;
 
-use crate::modelling::VariableIndex;
 use crate::mdd::*;
 
 pub use all_different::AllDifferent;
 
 pub trait Constraint {
-    /// Adds informtion about the variable ordering in the constraint
-    fn update_variable_ordering(&mut self, ordering: &Vec<usize>);
-    /// Updates the top-down local property of the node
+    /// Update the variable ordering. Update the (optional) information for the constraint's
+    /// propagator and store which layers are in the constraint scope.
+    fn update_variable_ordering(&mut self, ordering: &[usize]);
+    /// Updates the top-down local property of the mdd 
     fn update_property_top_down(&mut self, mdd: &Mdd);
-    /// Updates the bottom-up local property of the node
+    /// Updates the bottom-up local property of the mdd 
     fn update_property_bottom_up(&mut self, mdd: &Mdd);
-    /// Returns true if the assignment is valid
-    fn is_assignment_valid(&self, mdd: &Mdd, edge: EdgeIndex) -> bool;
-    /// Iterates over the scope of the variable
-    //TODO: change to an iterator
-    fn iter_scope(&self) -> Vec<VariableIndex>;
+    /// Returns true if the layer is in the scope of the constraint
+    fn is_layer_in_scope(&self, layer: LayerIndex) -> bool;
+    /// Returns true if the assignment is invalid and the edge can be removed
+    fn is_assignment_invalid(&self, mdd: &Mdd, edge: EdgeIndex) -> bool;
 }

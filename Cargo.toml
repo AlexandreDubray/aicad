@@ -5,3 +5,6 @@ edition = "2024"
 
 [dependencies]
 rustc-hash = "2.1"
+
+[package.metadata.docs.rs]
+rustdoc-args = [ "--html-in-header", "katex-header.html" ]

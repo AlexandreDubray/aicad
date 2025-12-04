@@ -3,6 +3,7 @@ use super::*;
 pub struct Variable {
     domain: Vec<isize>,
     probabilities: Vec<f64>,
+    constraints: Vec<ConstraintIndex>,
 }
 
 impl Variable {
@@ -13,6 +14,7 @@ impl Variable {
         Self {
             domain,
             probabilities,
+            constraints: vec![],
         }
     }
 
@@ -43,6 +45,14 @@ impl Variable {
         let probabilities = (0..n).map(|_| 1.0 / n as f64).collect::<Vec<f64>>();
         self.probabilities = probabilities;
         self.domain = domain;
+    }
+
+    pub fn add_constraint(&mut self, constraint: ConstraintIndex) {
+        self.constraints.push(constraint);
+    }
+
+    pub fn iter_constraints(&self) -> impl Iterator<Item = ConstraintIndex> {
+        self.constraints.iter().copied()
     }
 
 }

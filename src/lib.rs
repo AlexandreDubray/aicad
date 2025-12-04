@@ -1,19 +1,18 @@
 pub mod modelling;
 pub mod constraints;
 pub mod mdd;
+mod utils;
 
 #[cfg(test)]
 mod tests {
 
     use crate::modelling::*;
-    use crate::mdd::mdd::Mdd;
-    use std::fs::File;
-    use std::io::Write;
+    use crate::mdd::*;
+    use crate::mdd::mdd::test_mdd::count_number_solution;
 
     #[test]
     fn sudoku() {
         // a 4 x 4 sudoku grid
-        /*
         let mut problem = Problem::default();
         let vars = problem.add_variables(16, vec![0, 1, 2, 3]);
 
@@ -54,8 +53,9 @@ mod tests {
         // Then all other values can be infered
 
         let mut mdd = Mdd::new(&problem);
-        mdd.refine(&problem);
-        //assert!(false);
-        */
+        mdd.propagate_constraints(&mut problem);
+        //mdd.to_file("mdd.txt");
+        //println!("{}", count_number_solution(&mdd));
+        assert!(count_number_solution(&mdd) == 1);
     }
 }
