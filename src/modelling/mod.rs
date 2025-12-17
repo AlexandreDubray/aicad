@@ -21,6 +21,10 @@ pub fn all_different(problem: &mut Problem, variables: Vec<VariableIndex>) {
     problem.add_constraint(AllDifferent::new(problem, variables));
 }
 
+pub fn not_equals(problem: &mut Problem, x: VariableIndex, y: VariableIndex) {
+    problem.add_constraint(NotEquals::new(problem, x, y));
+}
+
 pub fn equal(problem: &mut Problem, variable: VariableIndex, value: isize) {
     problem[variable].set_domain(vec![value]);
 }

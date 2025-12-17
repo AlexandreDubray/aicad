@@ -44,35 +44,11 @@ impl AllDifferentProperty {
     }
 }
 
-impl AllDifferentProperty {
-
-    /// Returns true if the shift-th bit in the word-th word is set to true in the all-path
-    /// bitvector.
-    fn is_value_on_all_path(&self, value: isize) -> bool {
-        self.value_all_path.contains(value)
-    }
-
-    /// Returns true if the shift-th bit in the word-th word is set to true in the some-path
-    /// bitvector.
-    fn is_value_on_some_path(&self, value: isize) -> bool {
-        self.value_some_path.contains(value)
-    }
-
-    /// Returns the number of bits set to 1 in the some-path bitvector.
-    fn number_possible_values(&self) -> usize {
-        self.value_some_path.size()
-    }
-
-    /// Returns the number of bits set to 1 in the some-path bitvector when unioned with the
-    /// some-path bitvector of another property.
-    fn number_possible_values_union(&self, other: &AllDifferentProperty) -> usize {
-        self.value_some_path.size_union(&other.value_some_path)
-    }
-}
-
 pub struct AllDifferent {
     /// Scope of the constraint
     variables: Vec<VariableIndex>,
+    /// Union of the domain of the variables in the scope
+    domain: FxHashSet<isize>,
     /// Top-down properties for each node in the MDD
     top_down_properties: Vec<Vec<AllDifferentProperty>>,
     /// Bottom-up properties for each node in the MDD
@@ -88,14 +64,14 @@ impl AllDifferent {
 
     /// Creates a new AllDifferent constraint over variables
     pub fn new(problem: &Problem, variables: Vec<VariableIndex>) -> Self {
-        let mut domains = FxHashSet::<isize>::default();
+        let mut domain = FxHashSet::<isize>::default();
         for variable in variables.iter().copied() {
             for value in problem[variable].iter_domain() {
-                domains.insert(value);
+                domain.insert(value);
             }
         }
-        let top_down_properties = (0..problem.number_variables() + 1).map(|_| vec![AllDifferentProperty::new(&domains)]).collect::<Vec<Vec<AllDifferentProperty>>>();
-        let bottom_up_properties = (0..problem.number_variables() + 1).map(|_| vec![AllDifferentProperty::new(&domains)]).collect::<Vec<Vec<AllDifferentProperty>>>();
+        let top_down_properties = (0..problem.number_variables() + 1).map(|_| vec![AllDifferentProperty::new(&domain)]).collect::<Vec<Vec<AllDifferentProperty>>>();
+        let bottom_up_properties = (0..problem.number_variables() + 1).map(|_| vec![AllDifferentProperty::new(&domain)]).collect::<Vec<Vec<AllDifferentProperty>>>();
 
         // Map each variable in the scope to the number of variable above and below it in the MDD.
         // Used to compute hall set propagation rules.
@@ -103,6 +79,7 @@ impl AllDifferent {
         let layer_in_scope = (0..(problem.number_variables() / 64).max(1)).map(|_| 0).collect::<Vec<u64>>();
         Self {
             variables,
+            domain,
             top_down_properties,
             bottom_up_properties,
             map_hall_set,
@@ -147,8 +124,8 @@ impl Constraint for AllDifferent {
                 // Node for which we update the property (i.e, the target of the edge coming from
                 // layer - 1 into layer)
                 let target_node = mdd[target_layer].node_at(i);
-                let mut edge_ptr = mdd[target_node].first_parent();
-                while let Some(edge) = edge_ptr {
+                for j in 0..mdd[target_node].number_parents() {
+                    let edge = mdd[target_node].parent_edge_at(j);
                     // Gets the (word, shift) for the assignment
                     let assignment = mdd[edge].assignment();
 
@@ -184,8 +161,6 @@ impl Constraint for AllDifferent {
                     if layer_in_scope && !is_in_set{
                         self.top_down_properties[source_layer.0][source_index].value_all_path.remove(assignment);
                     }
-
-                    edge_ptr = mdd[edge].next_parent();
                 }
             }
         }
@@ -199,8 +174,8 @@ impl Constraint for AllDifferent {
                 self.bottom_up_properties[source_layer.0][i].value_some_path.reset(0);
                 self.bottom_up_properties[source_layer.0][i].value_all_path.reset(!0);
                 let source_node = mdd[source_layer].node_at(i);
-                let mut edge_ptr = mdd[source_node].first_child();
-                while let Some(edge) = edge_ptr {
+                for j in 0..mdd[source_node].number_children() {
+                    let edge = mdd[source_node].child_edge_at(j);
                     let assignment = mdd[edge].assignment();
 
                     let target_node = mdd[edge].to();
@@ -220,8 +195,6 @@ impl Constraint for AllDifferent {
                     if layer_in_scope && !is_in_set {
                         self.bottom_up_properties[target_layer.0][target_index].value_all_path.remove(assignment);
                     }
-
-                    edge_ptr = mdd[edge].next_child();
                 }
             }
         }
@@ -246,7 +219,6 @@ impl Constraint for AllDifferent {
 
         // If the value appears on all path from the source or to the sink, then it will be taken
         // by another variable and can not be assigned to this one.
-        println!("TD source: {}\nBU target: {}", self.top_down_properties[source_layer.0][source_index], self.bottom_up_properties[target_layer.0][target_index]);
         if self.top_down_properties[source_layer.0][source_index].value_all_path.contains(assignment) ||
            self.bottom_up_properties[target_layer.0][target_index].value_all_path.contains(assignment) {
                 return true;
@@ -256,7 +228,7 @@ impl Constraint for AllDifferent {
         let (hall_set_size_up, hall_set_size_down) = *self.map_hall_set.get(&decision).unwrap();
         let is_on_td_path = self.top_down_properties[source_layer.0][source_index].value_some_path.contains(assignment);
         let is_on_bu_path = self.bottom_up_properties[target_layer.0][target_index].value_some_path.contains(assignment);
-        if is_on_td_path && hall_set_size_up == self.top_down_properties[source_layer.0][source_index].number_possible_values() {
+        if is_on_td_path && hall_set_size_up == self.top_down_properties[source_layer.0][source_index].value_some_path.size() {
             // First, the variables above are a Hall set: they can take as much values as the union of
             // their domain and this union includes the current assignment.
             return true;
@@ -268,6 +240,13 @@ impl Constraint for AllDifferent {
             return true;
         }
         false
+    }
+
+    fn add_node_in_layer(&mut self, layer: LayerIndex) {
+        let top_down_property = AllDifferentProperty::new(&self.domain);
+        let bottom_up_property = AllDifferentProperty::new(&self.domain);
+        self.top_down_properties[layer.0].push(top_down_property);
+        self.bottom_up_properties[layer.0].push(bottom_up_property);
     }
 }
 
@@ -294,7 +273,7 @@ mod test_all_diff {
         all_different(&mut problem, vec![x, y]);
         problem.set_variable_ordering(vec![0, 1]);
 
-        let mut mdd = Mdd::new(&problem);
+        let mut mdd = Mdd::new(&mut problem);
         mdd.propagate_constraints(&mut problem);
         assert!(mdd.number_nodes() == 3);
         assert!(node_possible_values(&mdd, NodeIndex(0)) == vec![0]);
@@ -310,7 +289,7 @@ mod test_all_diff {
         all_different(&mut problem, vec![x, y]);
         problem.set_variable_ordering(vec![0, 1]);
 
-        let mut mdd = Mdd::new(&problem);
+        let mut mdd = Mdd::new(&mut problem);
         mdd.propagate_constraints(&mut problem);
         assert!(mdd.number_nodes() == 3);
         assert!(node_possible_values(&mdd, NodeIndex(0)) == vec![0, 1]);
@@ -326,7 +305,7 @@ mod test_all_diff {
         all_different(&mut problem, vec![x, y, z]);
         problem.set_variable_ordering(vec![0, 1, 2]);
 
-        let mut mdd = Mdd::new(&problem);
+        let mut mdd = Mdd::new(&mut problem);
         mdd.propagate_constraints(&mut problem);
         assert!(mdd.number_nodes() == 4);
         assert!(node_possible_values(&mdd, NodeIndex(0)) == vec![0, 1]);
@@ -343,7 +322,7 @@ mod test_all_diff {
         all_different(&mut problem, vec![x, y, z]);
         problem.set_variable_ordering(vec![0, 1, 2]);
 
-        let mut mdd = Mdd::new(&problem);
+        let mut mdd = Mdd::new(&mut problem);
         mdd.propagate_constraints(&mut problem);
         assert!(mdd.number_nodes() == 4);
         assert!(node_possible_values(&mdd, NodeIndex(0)) == vec![2]);
@@ -360,7 +339,7 @@ mod test_all_diff {
         all_different(&mut problem, vec![x, y, z]);
         problem.set_variable_ordering(vec![0, 1, 2]);
 
-        let mut mdd = Mdd::new(&problem);
+        let mut mdd = Mdd::new(&mut problem);
         mdd.propagate_constraints(&mut problem);
         assert!(mdd.number_nodes() == 4);
         assert!(node_possible_values(&mdd, NodeIndex(0)) == vec![0, 1]);
@@ -377,7 +356,7 @@ mod test_all_diff {
         equal(&mut problem, vars[2], 0);
 
         problem.set_variable_ordering(vec![0, 1, 2, 3]);
-        let mut mdd = Mdd::new(&problem);
+        let mut mdd = Mdd::new(&mut problem);
         mdd.propagate_constraints(&mut problem);
 
         mdd.to_file("mdd.txt");

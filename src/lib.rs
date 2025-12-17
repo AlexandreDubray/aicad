@@ -64,7 +64,7 @@ mod tests {
         //
         // Then all other values can be infered
 
-        let mut mdd = Mdd::new(&problem);
+        let mut mdd = Mdd::new(&mut problem);
         mdd.propagate_constraints(&mut problem);
         println!("{}", count_number_solution(&mdd));
         assert!(count_number_solution(&mdd) == 1);
