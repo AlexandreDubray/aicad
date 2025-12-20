@@ -1,5 +1,5 @@
 use rustc_hash::FxHashMap;
-use std::hash::Hash;
+use std::hash::{Hasher, Hash};
 
 pub struct Bitset {
     words: Vec<u64>,
@@ -64,6 +64,12 @@ impl Bitset {
 
 }
 
+impl Hash for Bitset {
+    fn hash<T: Hasher>(&self, state: &mut T) {
+        self.words.hash(state);
+    }
+}
+
 pub struct SparseBitset<T: Eq + Hash + Copy> {
     plain: Bitset,
     map: FxHashMap<T, usize>,
@@ -116,6 +122,12 @@ impl<T: Eq + Hash + Copy> SparseBitset<T> {
 
     pub fn reset(&mut self, value: u64) {
         self.plain.reset(value);
+    }
+}
+
+impl<T: Eq + Hash + Copy> Hash for SparseBitset<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.plain.hash(state);
     }
 }
 

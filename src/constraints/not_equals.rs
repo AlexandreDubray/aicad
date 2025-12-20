@@ -2,7 +2,8 @@ use super::*;
 use crate::utils::SparseBitset;
 use crate::modelling::*;
 use crate::mdd::*;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHasher, FxHashSet};
+use std::hash::Hash;
 
 pub struct NotEquals {
     x: VariableIndex,
@@ -138,5 +139,12 @@ impl Constraint for NotEquals {
         let bottom_up_property = SparseBitset::new(self.domains.iter().copied());
         self.top_down_properties[layer.0].push(top_down_property);
         self.bottom_up_properties[layer.0].push(bottom_up_property);
+    }
+
+    fn hash_node(&self, mdd: &Mdd, node: NodeIndex, state: &mut FxHasher) {
+        let layer = mdd[node].layer();
+        let index = mdd[node].index_in_layer();
+        self.top_down_properties[layer.0][index].hash(state);
+        self.bottom_up_properties[layer.0][index].hash(state);
     }
 }

@@ -32,8 +32,16 @@ impl Edge {
         self.from
     }
 
+    pub fn set_from(&mut self, from: NodeIndex) {
+        self.from = from;
+    }
+
     pub fn to(&self) -> NodeIndex {
         self.to
+    }
+
+    pub fn set_to(&mut self, to: NodeIndex) {
+        self.to = to;
     }
 
     pub fn assignment(&self) -> isize {

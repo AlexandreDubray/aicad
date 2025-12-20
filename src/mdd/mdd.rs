@@ -1,7 +1,8 @@
 use crate::modelling::*;
-use crate::constraints::*;
 use super::*;
 use crate::utils::bitset::Bitset;
+use rustc_hash::{FxHasher, FxHashMap};
+use std::hash::Hasher;
 
 use std::fs;
 
@@ -19,6 +20,7 @@ pub struct Mdd {
     propagation_queue: Vec<ConstraintIndex>,
     /// Which constraint is scheduled for propagation
     scheduled_constraint: Bitset,
+    cache: FxHashMap<u64, NodeIndex>,
 }
 
 impl Mdd {
@@ -32,6 +34,7 @@ impl Mdd {
             layers: vec![Layer::default(); problem.number_variables() + 1],
             propagation_queue: vec![],
             scheduled_constraint: Bitset::new(problem.number_constraints()),
+            cache: FxHashMap::default(),
         };
 
         // First, we create each layer. There is n + 1 layers, with n the number of variables. The
@@ -91,8 +94,15 @@ impl Mdd {
                 let node_to_split = self.layers[layer].iter_nodes().find(|node| self[*node].number_parents() > 1);
                 match node_to_split {
                     Some(node) => {
-                        self.split_node(problem, node);
+                        let new_node = self.split_node(problem, node);
                         self.propagate_constraints(problem);
+                        let node_hash = self.hash_node(problem, new_node);
+                        println!("Splitting node at layer {} with hash {}", layer, node_hash);
+                        if let Some(n) = self.cache.get(&node_hash) {
+                            self.merge_node(new_node, *n);
+                        } else {
+                            self.cache.insert(node_hash, new_node);
+                        }
                     },
                     None => break,
                 }
@@ -100,7 +110,7 @@ impl Mdd {
         }
     }
 
-    fn split_node(&mut self, problem: &mut Problem, node: NodeIndex) {
+    fn split_node(&mut self, problem: &mut Problem, node: NodeIndex) -> NodeIndex {
         let layer = self[node].layer();
         let new_node = self.add_node(problem, layer);
         // We split the parents accross the two nodes
@@ -121,6 +131,7 @@ impl Mdd {
             let assignment = self[edge].assignment();
             self.add_edge(new_node, to, assignment);
         }
+        new_node
     }
 
     // TODO: This is a very, very, very rough approach to constraint propagation that needs a lot
@@ -202,6 +213,21 @@ impl Mdd {
         }
     }
 
+    fn merge_node(&mut self, node: NodeIndex, into: NodeIndex) {
+        self[node].deactivate();
+        let n = self[node].number_parents();
+        for i in 0..n {
+            let edge = self[node].parent_edge_at(i);
+            self[edge].set_to(into);
+            self[into].add_parent_edge(edge);
+        }
+
+        let n = self[node].number_children();
+        for i in 0..n {
+            self.remove_child_of(node, i);
+        }
+    }
+
     pub fn number_nodes(&self) -> usize {
         self.nodes.len()
     }
@@ -262,6 +288,14 @@ impl Mdd {
 
     pub fn to_file(&self, filename: &str) {
         fs::write(filename, self.as_graphviz()).unwrap();
+    }
+
+    fn hash_node(&self, problem: &Problem, node: NodeIndex) -> u64 {
+        let mut state = FxHasher::default();
+        for constraint in problem.iter_constraints() {
+            problem[constraint].hash_node(self, node, &mut state);
+        }
+        state.finish()
     }
 }
 
@@ -399,5 +433,6 @@ pub mod test_mdd {
         let mut mdd = Mdd::new(&mut problem);
         mdd.refine(&mut problem, 10);
         mdd.to_file("mdd.txt");
+        assert!(false);
     }
 }

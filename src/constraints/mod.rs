@@ -3,6 +3,7 @@ pub mod equals;
 pub mod not_equals;
 
 use crate::mdd::*;
+use rustc_hash::FxHasher;
 
 pub use all_different::AllDifferent;
 pub use not_equals::NotEquals;
@@ -21,4 +22,6 @@ pub trait Constraint {
     fn is_assignment_invalid(&self, mdd: &Mdd, edge: EdgeIndex) -> bool;
     /// Adds a node in the given layer. Updates the properties of the constraints
     fn add_node_in_layer(&mut self, layer: LayerIndex);
+    /// Returns the hash of a node for this constraints
+    fn hash_node(&self, mdd: &Mdd, node: NodeIndex, state: &mut FxHasher);
 }

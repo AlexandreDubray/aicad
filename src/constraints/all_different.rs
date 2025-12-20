@@ -1,8 +1,9 @@
 use super::*;
 use crate::modelling::{VariableIndex, Problem};
 use crate::mdd::*;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 use crate::utils::SparseBitset;
+use std::hash::{Hash, Hasher};
 
 // Structures for the allDifferent constraint.
 //
@@ -248,6 +249,13 @@ impl Constraint for AllDifferent {
         self.top_down_properties[layer.0].push(top_down_property);
         self.bottom_up_properties[layer.0].push(bottom_up_property);
     }
+
+    fn hash_node(&self, mdd: &Mdd, node: NodeIndex, state: &mut FxHasher) {
+        let layer = mdd[node].layer();
+        let index = mdd[node].index_in_layer();
+        self.top_down_properties[layer.0][index].hash(state);
+        self.bottom_up_properties[layer.0][index].hash(state);
+    }
 }
 
 impl std::fmt::Display for AllDifferentProperty {
@@ -256,6 +264,15 @@ impl std::fmt::Display for AllDifferentProperty {
         write!(f, "A: {} - S: {}", self.value_all_path, self.value_some_path)
     }
 }
+
+impl Hash for AllDifferentProperty {
+
+    fn hash<T: Hasher>(&self, state: &mut T) {
+        self.value_all_path.hash(state);
+        self.value_some_path.hash(state);
+    }
+}
+
 
 #[cfg(test)]
 mod test_all_diff {
