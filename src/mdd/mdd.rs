@@ -1,48 +1,64 @@
 use crate::modelling::*;
-use crate::constraints::*;
 use super::*;
 use crate::utils::bitset::Bitset;
+use super::heuristics::*;
 
+use rustc_hash::FxHashMap;
 use std::fs;
 
 /// Structure for the MDD. The MDD is organised in layers (one layer per variable in the problem)
 /// and each layer contains the necessary information to propagate the constraint and generate
 /// solutions.
 pub struct Mdd {
+    problem: Problem,
     /// Nodes of the MDD.
     nodes: Vec<Node>,
     /// Edges of the MDD.
     edges: Vec<Edge>,
     /// Layers of the MDD
     layers: Vec<Layer>,
+    /// Max width allows during compilation
+    max_width: usize,
     /// Propagation queue for the constraints
     propagation_queue: Vec<ConstraintIndex>,
     /// Which constraint is scheduled for propagation
     scheduled_constraint: Bitset,
+    merge_heuristic: MergeHeuristic,
+    edge_table: FxHashMap::<(NodeIndex, NodeIndex, isize), EdgeIndex>,
 }
 
 impl Mdd {
 
     /// Creates a new MDD for the given problem and variable ordering. The ordering array gives,
     /// for each variable, the layer at which it is branched on.
-    pub fn new(problem: &mut Problem) -> Self {
+    pub fn new(problem: Problem, max_width: usize, order: OrderingHeuristic, merge_heuristic: MergeHeuristic) -> Self {
         let mut mdd = Self {
             nodes: vec![],
             edges: vec![],
             layers: vec![Layer::default(); problem.number_variables() + 1],
+            max_width,
             propagation_queue: vec![],
             scheduled_constraint: Bitset::new(problem.number_constraints()),
+            merge_heuristic,
+            problem,
+            edge_table: FxHashMap::default(),
         };
 
         // First, we create each layer. There is n + 1 layers, with n the number of variables. The
         // last layer is the sink node. Each layer has one node at creation.
         for layer in (0..mdd.number_layers()).map(LayerIndex) {
-            mdd.add_node(problem, layer);
+            mdd.add_node(layer, true);
+        }
+        // Vec<VariableIndex>
+        let var_order = order.get_order(&mdd.problem);
+        let mut var_order_inv = vec![0; var_order.len()];
+        for (layer, variable) in var_order.iter().copied().enumerate() {
+            mdd[LayerIndex(layer)].set_decision(variable);
+            var_order_inv[variable.0] = layer;
         }
 
-        // We set the decision variable in each layer using the given ordering
-        for (variable_id, layer) in problem.variable_ordering().iter().copied().enumerate() {
-            mdd[LayerIndex(layer)].set_decision(VariableIndex(variable_id));
+        for constraint in mdd.problem.iter_constraints().collect::<Vec<ConstraintIndex>>() {
+            mdd.problem[constraint].update_variable_ordering(&var_order_inv);
         }
 
         // Next, we add the edges between the layers. There is edges only from one layer to the
@@ -53,24 +69,24 @@ impl Mdd {
             let edge_target = mdd[layer_from + 1].node_at(0);
             let variable = mdd[layer_from].decision();
 
-            for value in (0..problem[variable].domain_size()).map(ValueIndex) {
+            for value in (0..mdd.problem[variable].domain_size()).map(ValueIndex) {
                 // The edges work as a linked chain, each node only keep a pointer to one of its
                 // parent, and the pointer to the next one is stored in the edge.
-                let assignment = problem[variable].get_value(value);
+                let assignment = mdd.problem[variable].get_value(value);
                 mdd.add_edge(edge_source, edge_target, assignment);
             }
         }
         mdd
     }
 
-    fn add_node(&mut self, problem: &mut Problem, layer: LayerIndex) -> NodeIndex {
+    fn add_node(&mut self, layer: LayerIndex, relaxed: bool) -> NodeIndex {
         let index_in_layer = self[layer].number_nodes();
-        let node = Node::new(layer, index_in_layer);
+        let node = Node::new(layer, index_in_layer, relaxed);
         let index = NodeIndex(self.nodes.len());
         self[layer].add_node(index);
         self.nodes.push(node);
-        for constraint in (0..problem.number_constraints()).map(ConstraintIndex) {
-            problem[constraint].add_node_in_layer(layer);
+        for constraint in (0..self.problem.number_constraints()).map(ConstraintIndex) {
+            self.problem[constraint].add_node_in_layer(layer);
         }
         index
     }
@@ -82,67 +98,96 @@ impl Mdd {
         let layer_from = self[from].layer();
         let edge = Edge::new(layer_from, from, to, assignment);
         self.edges.push(edge);
+        self.edge_table.insert((from, to, assignment), edge_index);
     }
 
-    pub fn refine(&mut self, problem: &mut Problem, max_width: usize) {
+    pub fn refine(&mut self) {
         for layer in 1..self.layers.len() - 1 {
-            let width = self.layers[layer].number_nodes();
-            for _ in width..max_width {
-                let node_to_split = self.layers[layer].iter_nodes().find(|node| self[*node].number_parents() > 1);
-                match node_to_split {
-                    Some(node) => {
-                        self.split_node(problem, node);
-                        self.propagate_constraints(problem);
-                    },
-                    None => break,
-                }
-            }
+            debug_assert!(self.layers[layer].number_nodes() == 1);
+            let node = self.layers[layer].node_at(0);
+            self.split_node(node);
+            self.propagate_constraints();
+            self.merge_layer(layer)
         }
     }
 
-    fn split_node(&mut self, problem: &mut Problem, node: NodeIndex) {
+    fn split_node(&mut self, node: NodeIndex) {
         let layer = self[node].layer();
-        let new_node = self.add_node(problem, layer);
-        // We split the parents accross the two nodes
         let n = self[node].number_parents();
-        for i in (0..(n/2)).rev() {
+        for i in (1..n).rev() {
+            let new_node = self.add_node(layer, false);
             let edge = self[node].parent_edge_at(i);
             self[edge].deactivate();
             let from = self[edge].from();
             let assignment = self[edge].assignment();
             self.add_edge(from, new_node, assignment);
             self[node].swap_remove_parent_edge(i);
+            for j in 0..self[node].number_children() {
+                let e = self[node].child_edge_at(j);
+                let to = self[e].to();
+                let assign = self[e].assignment();
+                self.add_edge(new_node, to, assign);
+            }
         }
-        // Adds links from the new node to the children of the splitted node
-        let n = self[node].number_children();
-        for i in 0..n {
-            let edge = self[node].child_edge_at(i);
-            let to = self[edge].to();
-            let assignment = self[edge].assignment();
-            self.add_edge(new_node, to, assignment);
+    }
+
+    fn merge_layer(&mut self, layer: usize) {
+        let current_width = self.layers[layer].number_nodes();
+        if current_width > self.max_width {
+            let node_scores = self.merge_heuristic.rank_nodes(self, LayerIndex(layer), &self.problem);
+            let mut sorted_nodes = (0..current_width).collect::<Vec<usize>>();
+            sorted_nodes.sort_unstable_by(|&u, &v| node_scores[u].partial_cmp(&node_scores[v]).unwrap());
+            let to_merge = current_width - self.max_width - 1;
+            for i in 0..to_merge {
+                let relaxed_node = self.layers[layer].node_at(sorted_nodes[i]);
+                let to_merge = self.layers[layer].node_at(sorted_nodes[1 + i]);
+                // Redirect inward edges from to_merge to relaxed_node
+                for j in 0..self[to_merge].number_parents() {
+                    let inward_edge = self[to_merge].parent_edge_at(j);
+                    self[inward_edge].deactivate();
+                    let parent = self[inward_edge].from();
+                    let assignment = self[inward_edge].assignment();
+                    if self.edge_table.contains_key(&(parent, relaxed_node, assignment)) {
+                        continue;
+                    }
+                    self.add_edge(parent, relaxed_node, assignment);
+                }
+                // Redirect outward edges
+                for j in 0..self[to_merge].number_children() {
+                    let outward_edge = self[to_merge].child_edge_at(j);
+                    self[outward_edge].deactivate();
+                    let child = self[outward_edge].to();
+                    let assignment = self[outward_edge].assignment();
+                    if self.edge_table.contains_key(&(relaxed_node, child, assignment)) {
+                        continue;
+                    }
+                    self.add_edge(relaxed_node, child, assignment);
+                }
+                self[to_merge].deactivate();
+            }
         }
     }
 
     // TODO: This is a very, very, very rough approach to constraint propagation that needs a lot
     // of work
-    pub fn propagate_constraints(&mut self, problem: &mut Problem) {
-        for constraint in problem.iter_constraints() {
+    pub fn propagate_constraints(&mut self) {
+        for constraint in self.problem.iter_constraints() {
             self.propagation_queue.push(constraint);
             self.scheduled_constraint.insert(constraint.0);
         }
         while let Some(constraint) = self.propagation_queue.pop() {
             self.scheduled_constraint.remove(constraint.0);
-            problem[constraint].update_property_top_down(self);
-            problem[constraint].update_property_bottom_up(self);
+            self.problem[constraint].update_property_top_down(&self.layers, &self.nodes, &self.edges);
+            self.problem[constraint].update_property_bottom_up(&self.layers, &self.nodes, &self.edges);
             for layer in (0..self.layers.len() - 1).map(LayerIndex) {
-                if problem[constraint].is_layer_in_scope(layer) {
+                if self.problem[constraint].is_layer_in_scope(layer) {
                     let mut to_schedule = false;
                     for node_index in 0..self[layer].number_nodes() {
                         let node = self[layer].node_at(node_index);
                         let n = self[node].number_children();
                         for i in (0..n).rev() {
                             let edge = self[node].child_edge_at(i);
-                            if problem[constraint].is_assignment_invalid(self, edge) {
+                            if self.problem[constraint].is_assignment_invalid(self, edge) {
                                 self.remove_child_of(node, i);
                                 to_schedule = true;
                             }
@@ -150,7 +195,7 @@ impl Mdd {
                     }
                     if to_schedule {
                         let decision = self[layer].decision();
-                        for constraint in problem[decision].iter_constraints() {
+                        for constraint in self.problem[decision].iter_constraints() {
                             if !self.scheduled_constraint.contains(constraint.0) {
                                 self.scheduled_constraint.insert(constraint.0);
                                 self.propagation_queue.push(constraint);
@@ -330,6 +375,7 @@ pub mod test_mdd {
     use rustc_hash::FxHashMap;
     use crate::modelling::*;
     use crate::mdd::*;
+    use crate::mdd::heuristics::*;
 
     pub fn count_number_solution(mdd: &Mdd) -> usize {
         let mut map_count = FxHashMap::<NodeIndex, usize>::default();
@@ -371,33 +417,29 @@ pub mod test_mdd {
     #[test]
     pub fn mdd_creation() {
         let mut problem = Problem::default();
-        problem.add_variable(vec![0, 1]);
-        problem.add_variable(vec![0, 1]);
-        problem.add_variable(vec![0, 1, 2]);
-        problem.set_variable_ordering(vec![0, 1, 2]);
+        problem.add_variable(vec![0, 1], None);
+        problem.add_variable(vec![0, 1], None);
+        problem.add_variable(vec![0, 1, 2], None);
 
-        let mdd = Mdd::new(&mut problem);
+        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
         assert!(mdd.number_nodes() == 4);
         assert!(node_possible_values(&mdd, NodeIndex(0)) == vec![0, 1]);
-        assert!(node_possible_values(&mdd, NodeIndex(1)) == vec![0, 1]);
-        assert!(node_possible_values(&mdd, NodeIndex(2)) == vec![0, 1, 2]);
+        assert!(node_possible_values(&mdd, NodeIndex(2)) == vec![0, 1]);
+        assert!(node_possible_values(&mdd, NodeIndex(1)) == vec![0, 1, 2]);
     }
 
     #[test]
     pub fn mdd_refine() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1]);
-        let y = problem.add_variable(vec![0, 1, 2]);
-        let z = problem.add_variable(vec![1, 2]);
+        let x = problem.add_variable(vec![0, 1], None);
+        let y = problem.add_variable(vec![0, 1, 2], None);
+        let z = problem.add_variable(vec![1, 2], None);
 
         not_equals(&mut problem, x, y);
         not_equals(&mut problem, y, z);
         not_equals(&mut problem, x, z);
 
-        problem.set_variable_ordering(vec![0, 1, 2]);
-
-        let mut mdd = Mdd::new(&mut problem);
-        mdd.refine(&mut problem, 10);
-        mdd.to_file("mdd.txt");
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        mdd.refine();
     }
 }

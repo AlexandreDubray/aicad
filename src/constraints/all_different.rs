@@ -76,7 +76,7 @@ impl AllDifferent {
         // Map each variable in the scope to the number of variable above and below it in the MDD.
         // Used to compute hall set propagation rules.
         let map_hall_set = FxHashMap::<VariableIndex, (usize, usize)>::default();
-        let layer_in_scope = (0..(problem.number_variables() / 64).max(1)).map(|_| 0).collect::<Vec<u64>>();
+        let layer_in_scope = (0..(problem.number_variables() / 64 + 1)).map(|_| 0).collect::<Vec<u64>>();
         Self {
             variables,
             domain,
@@ -113,38 +113,38 @@ impl Constraint for AllDifferent {
         }
     }
 
-    fn update_property_top_down(&mut self, mdd: &Mdd) {
+    fn update_property_top_down(&mut self, layers: &Vec<Layer>, nodes: &Vec<Node>, edges: &Vec<Edge>) {
         // We skip the first layer as it has no predecessors
-        for target_layer in mdd.iter_layers().skip(1) {
+        for target_layer in (1..layers.len()).map(LayerIndex) {
             // We update the top-down properties for each node. Since the properties for the
             // allDifferent can be computed incrementally, we do this edge by edge
-            for i in 0..mdd[target_layer].number_nodes() {
-                self.top_down_properties[target_layer.0][i].value_some_path.reset(0);
-                self.top_down_properties[target_layer.0][i].value_all_path.reset(!0);
+            for i in 0..layers[*target_layer].number_nodes() {
+                self.top_down_properties[*target_layer][i].value_some_path.reset(0);
+                self.top_down_properties[*target_layer][i].value_all_path.reset(!0);
                 // Node for which we update the property (i.e, the target of the edge coming from
                 // layer - 1 into layer)
-                let target_node = mdd[target_layer].node_at(i);
-                for j in 0..mdd[target_node].number_parents() {
-                    let edge = mdd[target_node].parent_edge_at(j);
+                let target_node = layers[*target_layer].node_at(i);
+                for j in 0..nodes[*target_node].number_parents() {
+                    let edge = nodes[*target_node].parent_edge_at(j);
                     // Gets the (word, shift) for the assignment
-                    let assignment = mdd[edge].assignment();
+                    let assignment = edges[*edge].assignment();
 
                     // Parent of this edge
-                    let source_node = mdd[edge].from();
-                    let source_layer = mdd[source_node].layer();
-                    debug_assert!(source_layer.0 < target_layer.0);
-                    let source_index = mdd[source_node].index_in_layer();
+                    let source_node = edges[*edge].from();
+                    let source_layer = nodes[*source_node].layer();
+                    debug_assert!(*source_layer < *target_layer);
+                    let source_index = nodes[*source_node].index_in_layer();
                     let layer_in_scope = self.is_layer_in_scope(source_layer);
 
                     // For the set A we need to do $A \cap (A^\prime \cup \{assignment\})$. Hence,
                     // we can not directly integrate the assignment into A (as is done for the S
                     // set, since this is a union of union.
                     // Hence, we integrate the assignment into $S^\prime$ and then reverse it.
-                    let is_in_set = self.top_down_properties[source_layer.0][source_index].value_all_path.contains(assignment);
+                    let is_in_set = self.top_down_properties[*source_layer][source_index].value_all_path.contains(assignment);
                     // Only integrate the edge if the layer is in the scope of the constraint.
                     if layer_in_scope {
-                        self.top_down_properties[target_layer.0][i].value_some_path.insert(assignment);
-                        self.top_down_properties[source_layer.0][source_index].value_all_path.insert(assignment);
+                        self.top_down_properties[*target_layer][i].value_some_path.insert(assignment);
+                        self.top_down_properties[*source_layer][source_index].value_all_path.insert(assignment);
                     }
 
                     // Aggregate the source properties into the target properties.
@@ -154,46 +154,46 @@ impl Constraint for AllDifferent {
                     // to non-overlapping slice of the top_down_properties vector. Then, we can use
                     // these references to update the properties.
                     let (td_properties_above, td_properties_below) = self.top_down_properties.split_at_mut(target_layer.0);
-                    td_properties_below[0][i].value_all_path.interesect(&td_properties_above[source_layer.0][source_index].value_all_path);
-                    td_properties_below[0][i].value_some_path.union(&td_properties_above[source_layer.0][source_index].value_some_path);
+                    td_properties_below[0][i].value_all_path.interesect(&td_properties_above[*source_layer][source_index].value_all_path);
+                    td_properties_below[0][i].value_some_path.union(&td_properties_above[*source_layer][source_index].value_some_path);
 
                     // Reverse the integration of the edge into the $A^\prime$ set.
                     if layer_in_scope && !is_in_set{
-                        self.top_down_properties[source_layer.0][source_index].value_all_path.remove(assignment);
+                        self.top_down_properties[*source_layer][source_index].value_all_path.remove(assignment);
                     }
                 }
             }
         }
     }
 
-    fn update_property_bottom_up(&mut self, mdd: &Mdd) {
+    fn update_property_bottom_up(&mut self, layers: &Vec<Layer>, nodes: &Vec<Node>, edges: &Vec<Edge>) {
         // Same procedure as the top-down, but in the other direction
-        for source_layer in mdd.iter_layers().rev().skip(1) {
+        for source_layer in (0..layers.len()).rev().map(LayerIndex).skip(1) {
             let layer_in_scope = self.is_layer_in_scope(source_layer);
-            for i in 0..mdd[source_layer].number_nodes() {
-                self.bottom_up_properties[source_layer.0][i].value_some_path.reset(0);
-                self.bottom_up_properties[source_layer.0][i].value_all_path.reset(!0);
-                let source_node = mdd[source_layer].node_at(i);
-                for j in 0..mdd[source_node].number_children() {
-                    let edge = mdd[source_node].child_edge_at(j);
-                    let assignment = mdd[edge].assignment();
+            for i in 0..layers[*source_layer].number_nodes() {
+                self.bottom_up_properties[*source_layer][i].value_some_path.reset(0);
+                self.bottom_up_properties[*source_layer][i].value_all_path.reset(!0);
+                let source_node = layers[*source_layer].node_at(i);
+                for j in 0..nodes[*source_node].number_children() {
+                    let edge = nodes[*source_node].child_edge_at(j);
+                    let assignment = edges[*edge].assignment();
 
-                    let target_node = mdd[edge].to();
-                    let target_layer = mdd[target_node].layer();
-                    let target_index = mdd[target_node].index_in_layer();
+                    let target_node = edges[*edge].to();
+                    let target_layer = nodes[*target_node].layer();
+                    let target_index = nodes[*target_node].index_in_layer();
 
-                    let is_in_set = self.bottom_up_properties[target_layer.0][target_index].value_all_path.contains(assignment);
+                    let is_in_set = self.bottom_up_properties[*target_layer][target_index].value_all_path.contains(assignment);
                     if layer_in_scope {
-                        self.bottom_up_properties[source_layer.0][i].value_some_path.insert(assignment);
-                        self.bottom_up_properties[target_layer.0][target_index].value_all_path.insert(assignment);
+                        self.bottom_up_properties[*source_layer][i].value_some_path.insert(assignment);
+                        self.bottom_up_properties[*target_layer][target_index].value_all_path.insert(assignment);
                     }
 
-                    let (bu_properties_above, bu_properties_below) = self.bottom_up_properties.split_at_mut(target_layer.0);
-                    bu_properties_above[source_layer.0][i].value_all_path.interesect(&bu_properties_below[0][target_index].value_all_path);
-                    bu_properties_above[source_layer.0][i].value_some_path.union(&bu_properties_below[0][target_index].value_some_path);
+                    let (bu_properties_above, bu_properties_below) = self.bottom_up_properties.split_at_mut(*target_layer);
+                    bu_properties_above[*source_layer][i].value_all_path.interesect(&bu_properties_below[0][target_index].value_all_path);
+                    bu_properties_above[*source_layer][i].value_some_path.union(&bu_properties_below[0][target_index].value_some_path);
 
                     if layer_in_scope && !is_in_set {
-                        self.bottom_up_properties[target_layer.0][target_index].value_all_path.remove(assignment);
+                        self.bottom_up_properties[*target_layer][target_index].value_all_path.remove(assignment);
                     }
                 }
             }
@@ -248,6 +248,10 @@ impl Constraint for AllDifferent {
         self.top_down_properties[layer.0].push(top_down_property);
         self.bottom_up_properties[layer.0].push(bottom_up_property);
     }
+
+    fn iter_scope(&self) -> Box<dyn Iterator<Item = VariableIndex> + '_> {
+        Box::new(self.variables.iter().copied())
+    }
 }
 
 impl std::fmt::Display for AllDifferentProperty {
@@ -262,19 +266,19 @@ mod test_all_diff {
 
     use crate::modelling::*;
     use crate::mdd::*;
+    use crate::mdd::heuristics::*;
     use crate::mdd::mdd::test_mdd::*;
 
     #[test]
     pub fn test_basic_propagation() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0]);
-        let y = problem.add_variable(vec![0, 1]);
+        let x = problem.add_variable(vec![0], None);
+        let y = problem.add_variable(vec![0, 1], None);
 
         all_different(&mut problem, vec![x, y]);
-        problem.set_variable_ordering(vec![0, 1]);
 
-        let mut mdd = Mdd::new(&mut problem);
-        mdd.propagate_constraints(&mut problem);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        mdd.propagate_constraints();
         assert!(mdd.number_nodes() == 3);
         assert!(node_possible_values(&mdd, NodeIndex(0)) == vec![0]);
         assert!(node_possible_values(&mdd, NodeIndex(1)) == vec![1]);
@@ -283,14 +287,13 @@ mod test_all_diff {
     #[test]
     pub fn test_no_propagation() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1]);
-        let y = problem.add_variable(vec![0, 1]);
+        let x = problem.add_variable(vec![0, 1], None);
+        let y = problem.add_variable(vec![0, 1], None);
 
         all_different(&mut problem, vec![x, y]);
-        problem.set_variable_ordering(vec![0, 1]);
 
-        let mut mdd = Mdd::new(&mut problem);
-        mdd.propagate_constraints(&mut problem);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        mdd.propagate_constraints();
         assert!(mdd.number_nodes() == 3);
         assert!(node_possible_values(&mdd, NodeIndex(0)) == vec![0, 1]);
         assert!(node_possible_values(&mdd, NodeIndex(1)) == vec![0, 1]);
@@ -299,31 +302,29 @@ mod test_all_diff {
     #[test]
     pub fn test_basic_hall_set_up() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1]);
-        let y = problem.add_variable(vec![0, 1]);
-        let z = problem.add_variable(vec![0, 1, 2]);
+        let x = problem.add_variable(vec![0, 1], None);
+        let y = problem.add_variable(vec![0, 1], None);
+        let z = problem.add_variable(vec![0, 1, 2], None);
         all_different(&mut problem, vec![x, y, z]);
-        problem.set_variable_ordering(vec![0, 1, 2]);
 
-        let mut mdd = Mdd::new(&mut problem);
-        mdd.propagate_constraints(&mut problem);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        mdd.propagate_constraints();
         assert!(mdd.number_nodes() == 4);
         assert!(node_possible_values(&mdd, NodeIndex(0)) == vec![0, 1]);
-        assert!(node_possible_values(&mdd, NodeIndex(1)) == vec![0, 1]);
-        assert!(node_possible_values(&mdd, NodeIndex(2)) == vec![2]);
+        assert!(node_possible_values(&mdd, NodeIndex(1)) == vec![2]);
+        assert!(node_possible_values(&mdd, NodeIndex(2)) == vec![0, 1]);
     }
 
     #[test]
     pub fn test_basic_hall_set_down() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1, 2]);
-        let y = problem.add_variable(vec![0, 1]);
-        let z = problem.add_variable(vec![0, 1]);
+        let x = problem.add_variable(vec![0, 1, 2], None);
+        let y = problem.add_variable(vec![0, 1], None);
+        let z = problem.add_variable(vec![0, 1],None);
         all_different(&mut problem, vec![x, y, z]);
-        problem.set_variable_ordering(vec![0, 1, 2]);
 
-        let mut mdd = Mdd::new(&mut problem);
-        mdd.propagate_constraints(&mut problem);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        mdd.propagate_constraints();
         assert!(mdd.number_nodes() == 4);
         assert!(node_possible_values(&mdd, NodeIndex(0)) == vec![2]);
         assert!(node_possible_values(&mdd, NodeIndex(1)) == vec![0, 1]);
@@ -333,36 +334,33 @@ mod test_all_diff {
     #[test]
     pub fn test_hall_set_around() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1]);
-        let y = problem.add_variable(vec![0, 1, 2]);
-        let z = problem.add_variable(vec![0, 1]);
+        let x = problem.add_variable(vec![0, 1], None);
+        let y = problem.add_variable(vec![0, 1, 2], None);
+        let z = problem.add_variable(vec![0, 1], None);
         all_different(&mut problem, vec![x, y, z]);
-        problem.set_variable_ordering(vec![0, 1, 2]);
 
-        let mut mdd = Mdd::new(&mut problem);
-        mdd.propagate_constraints(&mut problem);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        mdd.propagate_constraints();
         assert!(mdd.number_nodes() == 4);
         assert!(node_possible_values(&mdd, NodeIndex(0)) == vec![0, 1]);
-        assert!(node_possible_values(&mdd, NodeIndex(1)) == vec![2]);
-        assert!(node_possible_values(&mdd, NodeIndex(2)) == vec![0, 1]);
+        assert!(node_possible_values(&mdd, NodeIndex(1)) == vec![0, 1]);
+        assert!(node_possible_values(&mdd, NodeIndex(2)) == vec![2]);
     }
 
     #[test]
     pub fn test_value_all_path() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(4, vec![0, 1, 2, 3]);
+        let vars = problem.add_variables(4, vec![0, 1, 2, 3], None);
         all_different(&mut problem, vars.clone());
         equal(&mut problem, vars[1], 2);
         equal(&mut problem, vars[2], 0);
 
-        problem.set_variable_ordering(vec![0, 1, 2, 3]);
-        let mut mdd = Mdd::new(&mut problem);
-        mdd.propagate_constraints(&mut problem);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        mdd.propagate_constraints();
 
-        mdd.to_file("mdd.txt");
-        assert!(node_possible_values(&mdd, NodeIndex(0)) == vec![1, 3]);
+        assert!(node_possible_values(&mdd, NodeIndex(0)) == vec![0]);
         assert!(node_possible_values(&mdd, NodeIndex(1)) == vec![2]);
-        assert!(node_possible_values(&mdd, NodeIndex(2)) == vec![0]);
+        assert!(node_possible_values(&mdd, NodeIndex(2)) == vec![1, 3]);
         assert!(node_possible_values(&mdd, NodeIndex(3)) == vec![1, 3]);
     }
 

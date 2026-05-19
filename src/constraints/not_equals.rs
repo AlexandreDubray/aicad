@@ -50,24 +50,24 @@ impl Constraint for NotEquals {
         self.layer_y = ordering[self.y.0];
     }
 
-    fn update_property_top_down(&mut self, mdd: &Mdd)  {
+    fn update_property_top_down(&mut self, layers: &Vec<Layer>, nodes: &Vec<Node>, edges: &Vec<Edge>)  {
         // First layer has no predecessor
-        for target_layer in mdd.iter_layers().skip(1) {
-            for i in 0..mdd[target_layer].number_nodes() {
-                self.top_down_properties[target_layer.0][i].reset(0);
-                let target_node = mdd[target_layer].node_at(i);
-                for j in 0..mdd[target_node].number_parents() {
-                    let edge = mdd[target_node].parent_edge_at(j);
-                    let assignment = mdd[edge].assignment();
+        for target_layer in (0..layers.len()).map(LayerIndex).skip(1) {
+            for i in 0..layers[*target_layer].number_nodes() {
+                self.top_down_properties[*target_layer][i].reset(0);
+                let target_node = layers[*target_layer].node_at(i);
+                for j in 0..nodes[*target_node].number_parents() {
+                    let edge = nodes[*target_node].parent_edge_at(j);
+                    let assignment = edges[*edge].assignment();
 
                     // Parent of this edge
-                    let source_node = mdd[edge].from();
-                    let source_layer = mdd[source_node].layer();
+                    let source_node = edges[*edge].from();
+                    let source_layer = nodes[*source_node].layer();
                     debug_assert!(source_layer.0 < target_layer.0);
-                    let source_index = mdd[source_node].index_in_layer();
+                    let source_index = nodes[*source_node].index_in_layer();
 
                     if self.is_layer_in_scope(source_layer) {
-                        self.top_down_properties[target_layer.0][i].insert(assignment);
+                        self.top_down_properties[*target_layer][i].insert(assignment);
                     }
 
                     // Aggregate the source properties into the target properties.
@@ -76,27 +76,27 @@ impl Constraint for NotEquals {
                     // properties. We use the `split_at_mut` method to get two mutable references
                     // to non-overlapping slice of the top_down_properties vector. Then, we can use
                     // these references to update the properties.
-                    let (td_properties_above, td_properties_below) = self.top_down_properties.split_at_mut(target_layer.0);
-                    td_properties_below[0][i].union(&td_properties_above[source_layer.0][source_index]);
+                    let (td_properties_above, td_properties_below) = self.top_down_properties.split_at_mut(*target_layer);
+                    td_properties_below[0][i].union(&td_properties_above[*source_layer][source_index]);
                 }
             }
         }
     }
 
-    fn update_property_bottom_up(&mut self, mdd: &Mdd) {
+    fn update_property_bottom_up(&mut self, layers: &Vec<Layer>, nodes: &Vec<Node>, edges: &Vec<Edge>) {
         // Same procedure as the top-down, but in the other direction
-        for source_layer in mdd.iter_layers().rev().skip(1) {
+        for source_layer in (0..layers.len()).map(LayerIndex).rev().skip(1) {
             let layer_in_scope = self.is_layer_in_scope(source_layer);
-            for i in 0..mdd[source_layer].number_nodes() {
-                self.bottom_up_properties[source_layer.0][i].reset(0);
-                let source_node = mdd[source_layer].node_at(i);
-                for j in 0..mdd[source_node].number_children() {
-                    let edge = mdd[source_node].child_edge_at(j);
-                    let assignment = mdd[edge].assignment();
+            for i in 0..layers[*source_layer].number_nodes() {
+                self.bottom_up_properties[*source_layer][i].reset(0);
+                let source_node = layers[*source_layer].node_at(i);
+                for j in 0..nodes[*source_node].number_children() {
+                    let edge = nodes[*source_node].child_edge_at(j);
+                    let assignment = edges[*edge].assignment();
 
-                    let target_node = mdd[edge].to();
-                    let target_layer = mdd[target_node].layer();
-                    let target_index = mdd[target_node].index_in_layer();
+                    let target_node = edges[*edge].to();
+                    let target_layer = nodes[*target_node].layer();
+                    let target_index = nodes[*target_node].index_in_layer();
 
                     if layer_in_scope {
                         self.bottom_up_properties[source_layer.0][i].insert(assignment);
@@ -138,5 +138,9 @@ impl Constraint for NotEquals {
         let bottom_up_property = SparseBitset::new(self.domains.iter().copied());
         self.top_down_properties[layer.0].push(top_down_property);
         self.bottom_up_properties[layer.0].push(bottom_up_property);
+    }
+
+    fn iter_scope(&self) -> Box<dyn Iterator<Item = VariableIndex> + '_> {
+        Box::new([self.x, self.y].into_iter())
     }
 }

@@ -13,17 +13,20 @@ pub struct Node {
     children_edges: Vec<EdgeIndex>,
     /// Is the node active
     active: bool,
+    /// Is the node relaxed
+    relaxed: bool,
 }
 
 impl Node {
 
-    pub fn new(layer: LayerIndex, index_in_layer: usize) -> Self {
+    pub fn new(layer: LayerIndex, index_in_layer: usize, relaxed: bool) -> Self {
         Self {
             layer,
             index_in_layer,
             parents_edges: vec![],
             children_edges: vec![],
             active: true,
+            relaxed,
         }
     }
 
@@ -91,5 +94,17 @@ impl Node {
 
     pub fn is_active(&self) -> bool {
         self.active
+    }
+
+    pub fn iter_parents(&self) -> impl Iterator<Item = EdgeIndex> {
+        self.parents_edges.iter().copied()
+    }
+
+    pub fn iter_children(&self) -> impl Iterator<Item = EdgeIndex> {
+        self.children_edges.iter().copied()
+    }
+
+    pub fn is_relaxed(&self) -> bool {
+        self.relaxed
     }
 }

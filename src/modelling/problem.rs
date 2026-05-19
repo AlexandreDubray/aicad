@@ -9,22 +9,20 @@ pub struct Problem {
     variables: Vec<Variable>,
     /// Constraints of the problem.
     constraints: Vec< Box<dyn Constraint>>,
-    /// Order of the variables for the MDD,
-    variable_ordering: Vec<usize>,
 }
 
 impl Problem {
 
     /// Adds a variable with the given domain to the problem and returns its index.
-    pub fn add_variable(&mut self, domain: Vec<isize>) -> VariableIndex {
+    pub fn add_variable(&mut self, domain: Vec<isize>, probabilities: Option<Vec<f64>>) -> VariableIndex {
         let ret = VariableIndex(self.variables.len());
-        self.variables.push(Variable::new(domain));
+        self.variables.push(Variable::new(domain, probabilities));
         ret
     }
 
     /// Adds n variables, with the same domain, to the problem and return their indexes.
-    pub fn add_variables(&mut self, n: usize, domain: Vec<isize>) -> Vec<VariableIndex> {
-        (0..n).map(|_| self.add_variable(domain.clone())).collect()
+    pub fn add_variables(&mut self, n: usize, domain: Vec<isize>, probabilities: Option<Vec<f64>>) -> Vec<VariableIndex> {
+        (0..n).map(|_| self.add_variable(domain.clone(), probabilities.clone())).collect()
     }
 
     /// Adds a constraint to the problem and returns its index.
@@ -42,25 +40,6 @@ impl Problem {
     /// Returns the number of constraints in the problem
     pub fn number_constraints(&self) -> usize {
         self.constraints.len()
-    }
-
-    /// Returns a pointer to the variable ordering
-    pub fn variable_ordering(&self) -> &Vec<usize> {
-        &self.variable_ordering
-    }
-
-    /// Returns the layer of a given variable
-    pub fn variable_layer(&self, variable: VariableIndex) -> usize {
-        self.variable_ordering[variable.0]
-    }
-
-    /// Sets the variable ordering for the problem
-    pub fn set_variable_ordering(&mut self, ordering: Vec<usize>) {
-        debug_assert!(ordering.len() == self.number_variables());
-        for constraint in 0..self.constraints.len() {
-            self.constraints[constraint].update_variable_ordering(&ordering);
-        }
-        self.variable_ordering = ordering;
     }
 
     /// Iterates over the constraints

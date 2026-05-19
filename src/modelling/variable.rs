@@ -2,21 +2,20 @@ use super::*;
 
 pub struct Variable {
     domain: Vec<isize>,
-    probabilities: Vec<f64>,
+    probabilities: Option<Vec<f64>>,
     constraints: Vec<ConstraintIndex>,
 }
 
 impl Variable {
 
-    pub fn new(domain: Vec<isize>) -> Self {
-        let n = domain.len();
-        let probabilities = (0..n).map(|_| 1.0 / n as f64).collect::<Vec<f64>>();
+    pub fn new(domain: Vec<isize>, probabilities: Option<Vec<f64>>) -> Self {
         Self {
             domain,
             probabilities,
             constraints: vec![],
         }
     }
+
 
     /// Returns the value of the domain at the given index
     pub fn get_value(&self, index: ValueIndex) -> isize {
@@ -26,7 +25,10 @@ impl Variable {
     /// Returns the probability that the variable takes the value from its domain at the given
     /// index.
     pub fn get_probability(&self, index: ValueIndex) -> f64 {
-        self.probabilities[index.0]
+        match &self.probabilities {
+            None => panic!("Trying to access probabilities on unweighted variable"),
+            Some(p) => p[index.0],
+        }
     }
 
     /// Returns the number of elements in the domain
@@ -41,9 +43,6 @@ impl Variable {
 
     /// Sets the domain of the variable to the given values
     pub fn set_domain(&mut self, domain: Vec<isize>) {
-        let n = domain.len();
-        let probabilities = (0..n).map(|_| 1.0 / n as f64).collect::<Vec<f64>>();
-        self.probabilities = probabilities;
         self.domain = domain;
     }
 
@@ -53,6 +52,10 @@ impl Variable {
 
     pub fn iter_constraints(&self) -> impl Iterator<Item = ConstraintIndex> {
         self.constraints.iter().copied()
+    }
+
+    pub fn number_constraints(&self) -> usize {
+        self.constraints.len()
     }
 
 }
