@@ -62,6 +62,7 @@ fn main() {
     }
 
     let mut mdd = Mdd::new(problem, max_width, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
-    mdd.propagate_constraints();
-    mdd.to_file("mdd_sudoku.txt");
+    mdd.refine();
+    let solution = mdd.get_solution().unwrap();
+    assert!(mdd.is_solution(&solution));
 }

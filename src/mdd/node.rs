@@ -107,4 +107,8 @@ impl Node {
     pub fn is_relaxed(&self) -> bool {
         self.relaxed
     }
+
+    pub fn set_relaxed(&mut self, relaxed: bool) {
+        self.relaxed = relaxed
+    }
 }

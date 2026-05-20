@@ -47,7 +47,7 @@ impl Mdd {
         // First, we create each layer. There is n + 1 layers, with n the number of variables. The
         // last layer is the sink node. Each layer has one node at creation.
         for layer in (0..mdd.number_layers()).map(LayerIndex) {
-            mdd.add_node(layer, true);
+            mdd.add_node(layer, *layer != 0);
         }
         // Vec<VariableIndex>
         let var_order = order.get_order(&mdd.problem);
@@ -55,6 +55,10 @@ impl Mdd {
         for (layer, variable) in var_order.iter().copied().enumerate() {
             mdd[LayerIndex(layer)].set_decision(variable);
             var_order_inv[variable.0] = layer;
+            if mdd.problem[variable].domain_size() == 1 {
+                let node = mdd[LayerIndex(layer)].node_at(0);
+                mdd[node].set_relaxed(false);
+            }
         }
 
         for constraint in mdd.problem.iter_constraints().collect::<Vec<ConstraintIndex>>() {
@@ -107,26 +111,27 @@ impl Mdd {
             let node = self.layers[layer].node_at(0);
             self.split_node(node);
             self.propagate_constraints();
-            self.merge_layer(layer)
+            self.merge_layer(layer);
         }
     }
 
     fn split_node(&mut self, node: NodeIndex) {
         let layer = self[node].layer();
         let n = self[node].number_parents();
-        for i in (1..n).rev() {
+        for i in 0..n {
             let new_node = self.add_node(layer, false);
             let edge = self[node].parent_edge_at(i);
-            self[edge].deactivate();
             let from = self[edge].from();
+            self[edge].deactivate();
             let assignment = self[edge].assignment();
             self.add_edge(from, new_node, assignment);
-            self[node].swap_remove_parent_edge(i);
             for j in 0..self[node].number_children() {
                 let e = self[node].child_edge_at(j);
-                let to = self[e].to();
-                let assign = self[e].assignment();
-                self.add_edge(new_node, to, assign);
+                if self[e].is_active() {
+                    let to = self[e].to();
+                    let assign = self[e].assignment();
+                    self.add_edge(new_node, to, assign);
+                }
             }
         }
     }
@@ -261,6 +266,48 @@ impl Mdd {
 
     pub fn iter_layers(&self) -> impl DoubleEndedIterator<Item = LayerIndex> {
         (0..self.layers.len()).map(LayerIndex)
+    }
+
+    pub fn get_solution(&self) -> Option<Vec<isize>> {
+        let mut assignment = vec![0; self.layers.len() - 1];
+        let root = self.layers[0].node_at(0);
+        if self.extract_solution(root, &mut assignment) {
+            Some(assignment)
+        } else {
+            None
+        }
+    }
+
+    fn extract_solution(&self, node: NodeIndex, assignment: &mut Vec<isize>) -> bool {
+        let layer = self[node].layer();
+        if *layer == self.layers.len() - 1 {
+            return true;
+        }
+        if self[node].is_relaxed() {
+            return false;
+        }
+        let variable = self[layer].decision();
+        for edge in self[node].iter_children() {
+            if !self[edge].is_active() {
+                continue;
+            }
+            let to = self[edge].to();
+            let value = self[edge].assignment();
+            assignment[*variable] = value;
+            if self.extract_solution(to, assignment) {
+                return true;
+            }
+        }
+        false
+    }
+    
+    pub fn is_solution(&self, assignment: &[isize])  -> bool {
+        for constraint in self.problem.iter_constraints() {
+            if !self.problem[constraint].is_satisfied(assignment) {
+                return false;
+            }
+        }
+        true
     }
 }
 

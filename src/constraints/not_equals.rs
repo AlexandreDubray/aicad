@@ -143,4 +143,8 @@ impl Constraint for NotEquals {
     fn iter_scope(&self) -> Box<dyn Iterator<Item = VariableIndex> + '_> {
         Box::new([self.x, self.y].into_iter())
     }
+
+    fn is_satisfied(&self, assignment: &[isize]) -> bool {
+        assignment[*self.x] != assignment[*self.y]
+    }
 }

@@ -23,4 +23,6 @@ pub trait Constraint {
     fn add_node_in_layer(&mut self, layer: LayerIndex);
     /// Returns an iterator on the constraint's scope
     fn iter_scope(&self) -> Box<dyn Iterator<Item = VariableIndex> + '_>;
+    /// Returns true if the constraint is satisfied by the assignment
+    fn is_satisfied(&self, assignment: &[isize]) -> bool;
 }

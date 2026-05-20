@@ -252,6 +252,18 @@ impl Constraint for AllDifferent {
     fn iter_scope(&self) -> Box<dyn Iterator<Item = VariableIndex> + '_> {
         Box::new(self.variables.iter().copied())
     }
+
+    fn is_satisfied(&self, assignment: &[isize]) -> bool {
+        let mut set = FxHashSet::<isize>::default();
+        for variable in self.variables.iter().copied() {
+            let value = assignment[*variable];
+            if set.contains(&value) {
+                return false;
+            }
+            set.insert(value);
+        }
+        true
+    }
 }
 
 impl std::fmt::Display for AllDifferentProperty {
