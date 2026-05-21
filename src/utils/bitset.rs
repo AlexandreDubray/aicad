@@ -1,6 +1,7 @@
 use rustc_hash::FxHashMap;
 use std::hash::Hash;
 
+#[derive(Clone, PartialEq, Eq)]
 pub struct Bitset {
     words: Vec<u64>,
 }
@@ -10,7 +11,7 @@ impl Bitset {
     /// Creates a new bitset for storing n contiguous integers (starting from 0)
     pub fn new(n: usize) -> Self {
         //debug_assert!(n > 0);
-        let number_words = (n / 64).max(1);
+        let number_words = (n / 64) + 1;
         Self {
             words: vec![0; number_words],
         }
@@ -64,6 +65,7 @@ impl Bitset {
 
 }
 
+#[derive(Clone)]
 pub struct SparseBitset<T: Eq + Hash + Copy> {
     plain: Bitset,
     map: FxHashMap<T, usize>,
@@ -134,3 +136,11 @@ impl<T: Eq + Hash + Copy> std::fmt::Display for SparseBitset<T> {
         write!(f, "{}", self.plain)
     }
 }
+
+impl<T: Eq + Hash + Copy> PartialEq for SparseBitset<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.plain == other.plain
+    }
+}
+
+impl<T: Eq + Hash + Copy> Eq for SparseBitset<T> {}

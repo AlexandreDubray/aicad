@@ -7,6 +7,8 @@ use aicad::modelling::*;
 use aicad::mdd::*;
 use aicad::mdd::heuristics::*;
 
+use std::time::Duration;
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() != 3 && args.len() != 4 {

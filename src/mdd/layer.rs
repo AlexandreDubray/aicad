@@ -8,6 +8,8 @@ pub struct Layer {
     nodes: Vec<NodeIndex>,
     /// Decision varaible associated with the layer
     decision: VariableIndex,
+    /// Number of active nodes in the layer
+    number_active_node: usize,
 }
 
 impl Layer {
@@ -15,6 +17,7 @@ impl Layer {
     /// Adds a node the the layer and returns its index
     pub fn add_node(&mut self, node: NodeIndex) {
         self.nodes.push(node);
+        self.number_active_node += 1;
     }
 
     pub fn decision(&self) -> VariableIndex {
@@ -26,7 +29,7 @@ impl Layer {
     }
 
     pub fn number_nodes(&self) -> usize {
-        self.nodes.len()
+        self.number_active_node
     }
 
     pub fn node_at(&self, index: usize) -> NodeIndex {
@@ -35,5 +38,9 @@ impl Layer {
 
     pub fn iter_nodes(&self) -> impl Iterator<Item = NodeIndex> {
         self.nodes.iter().copied()
+    }
+
+    pub fn decrease_active_node(&mut self) {
+        self.number_active_node -= 1;
     }
 }

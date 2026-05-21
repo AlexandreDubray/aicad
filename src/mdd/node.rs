@@ -1,10 +1,10 @@
 use super::*;
 
 /// A decision node of the MDD
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Node {
     /// Layer containing the node
-    layer: LayerIndex,
+    layer: usize,
     /// What is the index of the node in the layer
     index_in_layer: usize,
     /// Edges to from the parent of the nodes
@@ -15,11 +15,13 @@ pub struct Node {
     active: bool,
     /// Is the node relaxed
     relaxed: bool,
+    /// Is the node flaged for property update
+    property_flag: bool,
 }
 
 impl Node {
 
-    pub fn new(layer: LayerIndex, index_in_layer: usize, relaxed: bool) -> Self {
+    pub fn new(layer: usize, index_in_layer: usize, relaxed: bool) -> Self {
         Self {
             layer,
             index_in_layer,
@@ -27,10 +29,11 @@ impl Node {
             children_edges: vec![],
             active: true,
             relaxed,
+            property_flag: false,
         }
     }
 
-    pub fn layer(&self) -> LayerIndex {
+    pub fn layer(&self) -> usize {
         self.layer
     }
 
@@ -46,8 +49,16 @@ impl Node {
         self.children_edges.push(edge);
     }
 
+    pub fn set_child_edges(&mut self, edges: &[EdgeIndex]) {
+        self.children_edges.copy_from_slice(edges);
+    }
+
     pub fn child_edge_at(&self, index: usize) -> EdgeIndex {
         self.children_edges[index]
+    }
+
+    pub fn child_edges(&self) -> &[EdgeIndex] {
+        &self.children_edges
     }
 
     pub fn swap_remove_child_edge(&mut self, index: usize) {
@@ -110,5 +121,17 @@ impl Node {
 
     pub fn set_relaxed(&mut self, relaxed: bool) {
         self.relaxed = relaxed
+    }
+
+    pub fn is_property_flag(&self) -> bool {
+        self.property_flag
+    }
+
+    pub fn set_property_flag(&mut self) {
+        self.property_flag = true;
+    }
+
+    pub fn unset_property_flag(&mut self) {
+        self.property_flag = false;
     }
 }

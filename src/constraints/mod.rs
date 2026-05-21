@@ -11,16 +11,18 @@ pub trait Constraint {
     /// Update the variable ordering. Update the (optional) information for the constraint's
     /// propagator and store which layers are in the constraint scope.
     fn update_variable_ordering(&mut self, ordering: &[usize]);
+    fn reset_property_top_down(&mut self, node: NodeIndex);
     /// Updates the top-down local property of the mdd 
-    fn update_property_top_down(&mut self, layers: &Vec<Layer>, nodes: &Vec<Node>, edges: &Vec<Edge>);
+    fn update_property_top_down(&mut self, source: NodeIndex, target: NodeIndex, assignment: isize);
+    fn reset_property_bottom_up(&mut self, node: NodeIndex);
     /// Updates the bottom-up local property of the mdd 
-    fn update_property_bottom_up(&mut self, layers: &Vec<Layer>, nodes: &Vec<Node>, edges: &Vec<Edge>);
+    fn update_property_bottom_up(&mut self, source: NodeIndex, target: NodeIndex, assignment: isize);
     /// Returns true if the layer is in the scope of the constraint
-    fn is_layer_in_scope(&self, layer: LayerIndex) -> bool;
+    fn is_layer_in_scope(&self, layer: usize) -> bool;
     /// Returns true if the assignment is invalid and the edge can be removed
-    fn is_assignment_invalid(&self, mdd: &Mdd, edge: EdgeIndex) -> bool;
+    fn is_assignment_invalid(&self, source: NodeIndex, target: NodeIndex, decision: VariableIndex, assignment: isize) -> bool;
     /// Adds a node in the given layer. Updates the properties of the constraints
-    fn add_node_in_layer(&mut self, layer: LayerIndex);
+    fn add_node_in_layer(&mut self, layer: usize);
     /// Returns an iterator on the constraint's scope
     fn iter_scope(&self) -> Box<dyn Iterator<Item = VariableIndex> + '_>;
     /// Returns true if the constraint is satisfied by the assignment

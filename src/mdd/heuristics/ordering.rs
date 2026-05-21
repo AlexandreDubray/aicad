@@ -2,11 +2,16 @@ use crate::modelling::{Problem, VariableIndex};
 
 pub enum OrderingHeuristic {
     MinDomMaxLinked,
+    Custom(Vec<usize>),
 }
 
 impl OrderingHeuristic {
 
     pub fn get_order(&self, problem: &Problem) -> Vec<VariableIndex> {
+        match self {
+            Self::Custom(order) => return order.iter().copied().map(VariableIndex).collect::<Vec<VariableIndex>>(),
+            _ => (),
+        };
         let n = problem.number_variables();
         let mut scores = vec![0; n];
         let mut candidates = (0..n).map(VariableIndex).collect::<Vec<VariableIndex>>();

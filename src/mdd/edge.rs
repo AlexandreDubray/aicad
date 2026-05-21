@@ -1,7 +1,7 @@
 use super::*;
 
+#[derive(Clone)]
 pub struct Edge {
-    layer_from: LayerIndex,
     from: NodeIndex,
     to: NodeIndex,
     assignment: isize,
@@ -10,22 +10,13 @@ pub struct Edge {
 
 impl Edge {
     
-    pub fn new(layer_from: LayerIndex,
-        from: NodeIndex,
-        to: NodeIndex,
-        assignment: isize,
-        ) -> Self {
+    pub fn new(from: NodeIndex, to: NodeIndex, assignment: isize) -> Self {
         Self {
-            layer_from,
             from,
             to,
             assignment,
             active: true,
         }
-    }
-
-    pub fn layer_from(&self) -> LayerIndex {
-        self.layer_from
     }
 
     pub fn from(&self) -> NodeIndex {

@@ -22,6 +22,7 @@ use crate::utils::SparseBitset;
 ///        implemented using the | operator
 ///     2. The aggregation of two properties $(A, S)$ and $(A^\prime, S^\prime)$ is computed as $$(A, S) \oplus
 ///        (A^\prime, S^\prime) = (A \cap A^\prime, S \cup S^\prime)$$
+#[derive(Clone, PartialEq, Eq)]
 struct AllDifferentProperty {
     /// Values that appear on all source-n (top-down property) or n-sink (bottom-up
     /// property) path.
@@ -113,140 +114,123 @@ impl Constraint for AllDifferent {
         }
     }
 
-    fn update_property_top_down(&mut self, layers: &Vec<Layer>, nodes: &Vec<Node>, edges: &Vec<Edge>) {
-        // We skip the first layer as it has no predecessors
-        for target_layer in (1..layers.len()).map(LayerIndex) {
-            // We update the top-down properties for each node. Since the properties for the
-            // allDifferent can be computed incrementally, we do this edge by edge
-            for i in 0..layers[*target_layer].number_nodes() {
-                self.top_down_properties[*target_layer][i].value_some_path.reset(0);
-                self.top_down_properties[*target_layer][i].value_all_path.reset(!0);
-                // Node for which we update the property (i.e, the target of the edge coming from
-                // layer - 1 into layer)
-                let target_node = layers[*target_layer].node_at(i);
-                for j in 0..nodes[*target_node].number_parents() {
-                    let edge = nodes[*target_node].parent_edge_at(j);
-                    // Gets the (word, shift) for the assignment
-                    let assignment = edges[*edge].assignment();
+    fn reset_property_top_down(&mut self, node: NodeIndex) {
+        let NodeIndex(layer, index) = node;
+        self.top_down_properties[layer][index].value_some_path.reset(0);
+        self.top_down_properties[layer][index].value_all_path.reset(!0);
+    }
 
-                    // Parent of this edge
-                    let source_node = edges[*edge].from();
-                    let source_layer = nodes[*source_node].layer();
-                    debug_assert!(*source_layer < *target_layer);
-                    let source_index = nodes[*source_node].index_in_layer();
-                    let layer_in_scope = self.is_layer_in_scope(source_layer);
+    fn update_property_top_down(&mut self, source: NodeIndex, target: NodeIndex, assignment: isize) {
+        let NodeIndex(source_layer, source_index) = source;
+        let NodeIndex(target_layer, target_index) = target;
+        let layer_in_scope = self.is_layer_in_scope(source_layer);
 
-                    // For the set A we need to do $A \cap (A^\prime \cup \{assignment\})$. Hence,
-                    // we can not directly integrate the assignment into A (as is done for the S
-                    // set, since this is a union of union.
-                    // Hence, we integrate the assignment into $S^\prime$ and then reverse it.
-                    let is_in_set = self.top_down_properties[*source_layer][source_index].value_all_path.contains(assignment);
-                    // Only integrate the edge if the layer is in the scope of the constraint.
-                    if layer_in_scope {
-                        self.top_down_properties[*target_layer][i].value_some_path.insert(assignment);
-                        self.top_down_properties[*source_layer][source_index].value_all_path.insert(assignment);
-                    }
+        // For the set A we need to do $A \cap (A^\prime \cup \{assignment\})$. Hence,
+        // we can not directly integrate the assignment into A (as is done for the S
+        // set, since this is a union of union.
+        // Hence, we integrate the assignment into $S^\prime$ and then reverse it.
+        let is_in_set = self.top_down_properties[source_layer][source_index].value_all_path.contains(assignment);
+        // Only integrate the edge if the layer is in the scope of the constraint.
+        if layer_in_scope {
+            self.top_down_properties[target_layer][target_index].value_some_path.insert(assignment);
+            self.top_down_properties[source_layer][source_index].value_all_path.insert(assignment);
+        }
 
-                    // Aggregate the source properties into the target properties.
-                    // Since we need a mutable reference to the properties of layer and a
-                    // non-mutable references to the source layer we can not directly update the
-                    // properties. We use the `split_at_mut` method to get two mutable references
-                    // to non-overlapping slice of the top_down_properties vector. Then, we can use
-                    // these references to update the properties.
-                    let (td_properties_above, td_properties_below) = self.top_down_properties.split_at_mut(target_layer.0);
-                    td_properties_below[0][i].value_all_path.interesect(&td_properties_above[*source_layer][source_index].value_all_path);
-                    td_properties_below[0][i].value_some_path.union(&td_properties_above[*source_layer][source_index].value_some_path);
+        // Aggregate the source properties into the target properties.
+        // Since we need a mutable reference to the properties of layer and a
+        // non-mutable references to the source layer we can not directly update the
+        // properties. We use the `split_at_mut` method to get two mutable references
+        // to non-overlapping slice of the top_down_properties vector. Then, we can use
+        // these references to update the properties.
+        let (td_properties_above, td_properties_below) = self.top_down_properties.split_at_mut(target_layer);
+        td_properties_below[0][target_index].value_all_path.interesect(&td_properties_above[source_layer][source_index].value_all_path);
+        td_properties_below[0][target_index].value_some_path.union(&td_properties_above[source_layer][source_index].value_some_path);
 
-                    // Reverse the integration of the edge into the $A^\prime$ set.
-                    if layer_in_scope && !is_in_set{
-                        self.top_down_properties[*source_layer][source_index].value_all_path.remove(assignment);
-                    }
-                }
-            }
+        // Reverse the integration of the edge into the $A^\prime$ set.
+        if layer_in_scope && !is_in_set{
+            self.top_down_properties[source_layer][source_index].value_all_path.remove(assignment);
         }
     }
 
-    fn update_property_bottom_up(&mut self, layers: &Vec<Layer>, nodes: &Vec<Node>, edges: &Vec<Edge>) {
-        // Same procedure as the top-down, but in the other direction
-        for source_layer in (0..layers.len()).rev().map(LayerIndex).skip(1) {
-            let layer_in_scope = self.is_layer_in_scope(source_layer);
-            for i in 0..layers[*source_layer].number_nodes() {
-                self.bottom_up_properties[*source_layer][i].value_some_path.reset(0);
-                self.bottom_up_properties[*source_layer][i].value_all_path.reset(!0);
-                let source_node = layers[*source_layer].node_at(i);
-                for j in 0..nodes[*source_node].number_children() {
-                    let edge = nodes[*source_node].child_edge_at(j);
-                    let assignment = edges[*edge].assignment();
+    fn reset_property_bottom_up(&mut self, node: NodeIndex) {
+        let NodeIndex(layer, index) = node;
+        self.bottom_up_properties[layer][index].value_some_path.reset(0);
+        self.bottom_up_properties[layer][index].value_all_path.reset(!0);
+    }
 
-                    let target_node = edges[*edge].to();
-                    let target_layer = nodes[*target_node].layer();
-                    let target_index = nodes[*target_node].index_in_layer();
+    fn update_property_bottom_up(&mut self, source: NodeIndex, target: NodeIndex, assignment: isize) {
+        let NodeIndex(source_layer, source_index) = source;
+        let NodeIndex(target_layer, target_index) = target;
+        let layer_in_scope = self.is_layer_in_scope(target_layer);
 
-                    let is_in_set = self.bottom_up_properties[*target_layer][target_index].value_all_path.contains(assignment);
-                    if layer_in_scope {
-                        self.bottom_up_properties[*source_layer][i].value_some_path.insert(assignment);
-                        self.bottom_up_properties[*target_layer][target_index].value_all_path.insert(assignment);
-                    }
+        // For the set A we need to do $A \cap (A^\prime \cup \{assignment\})$. Hence,
+        // we can not directly integrate the assignment into A (as is done for the S
+        // set, since this is a union of union.
+        // Hence, we integrate the assignment into $S^\prime$ and then reverse it.
+        let is_in_set = self.bottom_up_properties[source_layer][source_index].value_all_path.contains(assignment);
+        // Only integrate the edge if the layer is in the scope of the constraint.
+        if layer_in_scope {
+            self.bottom_up_properties[target_layer][target_index].value_some_path.insert(assignment);
+            self.bottom_up_properties[source_layer][source_index].value_all_path.insert(assignment);
+        }
 
-                    let (bu_properties_above, bu_properties_below) = self.bottom_up_properties.split_at_mut(*target_layer);
-                    bu_properties_above[*source_layer][i].value_all_path.interesect(&bu_properties_below[0][target_index].value_all_path);
-                    bu_properties_above[*source_layer][i].value_some_path.union(&bu_properties_below[0][target_index].value_some_path);
+        // Aggregate the source properties into the target properties.
+        // Since we need a mutable reference to the properties of layer and a
+        // non-mutable references to the source layer we can not directly update the
+        // properties. We use the `split_at_mut` method to get two mutable references
+        // to non-overlapping slice of the top_down_properties vector. Then, we can use
+        // these references to update the properties.
+        let (bu_properties_above, bu_properties_below) = self.bottom_up_properties.split_at_mut(source_layer);
+        bu_properties_above[target_layer][target_index].value_all_path.interesect(&bu_properties_below[0][source_index].value_all_path);
+        bu_properties_above[target_layer][target_index].value_some_path.union(&bu_properties_below[0][source_index].value_some_path);
 
-                    if layer_in_scope && !is_in_set {
-                        self.bottom_up_properties[*target_layer][target_index].value_all_path.remove(assignment);
-                    }
-                }
-            }
+        // Reverse the integration of the edge into the $A^\prime$ set.
+        if layer_in_scope && !is_in_set{
+            self.bottom_up_properties[source_layer][source_index].value_all_path.remove(assignment);
         }
     }
 
     /// Returns true if the layer is constrained by self
-    fn is_layer_in_scope(&self, layer: LayerIndex) -> bool {
-        self.layer_in_scope[layer.0 / 64] & (1 << (layer.0 % 64)) != 0
+    fn is_layer_in_scope(&self, layer: usize) -> bool {
+        self.layer_in_scope[layer / 64] & (1 << (layer % 64)) != 0
     }
 
-    fn is_assignment_invalid(&self, mdd: &Mdd, edge: EdgeIndex) -> bool {
-        let assignment = mdd[edge].assignment();
-
-        let source = mdd[edge].from();
-        let source_layer = mdd[source].layer();
-        let source_index = mdd[source].index_in_layer();
-
-        let target = mdd[edge].to();
-        let target_layer = mdd[target].layer();
-        let target_index = mdd[target].index_in_layer();
+    fn is_assignment_invalid(&self, source: NodeIndex, target: NodeIndex, decision: VariableIndex, assignment: isize) -> bool {
+        let NodeIndex(source_layer, source_index) = source;
+        let NodeIndex(target_layer, target_index) = target;
 
 
         // If the value appears on all path from the source or to the sink, then it will be taken
         // by another variable and can not be assigned to this one.
-        if self.top_down_properties[source_layer.0][source_index].value_all_path.contains(assignment) ||
-           self.bottom_up_properties[target_layer.0][target_index].value_all_path.contains(assignment) {
+        if self.top_down_properties[source_layer][source_index].value_all_path.contains(assignment) ||
+           self.bottom_up_properties[target_layer][target_index].value_all_path.contains(assignment) {
                 return true;
         }
         // If not, we check for Hall-set conditions
-        let decision = mdd[source_layer].decision();
         let (hall_set_size_up, hall_set_size_down) = *self.map_hall_set.get(&decision).unwrap();
-        let is_on_td_path = self.top_down_properties[source_layer.0][source_index].value_some_path.contains(assignment);
-        let is_on_bu_path = self.bottom_up_properties[target_layer.0][target_index].value_some_path.contains(assignment);
-        if is_on_td_path && hall_set_size_up == self.top_down_properties[source_layer.0][source_index].value_some_path.size() {
+        let is_on_td_path = self.top_down_properties[source_layer][source_index].value_some_path.contains(assignment);
+        let is_on_bu_path = self.bottom_up_properties[target_layer][target_index].value_some_path.contains(assignment);
+        if is_on_td_path && hall_set_size_up == self.top_down_properties[source_layer][source_index].value_some_path.size() {
             // First, the variables above are a Hall set: they can take as much values as the union of
             // their domain and this union includes the current assignment.
             return true;
-        } else if is_on_bu_path && hall_set_size_down == self.bottom_up_properties[target_layer.0][target_index].value_some_path.size() {
+        } else if is_on_bu_path && hall_set_size_down == self.bottom_up_properties[target_layer][target_index].value_some_path.size() {
             // Same but for the variables in later layers.
             return true;
-        } else if is_on_bu_path && is_on_td_path && hall_set_size_up + hall_set_size_down == self.top_down_properties[source_layer.0][source_index].value_some_path.size_union(&self.bottom_up_properties[target_layer.0][target_index].value_some_path) {
+        } else if is_on_bu_path
+            && is_on_td_path
+            && hall_set_size_up + hall_set_size_down == self.top_down_properties[source_layer][source_index].value_some_path.size_union(&self.bottom_up_properties[target_layer][target_index].value_some_path) {
             // Same but for all other variables in the constraint.
             return true;
         }
         false
     }
 
-    fn add_node_in_layer(&mut self, layer: LayerIndex) {
+    fn add_node_in_layer(&mut self, layer: usize) {
         let top_down_property = AllDifferentProperty::new(&self.domain);
         let bottom_up_property = AllDifferentProperty::new(&self.domain);
-        self.top_down_properties[layer.0].push(top_down_property);
-        self.bottom_up_properties[layer.0].push(bottom_up_property);
+        self.top_down_properties[layer].push(top_down_property);
+        self.bottom_up_properties[layer].push(bottom_up_property);
     }
 
     fn iter_scope(&self) -> Box<dyn Iterator<Item = VariableIndex> + '_> {
@@ -290,10 +274,10 @@ mod test_all_diff {
         all_different(&mut problem, vec![x, y]);
 
         let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
-        mdd.propagate_constraints();
-        assert!(mdd.number_nodes() == 3);
-        assert!(node_possible_values(&mdd, NodeIndex(0)) == vec![0]);
-        assert!(node_possible_values(&mdd, NodeIndex(1)) == vec![1]);
+        mdd.refine();
+        let solutions = get_all_solutions(&mdd);
+        assert_eq!(solutions.len(), 1);
+        assert!(is_solution(vec![0, 1], &solutions));
     }
 
     #[test]
@@ -304,11 +288,13 @@ mod test_all_diff {
 
         all_different(&mut problem, vec![x, y]);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
-        mdd.propagate_constraints();
-        assert!(mdd.number_nodes() == 3);
-        assert!(node_possible_values(&mdd, NodeIndex(0)) == vec![0, 1]);
-        assert!(node_possible_values(&mdd, NodeIndex(1)) == vec![0, 1]);
+        let mdd = Mdd::new(problem, 1, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        let solutions = get_all_solutions(&mdd);
+        assert_eq!(solutions.len(), 4);
+        assert!(is_solution(vec![0, 0], &solutions));
+        assert!(is_solution(vec![0, 1], &solutions));
+        assert!(is_solution(vec![1, 0], &solutions));
+        assert!(is_solution(vec![1, 1], &solutions));
     }
 
     #[test]
@@ -319,12 +305,13 @@ mod test_all_diff {
         let z = problem.add_variable(vec![0, 1, 2], None);
         all_different(&mut problem, vec![x, y, z]);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
-        mdd.propagate_constraints();
-        assert!(mdd.number_nodes() == 4);
-        assert!(node_possible_values(&mdd, NodeIndex(0)) == vec![0, 1]);
-        assert!(node_possible_values(&mdd, NodeIndex(1)) == vec![2]);
-        assert!(node_possible_values(&mdd, NodeIndex(2)) == vec![0, 1]);
+        let mdd = Mdd::new(problem, 1, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed);
+        let solutions = get_all_solutions(&mdd);
+        assert_eq!(solutions.len(), 4);
+        assert!(is_solution(vec![0, 0, 2], &solutions));
+        assert!(is_solution(vec![0, 1, 2], &solutions));
+        assert!(is_solution(vec![1, 0, 2], &solutions));
+        assert!(is_solution(vec![1, 1, 2], &solutions));
     }
 
     #[test]
@@ -335,12 +322,13 @@ mod test_all_diff {
         let z = problem.add_variable(vec![0, 1],None);
         all_different(&mut problem, vec![x, y, z]);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
-        mdd.propagate_constraints();
-        assert!(mdd.number_nodes() == 4);
-        assert!(node_possible_values(&mdd, NodeIndex(0)) == vec![2]);
-        assert!(node_possible_values(&mdd, NodeIndex(1)) == vec![0, 1]);
-        assert!(node_possible_values(&mdd, NodeIndex(2)) == vec![0, 1]);
+        let mdd = Mdd::new(problem, 1, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed);
+        let solutions = get_all_solutions(&mdd);
+        assert_eq!(solutions.len(), 4);
+        assert!(is_solution(vec![2, 0, 0], &solutions));
+        assert!(is_solution(vec![2, 0, 1], &solutions));
+        assert!(is_solution(vec![2, 1, 0], &solutions));
+        assert!(is_solution(vec![2, 1, 1], &solutions));
     }
 
     #[test]
@@ -351,12 +339,28 @@ mod test_all_diff {
         let z = problem.add_variable(vec![0, 1], None);
         all_different(&mut problem, vec![x, y, z]);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
-        mdd.propagate_constraints();
-        assert!(mdd.number_nodes() == 4);
-        assert!(node_possible_values(&mdd, NodeIndex(0)) == vec![0, 1]);
-        assert!(node_possible_values(&mdd, NodeIndex(1)) == vec![0, 1]);
-        assert!(node_possible_values(&mdd, NodeIndex(2)) == vec![2]);
+        let mdd = Mdd::new(problem, 1, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed);
+        let solutions = get_all_solutions(&mdd);
+        assert_eq!(solutions.len(), 4);
+        assert!(is_solution(vec![0, 2, 0], &solutions));
+        assert!(is_solution(vec![1, 2, 0], &solutions));
+        assert!(is_solution(vec![0, 2, 1], &solutions));
+        assert!(is_solution(vec![1, 2, 1], &solutions));
+    }
+
+    #[test]
+    pub fn test_two_binary() {
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(2, vec![0, 1], None);
+        all_different(&mut problem, vars.clone());
+
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1]), MergeHeuristic::LessRelaxed);
+        mdd.refine();
+        mdd.to_file("mdd.txt");
+        let solutions = get_all_solutions(&mdd);
+        assert_eq!(solutions.len(), 2);
+        assert!(is_solution(vec![0, 1], &solutions));
+        assert!(is_solution(vec![1, 0], &solutions));
     }
 
     #[test]
@@ -368,12 +372,11 @@ mod test_all_diff {
         equal(&mut problem, vars[2], 0);
 
         let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
-        mdd.propagate_constraints();
-
-        assert!(node_possible_values(&mdd, NodeIndex(0)) == vec![0]);
-        assert!(node_possible_values(&mdd, NodeIndex(1)) == vec![2]);
-        assert!(node_possible_values(&mdd, NodeIndex(2)) == vec![1, 3]);
-        assert!(node_possible_values(&mdd, NodeIndex(3)) == vec![1, 3]);
+        mdd.refine();
+        let solutions = get_all_solutions(&mdd);
+        assert_eq!(solutions.len(), 2);
+        assert!(is_solution(vec![1, 2, 0, 3], &solutions));
+        assert!(is_solution(vec![3, 2, 0, 1], &solutions));
     }
 
 }
