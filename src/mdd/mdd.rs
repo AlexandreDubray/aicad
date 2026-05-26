@@ -1,13 +1,9 @@
 use crate::modelling::*;
 use super::*;
-use crate::utils::bitset::Bitset;
 use super::heuristics::*;
 
-use rustc_hash::FxHashMap;
 use std::fs;
-use std::collections::VecDeque;
-
-use std::time::Instant;
+use rustc_hash::{FxHashSet, FxHashMap};
 
 /// Structure for the MDD. The MDD is organised in layers (one layer per variable in the problem)
 /// and each layer contains the necessary information to propagate the constraint and generate
@@ -22,11 +18,8 @@ pub struct Mdd {
     order: Vec<VariableIndex>,
     /// Max width allows during compilation
     max_width: usize,
-    /// Propagation queue for the constraints
-    propagation_queue: Vec<NodeIndex>,
     /// Heuristic used to score nodes during merging operation
     merge_heuristic: MergeHeuristic,
-    edge_table: FxHashMap::<(NodeIndex, NodeIndex, isize), EdgeIndex>,
 }
 
 impl Mdd {
@@ -39,10 +32,8 @@ impl Mdd {
             edges: vec![vec![]; problem.number_variables()],
             order: vec![],
             max_width,
-            propagation_queue: vec![],
             merge_heuristic,
             problem,
-            edge_table: FxHashMap::default(),
         };
 
         // First, we create each layer. There is n + 1 layers, with n the number of variables. The
@@ -116,22 +107,18 @@ impl Mdd {
     // --- split and refine strategy ---- //
 
     pub fn refine(&mut self) {
-        let mut total_refine_time = 0;
         for layer in 1..self.nodes.len() - 1 {
+            println!("Refining layer {}", layer);
             if self.number_nodes_in_layer(layer) == self.max_width {
                 continue;
             }
-            let start = Instant::now();
             let node = NodeIndex(layer, 0);
             self.split_node(node);
-            //println!("After split, {} nodes in layer {}", self.number_nodes_in_layer(layer), layer);
             self.propagate_constraints();
-            //self.merge_layer(layer.0);
-            let time_refine_layer = start.elapsed().as_millis();
-            //println!("{} nodes in layer {} refined in {}", self.number_nodes_in_layer(layer), layer, time_refine_layer);
-            total_refine_time += time_refine_layer;
+            self.merge_layer(layer);
+            self.clean_layer(layer);
+            println!("Number of nodes in layer {}", self.nodes[layer].len());
         }
-        println!("Total refine time: {} milliseconds", total_refine_time);
     }
 
     fn split_node(&mut self, node: NodeIndex) {
@@ -148,14 +135,11 @@ impl Mdd {
             let edge = self[node].parent_edge_at(i);
             let from = self[edge].from();
             let assignment = self[edge].assignment();
-            self[node].swap_remove_parent_edge(i);
-            // TODO: linear scan on the edges, maybe not optimal
-            self[from].remove_child_edge(edge);
-            self[edge].deactivate();
             self.add_edge(layer - 1, from, new_node, assignment);
             for (child, outgoing_assignment) in outgoing_assignments.iter().copied() {
                 self.add_edge(layer, new_node, child, outgoing_assignment);
             }
+            self[edge].deactivate();
         }
     }
 
@@ -206,6 +190,78 @@ impl Mdd {
                     }
                 }
             }
+        }
+    }
+
+    fn merge_layer(&mut self, layer :usize) {
+        let number_nodes = self.nodes[layer].len();
+        if number_nodes <= self.max_width {
+            return;
+        }
+        let node_ranks = self.merge_heuristic.rank_nodes(self, layer);
+        let into = NodeIndex(layer, node_ranks[self.max_width - 1].1);
+        self[into].set_relaxed(true);
+        for i in self.max_width..number_nodes {
+            let from = NodeIndex(layer, node_ranks[i].1);
+            self.merge_nodes(from, into);
+            self[from].deactivate();
+        }
+    }
+
+    fn merge_nodes(&mut self, from: NodeIndex, into: NodeIndex) {
+        self[into].set_relaxed(true);
+        for i in 0..self[from].number_parents() {
+            let edge = self[from].parent_edge_at(i);
+            self[edge].set_to(into);
+            self[into].add_parent_edge(edge);
+        }
+
+        let mut existing_children = FxHashSet::<(NodeIndex, isize)>::default();
+        for i in 0..self[into].number_children() {
+            let edge = self[into].child_edge_at(i);
+            let child = self[edge].to();
+            let assignment = self[edge].assignment();
+            existing_children.insert((child, assignment));
+        }
+
+        for i in 0..self[from].number_children() {
+            let edge = self[from].child_edge_at(i);
+            let child = self[edge].to();
+            let assignment = self[edge].assignment();
+            if !existing_children.contains(&(child, assignment)) {
+                self[edge].set_from(into);
+                self[into].add_child_edge(edge);
+            }
+        }
+    }
+
+    fn clean_layer(&mut self, layer: usize) {
+        let mut map_node_index = FxHashMap::<NodeIndex, NodeIndex>::default();
+        let mut new_index = 0;
+        for index in 0..self.nodes[layer].len() {
+            if self.nodes[layer][index].is_active() {
+                map_node_index.insert(NodeIndex(layer, index), NodeIndex(layer, new_index));
+                self.nodes[layer].swap(new_index, index);
+                new_index += 1;
+            }
+        }
+        self.nodes[layer].truncate(new_index);
+        let mut map_edge_index = FxHashMap::<EdgeIndex, EdgeIndex>::default();
+        new_index = 0;
+        for index in 0..self.edges[layer].len() {
+            if self.edges[layer][index].is_active() {
+                map_edge_index.insert(EdgeIndex(layer, index), EdgeIndex(layer, new_index));
+                self.edges[layer].swap(new_index, index);
+                new_index += 1;
+            }
+        }
+        self.edges[layer].truncate(new_index);
+
+        for index in 0..self.nodes[layer].len() {
+            self.nodes[layer][index].update_edge_indices(&map_edge_index);
+        }
+        for index in 0..self.edges[layer].len() {
+            self.edges[layer][index].update_node_indices(&map_node_index);
         }
     }
 

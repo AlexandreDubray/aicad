@@ -1,4 +1,5 @@
 use super::*;
+use rustc_hash::FxHashMap;
 
 /// A decision node of the MDD
 #[derive(Default, Clone)]
@@ -133,5 +134,20 @@ impl Node {
 
     pub fn unset_property_flag(&mut self) {
         self.property_flag = false;
+    }
+
+    pub fn update_edge_indices(&mut self, map: &FxHashMap::<EdgeIndex, EdgeIndex>) {
+        for i in (0..self.parents_edges.len()).rev() {
+            match map.get(&self.parents_edges[i]) {
+                Some(&new_index) => self.parents_edges[i] = new_index,
+                None => _ = self.parents_edges.swap_remove(i),
+            };
+        }
+        for i in (0..self.children_edges.len()).rev() {
+            match map.get(&self.children_edges[i]) {
+                Some(&new_index) => self.children_edges[i] = new_index,
+                None => _ = self.children_edges.swap_remove(i),
+            }
+        }
     }
 }
