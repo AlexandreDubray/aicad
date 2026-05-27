@@ -166,7 +166,7 @@ impl Constraint for AllDifferent {
         // For the set A we need to do $A \cap (A^\prime \cup \{assignment\})$. Hence,
         // we can not directly integrate the assignment into A (as is done for the S
         // set, since this is a union of union.
-        // Hence, we integrate the assignment into $S^\prime$ and then reverse it.
+        // Hence, we integrate the assignment into $A^\prime$ and then reverse it.
         let is_in_set = self.bottom_up_properties[source_layer][source_index].value_all_path.contains(assignment);
         // Only integrate the edge if the layer is in the scope of the constraint.
         if layer_in_scope {

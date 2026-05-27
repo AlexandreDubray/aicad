@@ -44,7 +44,8 @@ fn main() {
     while let Some(token) = tokens.next() {
         let u = token.parse::<usize>().unwrap();
         let v = tokens.next().unwrap().parse::<usize>().unwrap();
-        not_equals(&mut problem, variables[u], variables[v])
+        //all_different(&mut problem, vec![variables[u], variables[v]]);
+        not_equals(&mut problem, variables[u], variables[v]);
     }
 
     let mut mdd = Mdd::new(problem, max_width, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
@@ -52,4 +53,5 @@ fn main() {
     if let Some(solution) = mdd.get_solution() {
         assert!(mdd.is_solution(&solution));
     }
+    println!("{:?}", mdd);
 }

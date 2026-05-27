@@ -28,6 +28,9 @@ impl Problem {
     /// Adds a constraint to the problem and returns its index.
     pub fn add_constraint(&mut self, constraint: impl Constraint + 'static) -> ConstraintIndex {
         let ret = ConstraintIndex(self.constraints.len());
+        for variable in constraint.iter_scope() {
+            self[variable].add_constraint(ret);
+        }
         self.constraints.push(Box::new(constraint));
         ret
     }
