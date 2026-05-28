@@ -2,10 +2,11 @@
 name = "aicad"
 version = "0.1.0"
 edition = "2024"
+crate-type = ["cdylib"]
 
 [dependencies]
 rustc-hash = "2.1"
-log = "0.4"
+pyo3 = { version= "0.28", features = ["extension-module"] }
 
 [package.metadata.docs.rs]
 rustdoc-args = [ "--html-in-header", "katex-header.html" ]

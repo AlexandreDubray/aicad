@@ -8,7 +8,7 @@ pub struct Problem {
     /// Variables of the problem
     variables: Vec<Variable>,
     /// Constraints of the problem.
-    constraints: Vec< Box<dyn Constraint>>,
+    constraints: Vec< Box<dyn Constraint + Send + Sync>>,
 }
 
 impl Problem {
@@ -26,13 +26,19 @@ impl Problem {
     }
 
     /// Adds a constraint to the problem and returns its index.
-    pub fn add_constraint(&mut self, constraint: impl Constraint + 'static) -> ConstraintIndex {
+    pub fn add_constraint(&mut self, constraint: impl Constraint + 'static + Send + Sync) -> ConstraintIndex {
         let ret = ConstraintIndex(self.constraints.len());
         for variable in constraint.iter_scope() {
             self[variable].add_constraint(ret);
         }
         self.constraints.push(Box::new(constraint));
         ret
+    }
+
+    pub fn init_constraints(&mut self) {
+        for constraint in 0..self.constraints.len() {
+            self.constraints[constraint].init(&self.variables);
+        }
     }
 
     /// Returns the number of variables in the problem
@@ -69,7 +75,7 @@ impl std::ops::IndexMut<VariableIndex> for Problem {
 
 impl std::ops::Index<ConstraintIndex> for Problem {
 
-    type Output = Box<dyn Constraint>;
+    type Output = Box<dyn Constraint + Sync + Send>;
 
     fn index(&self, index: ConstraintIndex) -> &Self::Output {
         &self.constraints[index.0]

@@ -2,12 +2,15 @@ pub mod all_different;
 pub mod not_equals;
 
 use crate::mdd::*;
-use crate::modelling::VariableIndex;
+use crate::modelling::*;
+use crate::modelling::variable::Variable;
 
 pub use all_different::AllDifferent;
 pub use not_equals::NotEquals;
 
 pub trait Constraint {
+    /// Initialise the data structures for constraint propagation (e.g., properties)
+    fn init(&mut self, vars: &[Variable]);
     /// Update the variable ordering. Update the (optional) information for the constraint's
     /// propagator and store which layers are in the constraint scope.
     fn update_variable_ordering(&mut self, ordering: &[usize]);

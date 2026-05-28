@@ -45,6 +45,7 @@ impl Mdd {
             root: NodeIndex(0, 0),
             sink: NodeIndex(number_layers - 1, 0),
         };
+        mdd.problem.init_constraints();
 
         // First, we create each layer. There is n + 1 layers, with n the number of variables. The
         // last layer is the sink node. Each layer has one node at creation.
@@ -391,6 +392,10 @@ impl Mdd {
             }
         }
         true
+    }
+
+    pub fn is_unsat(&self) -> bool {
+        self.unsat
     }
 }
 

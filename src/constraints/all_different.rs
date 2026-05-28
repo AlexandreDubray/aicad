@@ -64,33 +64,31 @@ pub struct AllDifferent {
 impl AllDifferent {
 
     /// Creates a new AllDifferent constraint over variables
-    pub fn new(problem: &Problem, variables: Vec<VariableIndex>) -> Self {
-        let mut domain = FxHashSet::<isize>::default();
-        for variable in variables.iter().copied() {
-            for value in problem[variable].iter_domain() {
-                domain.insert(value);
-            }
-        }
-        let top_down_properties = (0..problem.number_variables() + 1).map(|_| vec![AllDifferentProperty::new(&domain)]).collect::<Vec<Vec<AllDifferentProperty>>>();
-        let bottom_up_properties = (0..problem.number_variables() + 1).map(|_| vec![AllDifferentProperty::new(&domain)]).collect::<Vec<Vec<AllDifferentProperty>>>();
-
-        // Map each variable in the scope to the number of variable above and below it in the MDD.
-        // Used to compute hall set propagation rules.
-        let map_hall_set = FxHashMap::<VariableIndex, (usize, usize)>::default();
-        let layer_in_scope = (0..(problem.number_variables() / 64 + 1)).map(|_| 0).collect::<Vec<u64>>();
+    pub fn new(variables: Vec<VariableIndex>) -> Self {
         Self {
             variables,
-            domain,
-            top_down_properties,
-            bottom_up_properties,
-            map_hall_set,
-            layer_in_scope,
+            domain: FxHashSet::<isize>::default(),
+            top_down_properties: vec![],
+            bottom_up_properties: vec![],
+            map_hall_set: FxHashMap::<VariableIndex, (usize, usize)>::default(),
+            layer_in_scope: vec![],
         }
     }
 
 }
 
 impl Constraint for AllDifferent {
+
+    fn init(&mut self, vars: &[Variable]) {
+        for variable in self.variables.iter().copied() {
+            for value in vars[*variable].iter_domain() {
+                self.domain.insert(value);
+            }
+        }
+        self.top_down_properties = (0..vars.len() + 1).map(|_| vec![AllDifferentProperty::new(&self.domain)]).collect::<Vec<Vec<AllDifferentProperty>>>();
+        self.bottom_up_properties = (0..vars.len() + 1).map(|_| vec![AllDifferentProperty::new(&self.domain)]).collect::<Vec<Vec<AllDifferentProperty>>>();
+        self.layer_in_scope = (0..(vars.len() / 64 + 1)).map(|_| 0).collect::<Vec<u64>>();
+    }
 
     fn update_variable_ordering(&mut self, ordering: &[usize]) {
         // The layers in the scope of the variable are indicated using a bitvector of 64-bit words.

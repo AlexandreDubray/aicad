@@ -16,26 +16,13 @@ pub struct NotEquals {
 
 impl NotEquals {
 
-    pub fn new(problem: &Problem, x: VariableIndex, y: VariableIndex) -> Self {
-        let mut domains = FxHashSet::<isize>::default();
-        for value in problem[x].iter_domain() {
-            domains.insert(value);
-        }
-        for value in problem[y].iter_domain() {
-            domains.insert(value);
-        }
-        let top_down_properties = (0..problem.number_variables() + 1).map(|_| {
-            vec![SparseBitset::new(domains.iter().copied())]
-        }).collect::<Vec<Vec<SparseBitset<isize>>>>();
-        let bottom_up_properties = (0..problem.number_variables() + 1).map(|_| {
-            vec![SparseBitset::new(domains.iter().copied())]
-        }).collect::<Vec<Vec<SparseBitset<isize>>>>();
+    pub fn new(x: VariableIndex, y: VariableIndex) -> Self {
         Self {
             x,
             y,
-            domains,
-            top_down_properties,
-            bottom_up_properties,
+            domains: FxHashSet::<isize>::default(),
+            top_down_properties: vec![],
+            bottom_up_properties: vec![],
             layer_x: 0,
             layer_y: 0,
         }
@@ -44,6 +31,21 @@ impl NotEquals {
 }
 
 impl Constraint for NotEquals {
+
+    fn init(&mut self, vars: &[Variable]) {
+        for value in vars[*self.x].iter_domain() {
+            self.domains.insert(value);
+        }
+        for value in vars[*self.y].iter_domain() {
+            self.domains.insert(value);
+        }
+        self.top_down_properties = (0..vars.len() + 1).map(|_| {
+            vec![SparseBitset::new(self.domains.iter().copied())]
+        }).collect::<Vec<Vec<SparseBitset<isize>>>>();
+        self.bottom_up_properties = (0..vars.len() + 1).map(|_| {
+            vec![SparseBitset::new(self.domains.iter().copied())]
+        }).collect::<Vec<Vec<SparseBitset<isize>>>>();
+    }
 
     fn update_variable_ordering(&mut self, ordering: &[usize]) {
         self.layer_x = ordering[self.x.0];

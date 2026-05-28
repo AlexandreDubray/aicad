@@ -9,11 +9,11 @@ pub fn all_different(problem: &mut Problem, variables: Vec<VariableIndex>) {
     for variable in variables.iter().copied() {
         problem[variable].add_constraint(constraint_index);
     }
-    problem.add_constraint(AllDifferent::new(problem, variables));
+    problem.add_constraint(AllDifferent::new(variables));
 }
 
 pub fn not_equals(problem: &mut Problem, x: VariableIndex, y: VariableIndex) {
-    problem.add_constraint(NotEquals::new(problem, x, y));
+    problem.add_constraint(NotEquals::new(x, y));
 }
 
 pub fn equal(problem: &mut Problem, variable: VariableIndex, value: isize) {
