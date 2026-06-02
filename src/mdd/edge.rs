@@ -1,17 +1,18 @@
 use super::*;
+use crate::modelling::*;
 use rustc_hash::FxHashMap;
 
 #[derive(Clone)]
 pub struct Edge {
     from: NodeIndex,
     to: NodeIndex,
-    assignment: isize,
+    assignment: ValueIndex,
     active: bool,
 }
 
 impl Edge {
     
-    pub fn new(from: NodeIndex, to: NodeIndex, assignment: isize) -> Self {
+    pub fn new(from: NodeIndex, to: NodeIndex, assignment: ValueIndex) -> Self {
         Self {
             from,
             to,
@@ -36,7 +37,7 @@ impl Edge {
         self.to = to;
     }
 
-    pub fn assignment(&self) -> isize {
+    pub fn assignment(&self) -> ValueIndex {
         self.assignment
     }
 

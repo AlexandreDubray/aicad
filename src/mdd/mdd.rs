@@ -2,8 +2,18 @@ use crate::modelling::*;
 use super::*;
 use super::heuristics::*;
 
+use std::cell::RefCell;
+use rand;
+use rand::prelude::*;
+use rand_xoshiro::Xoshiro256Plus;
+use rand::SeedableRng;
+
 use std::fs;
 use rustc_hash::{FxHashSet, FxHashMap};
+
+thread_local! {
+    static RNG: RefCell<Xoshiro256Plus> = RefCell::new(Xoshiro256Plus::from_rng(&mut rand::rng()));
+}
 
 /// Structure for the MDD. The MDD is organised in layers (one layer per variable in the problem)
 /// and each layer contains the necessary information to propagate the constraint and generate
@@ -76,8 +86,7 @@ impl Mdd {
             let target = NodeIndex(layer + 1, 0);
             let variable = mdd.order[layer];
             for value in (0..mdd.problem[variable].domain_size()).map(ValueIndex) {
-                let assignment = mdd.problem[variable].get_value(value);
-                mdd.add_edge(layer, source, target, assignment);
+                mdd.add_edge(layer, source, target, value);
             }
         }
         mdd.propagate_constraints();
@@ -108,7 +117,7 @@ impl Mdd {
         index
     }
 
-    fn add_edge(&mut self, layer: usize, from: NodeIndex, to: NodeIndex, assignment: isize) {
+    fn add_edge(&mut self, layer: usize, from: NodeIndex, to: NodeIndex, assignment: ValueIndex) {
         let edge_index = EdgeIndex(layer, self.edges[layer].len());
         self[from].add_child_edge(edge_index);
         self[to].add_parent_edge(edge_index);
@@ -149,7 +158,7 @@ impl Mdd {
             .iter_children()
             .filter(|edge| self[*edge].is_active())
             .map(|edge| (self[edge].to(), self[edge].assignment()))
-            .collect::<Vec<(NodeIndex, isize)>>();
+            .collect::<Vec<(NodeIndex, ValueIndex)>>();
         self[node].set_relaxed(false);
         for i in (1..n).rev() {
             let new_node = self.add_node(layer, false);
@@ -171,6 +180,7 @@ impl Mdd {
 
         // Top-down pass.
         for layer in 1..number_layers {
+            let variable = self.order[layer - 1];
             let nodes_in_layer = self.nodes[layer].len();
             for i in 0..nodes_in_layer {
                 let target = NodeIndex(layer, i);
@@ -179,7 +189,7 @@ impl Mdd {
                     for j in 0..self[target].number_parents() {
                         let edge = self[target].parent_edge_at(j);
                         let source = self[edge].from();
-                        let assignment = self[edge].assignment();
+                        let assignment = self.problem[variable].value(self[edge].assignment());
                         self.problem[constraint].update_property_top_down(source, target, assignment);
                     }
 
@@ -203,13 +213,13 @@ impl Mdd {
                         }
                         let edge = self.nodes[layer][node_index].child_edge_at(edge_index);
                         let source = self[edge].to();
-                        let assignment = self[edge].assignment();
+                        let assignment = self.problem[decision].value(self[edge].assignment());
                         self.problem[constraint].update_property_bottom_up(source, target, assignment);
                     }
                     for edge_index in (0..self[target].number_children()).rev() {
                         let edge = self.nodes[layer][node_index].child_edge_at(edge_index);
                         let source = self[edge].to();
-                        let assignment = self[edge].assignment();
+                        let assignment = self.problem[decision].value(self[edge].assignment());
                         if self.problem[constraint].is_layer_in_scope(layer) && self.problem[constraint].is_assignment_invalid(target, source, decision, assignment) {
                             self[target].swap_remove_child_edge(edge_index);
                             if self[target].number_children() == 0 {
@@ -275,7 +285,7 @@ impl Mdd {
             self[into].add_parent_edge(edge);
         }
 
-        let mut existing_children = FxHashSet::<(NodeIndex, isize)>::default();
+        let mut existing_children = FxHashSet::<(NodeIndex, ValueIndex)>::default();
         for i in 0..self[into].number_children() {
             let edge = self[into].child_edge_at(i);
             let child = self[edge].to();
@@ -376,7 +386,7 @@ impl Mdd {
                 continue;
             }
             let to = self[edge].to();
-            let value = self[edge].assignment();
+            let value = self.problem[variable].value(self[edge].assignment());
             assignment[*variable] = value;
             if self.extract_solution(to, assignment) {
                 return true;
@@ -396,6 +406,42 @@ impl Mdd {
 
     pub fn is_unsat(&self) -> bool {
         self.unsat
+    }
+
+    pub fn set_probabilities(&mut self, probabilities: &[Vec<f64>]) {
+        for variable in (0..self.number_layers() - 1).map(VariableIndex) {
+            self.problem[variable].set_probabilities(&probabilities[variable.0]);
+        }
+    }
+
+    pub fn sample(&self) -> Vec<isize> {
+        let mut assignments = vec![0; self.number_layers() - 1];
+        RNG.with_borrow_mut(|rng| {
+            let mut cur_node = self.root;
+            while cur_node != self.sink {
+                let NodeIndex(layer, _) = cur_node;
+                let variable = self.order[layer];
+                let mut total_probability_mass = 0.0;
+                for edge in self[cur_node].iter_children() {
+                    let assignment = self[edge].assignment();
+                    total_probability_mass += self.problem[variable].probability(assignment);
+                }
+
+                let mut target = rng.random_range(0.0..total_probability_mass);
+                for edge in self[cur_node].iter_children() {
+                    let assignment = self[edge].assignment();
+                    target -= self.problem[variable].probability(assignment);
+                    if target <= 0.0 {
+                        assignments[variable.0] = self.problem[variable].value(assignment);
+                        cur_node = self[edge].to();
+                    }
+                }
+                if cur_node.0 != layer {
+                    panic!("No edge sampled at layer {}", layer);
+                }
+            }
+        });
+        assignments
     }
 }
 
@@ -424,10 +470,11 @@ impl Mdd {
         }
 
         for layer in 0..self.edges.len() {
+            let variable = self.order[layer];
             for edge in self.edges[layer].iter().filter(|e| e.is_active()) {
                 let NodeIndex(layer_from, index_from) = edge.from();
                 let NodeIndex(layer_to, index_to) = edge.to();
-                let assignment = edge.assignment();
+                let assignment = self.problem[variable].value(edge.assignment());
                 subgraph.push_str(&format!("\tN{}_{} -> N{}_{} [penwidth=1, label=\"{}\"];\n", layer_from, index_from, layer_to, index_to, assignment));
             }
         }
@@ -503,10 +550,11 @@ impl std::fmt::Debug for Mdd {
                 }
             }
             for layer in 0..self.edges.len() {
+                let variable = self.order[layer];
                 for i in 0..self.edges[layer].len() {
                     let source = map_node_id[&self.edges[layer][i].from()];
                     let to = map_node_id[&self.edges[layer][i].to()];
-                    let assignment = self.edges[layer][i].assignment();
+                    let assignment = self.problem[variable].value(self.edges[layer][i].assignment());
                     if layer < self.edges.len() - 1 || i < self.edges[layer].len() - 1 {
                         writeln!(f, "{} {} {}", source, to, assignment)?;
                     } else {
@@ -544,7 +592,7 @@ pub mod test_mdd {
         for edge in mdd[node].iter_children() {
             if mdd[edge].is_active() {
                 let child = mdd[edge].to();
-                let assignment = mdd[edge].assignment();
+                let assignment = mdd.problem[variable].value(mdd[edge].assignment());
                 current_solution[*variable] = assignment;
                 _get_all_solutions(mdd, child, solutions, current_solution);
             }

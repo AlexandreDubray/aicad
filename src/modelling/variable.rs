@@ -2,13 +2,17 @@ use super::*;
 
 pub struct Variable {
     domain: Vec<isize>,
-    probabilities: Option<Vec<f64>>,
+    probabilities: Vec<f64>,
     constraints: Vec<ConstraintIndex>,
 }
 
 impl Variable {
 
-    pub fn new(domain: Vec<isize>, probabilities: Option<Vec<f64>>) -> Self {
+    pub fn new(domain: Vec<isize>, probs: Option<Vec<f64>>) -> Self {
+        let probabilities = match probs {
+            Some(probabilities) => probabilities,
+            None => vec![],
+        };
         Self {
             domain,
             probabilities,
@@ -18,17 +22,21 @@ impl Variable {
 
 
     /// Returns the value of the domain at the given index
-    pub fn get_value(&self, index: ValueIndex) -> isize {
+    pub fn value(&self, index: ValueIndex) -> isize {
         self.domain[index.0]
     }
 
     /// Returns the probability that the variable takes the value from its domain at the given
     /// index.
-    pub fn get_probability(&self, index: ValueIndex) -> f64 {
-        match &self.probabilities {
-            None => panic!("Trying to access probabilities on unweighted variable"),
-            Some(p) => p[index.0],
+    pub fn probability(&self, index: ValueIndex) -> f64 {
+        if self.probabilities.is_empty() {
+            panic!("Trying to access probabilities on unweighted variable");
         }
+        self.probabilities[index.0]
+    }
+
+    pub fn set_probabilities(&mut self, probabilities: &[f64]) {
+        self.probabilities = probabilities.to_owned();
     }
 
     /// Returns the number of elements in the domain

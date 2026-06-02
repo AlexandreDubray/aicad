@@ -22,8 +22,8 @@ pub enum PyMergeHeuristic {
 pub struct Solver {
     problem: Problem,
     mdd: Option<Mdd>,
-    solution: Option<Vec<isize>>,
     is_unsat: bool,
+    is_solution_sat: bool,
 }
 
 #[pymethods]
@@ -34,8 +34,8 @@ impl Solver {
         Solver {
             problem: Problem::default(),
             mdd: None,
-            solution: None,
             is_unsat: false,
+            is_solution_sat: false,
         }
     }
 
@@ -68,8 +68,7 @@ impl Solver {
         y
     }
 
-    #[pyo3(signature = (max_width=None, pyordering=PyOrderingHeuristic::MinDomMaxLinked(), pymerge=PyMergeHeuristic::LessRelaxed))]
-    fn solve(&mut self, max_width: Option<usize>, pyordering: PyOrderingHeuristic, pymerge: PyMergeHeuristic) -> Option<Vec<isize>> {
+    fn compile(&mut self, max_width: Option<usize>, pyordering: PyOrderingHeuristic, pymerge: PyMergeHeuristic) {
         let width = max_width.unwrap_or(usize::MAX);
         let ordering = match pyordering {
             PyOrderingHeuristic::MinDomMaxLinked() => OrderingHeuristic::MinDomMaxLinked,
@@ -83,14 +82,41 @@ impl Solver {
 
         let mut mdd = Mdd::new(std::mem::take(&mut self.problem), width, ordering, merge);
         mdd.refine();
-        let solution = mdd.get_solution();
         self.is_unsat = mdd.is_unsat();
         self.mdd = Some(mdd);
+    }
+
+    #[pyo3(signature = (max_width=None,
+            pyordering=PyOrderingHeuristic::MinDomMaxLinked(),
+            pymerge=PyMergeHeuristic::LessRelaxed,
+            recompile=false,
+            sample=false))]
+    fn solve(&mut self, max_width: Option<usize>, pyordering: PyOrderingHeuristic, pymerge: PyMergeHeuristic, recompile: bool, sample: bool) -> Option<Vec<isize>> {
+        if self.mdd.is_none() || recompile {
+            self.compile(max_width, pyordering, pymerge);
+        }
+        if self.is_unsat() {
+            return None;
+        }
+        let solution = if sample {
+            Some(self.mdd.as_ref().unwrap().sample())
+        }  else {
+            self.mdd.as_ref().unwrap().get_solution()
+        };
+        if let Some(sol) = solution.as_ref() {
+            self.is_solution_sat = self.mdd.as_ref().unwrap().is_solution(sol);
+        }
         solution
     }
 
     fn is_unsat(&self) -> bool {
         self.is_unsat
+    }
+
+    fn set_probabilities(&mut self, probabilities: Vec<Vec<f64>>) {
+        if let Some(mdd) = &mut self.mdd {
+            mdd.set_probabilities(&probabilities);
+        }
     }
 }
 
