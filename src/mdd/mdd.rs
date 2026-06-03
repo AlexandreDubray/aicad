@@ -404,6 +404,12 @@ impl Mdd {
         true
     }
 
+    pub fn proportion_satisfied_constraints(&self, assignment: &[isize])  -> f64 {
+        let number_constraints = self.problem.number_constraints() as f64;
+        let satisfied = self.problem.iter_constraints().filter(|&constraint| self.problem[constraint].is_satisfied(assignment)).count() as f64;
+        satisfied / number_constraints
+    }
+
     pub fn is_unsat(&self) -> bool {
         self.unsat
     }

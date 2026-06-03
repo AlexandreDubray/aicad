@@ -118,6 +118,14 @@ impl Solver {
             mdd.set_probabilities(&probabilities);
         }
     }
+
+    fn is_solution(&self, solution: Vec<isize>) -> bool {
+        self.mdd.as_ref().unwrap().is_solution(&solution)
+    }
+
+    fn proportion_satisfied_constraints(&self, solution: Vec<isize>) -> f64 {
+        self.mdd.as_ref().unwrap().proportion_satisfied_constraints(&solution)
+    }
 }
 
 #[pymodule]
