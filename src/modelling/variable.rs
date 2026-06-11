@@ -11,7 +11,11 @@ impl Variable {
     pub fn new(domain: Vec<isize>, probs: Option<Vec<f64>>) -> Self {
         let probabilities = match probs {
             Some(probabilities) => probabilities,
-            None => vec![],
+            None => {
+                let n = domain.len();
+                let p = 1.0 / (n as f64);
+                vec![p; n]
+            },
         };
         Self {
             domain,
@@ -51,7 +55,10 @@ impl Variable {
 
     /// Sets the domain of the variable to the given values
     pub fn set_domain(&mut self, domain: Vec<isize>) {
+        let n = domain.len();
         self.domain = domain;
+        let p = 1.0 / (n as f64);
+        self.probabilities = vec![p; n];
     }
 
     pub fn add_constraint(&mut self, constraint: ConstraintIndex) {

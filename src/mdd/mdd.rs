@@ -406,6 +406,8 @@ impl Mdd {
 
     pub fn proportion_satisfied_constraints(&self, assignment: &[isize])  -> f64 {
         let number_constraints = self.problem.number_constraints() as f64;
+        let is_first_satisfied = self.problem[ConstraintIndex(0)].is_satisfied(assignment);
+        let values = self.problem[ConstraintIndex(0)].iter_scope().map(|v| assignment[v.0]).collect::<Vec<isize>>();
         let satisfied = self.problem.iter_constraints().filter(|&constraint| self.problem[constraint].is_satisfied(assignment)).count() as f64;
         satisfied / number_constraints
     }
@@ -442,12 +444,34 @@ impl Mdd {
                         cur_node = self[edge].to();
                     }
                 }
-                if cur_node.0 != layer {
+                if cur_node.0 == layer {
                     panic!("No edge sampled at layer {}", layer);
                 }
             }
         });
         assignments
+    }
+
+    /// Returns a topological order of the MDD as a vector of (edge, src, variable, value)
+    pub fn topological_order(&self) -> Vec<(usize, usize, usize, isize)> {
+        let mut toporder: Vec<(usize, usize, usize, isize)> = vec![];
+        let mut toporder_shift = vec![0; self.nodes.len()];
+        for layer in 1..self.nodes.len() {
+            toporder_shift[layer] += toporder_shift[layer - 1] + self.nodes[layer - 1].len();
+        }
+        for layer in 0..self.edges.len() {
+            for index in 0..self.edges[layer].len() {
+                let edge = &self.edges[layer][index];
+                let variable = self.order[layer];
+                let NodeIndex(from_layer, from_index) = edge.from();
+                let NodeIndex(to_layer, to_index) = edge.to();
+                let assignment = self.problem[variable].value(edge.assignment());
+                let source_toporder = toporder_shift[from_layer] + from_index;
+                let to_toporder = toporder_shift[to_layer] + to_index;
+                toporder.push((source_toporder, to_toporder, variable.0, assignment));
+            }
+        }
+        toporder
     }
 }
 

@@ -113,6 +113,10 @@ impl Solver {
         self.is_unsat
     }
 
+    fn is_solution_sat(&self) -> bool {
+        self.is_solution_sat
+    }
+
     fn set_probabilities(&mut self, probabilities: Vec<Vec<f64>>) {
         if let Some(mdd) = &mut self.mdd {
             mdd.set_probabilities(&probabilities);
@@ -125,6 +129,10 @@ impl Solver {
 
     fn proportion_satisfied_constraints(&self, solution: Vec<isize>) -> f64 {
         self.mdd.as_ref().unwrap().proportion_satisfied_constraints(&solution)
+    }
+
+    fn topological_order(&self) -> Vec<(usize, usize, usize, isize)> {
+        self.mdd.as_ref().unwrap().topological_order()
     }
 }
 
