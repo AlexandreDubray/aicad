@@ -1,6 +1,8 @@
 pub mod all_different;
 pub mod not_equals;
 
+use std::hash::Hasher;
+
 use crate::mdd::*;
 use crate::modelling::*;
 use crate::modelling::variable::Variable;
@@ -30,4 +32,6 @@ pub trait Constraint {
     fn iter_scope(&self) -> Box<dyn Iterator<Item = VariableIndex> + '_>;
     /// Returns true if the constraint is satisfied by the assignment
     fn is_satisfied(&self, assignment: &[isize]) -> bool;
+    fn hash_node_state(&self, node: NodeIndex, hasher: &mut dyn Hasher);
+    fn eq_node_state(&self, node: NodeIndex, other: NodeIndex) -> bool;
 }

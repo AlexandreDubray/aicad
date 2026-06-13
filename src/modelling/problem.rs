@@ -55,6 +55,14 @@ impl Problem {
     pub fn iter_constraints(&self) -> impl Iterator<Item = ConstraintIndex> {
         (0..self.constraints.len()).map(ConstraintIndex)
     }
+
+    pub fn constraints(&self) -> &[Box<dyn Constraint + Send + Sync>] {
+        &self.constraints
+    }
+
+    pub fn iter_variables(&self) -> impl Iterator<Item = VariableIndex> {
+        (0..self.variables.len()).map(VariableIndex)
+    }
 }
 
 impl std::ops::Index<VariableIndex> for Problem {

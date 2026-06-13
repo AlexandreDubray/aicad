@@ -146,6 +146,7 @@ impl Mdd {
                 self.unsat = true;
                 return;
             }
+            self.collapse();
             self.merge_layer(layer);
             self.clean();
         }
@@ -258,6 +259,54 @@ impl Mdd {
             self[child].remove_parent_edge(edge);
             if self[child].number_parents() == 0 {
                 self.remove_node(child);
+            }
+        }
+    }
+
+    fn collapse(&mut self) {
+        for layer in 1..self.nodes.len() - 1 {
+            let mut map: FxHashMap<MergeKey, NodeIndex> = FxHashMap::default();
+            for index in 0..self.nodes[layer].len() {
+                let node = NodeIndex(layer, index);
+                if !self[node].is_active() {
+                    continue;
+                }
+                let key = MergeKey {
+                    node,
+                    constraints: self.problem.constraints(),
+                };
+                if let Some(&primary_node) = map.get(&key) {
+
+                    let NodeIndex(primary_layer, primary_index) = primary_node;
+
+                    for i in 0..self[node].number_parents() {
+                        let EdgeIndex(edge_layer, edge_index) = self[node].parent_edge_at(i);
+                        self.edges[edge_layer][edge_index].set_to(primary_node);
+                        self.nodes[primary_layer][primary_index].add_parent_edge(EdgeIndex(edge_layer, edge_index));
+                    }
+
+                    let mut existing_children = FxHashSet::<(NodeIndex, ValueIndex)>::default();
+                    for i in 0..self[primary_node].number_children() {
+                        let edge = self[primary_node].child_edge_at(i);
+                        let child = self[edge].to();
+                        let assignment = self[edge].assignment();
+                        existing_children.insert((child, assignment));
+                    }
+
+                    for i in 0..self[node].number_children() {
+                        let edge = self[node].child_edge_at(i);
+                        let EdgeIndex(edge_layer, edge_index) = edge;
+                        let child = self[edge].to();
+                        let assignment = self[edge].assignment();
+                        if !existing_children.contains(&(child, assignment)) {
+                            self.edges[edge_layer][edge_index].set_to(primary_node);
+                            self.nodes[primary_layer][primary_index].add_child_edge(edge);
+                        }
+                    }
+                    self.nodes[layer][index].deactivate();
+                } else {
+                    map.insert(key, node);
+                }
             }
         }
     }
@@ -393,23 +442,6 @@ impl Mdd {
             }
         }
         false
-    }
-    
-    pub fn is_solution(&self, assignment: &[isize])  -> bool {
-        for constraint in self.problem.iter_constraints() {
-            if !self.problem[constraint].is_satisfied(assignment) {
-                return false;
-            }
-        }
-        true
-    }
-
-    pub fn proportion_satisfied_constraints(&self, assignment: &[isize])  -> f64 {
-        let number_constraints = self.problem.number_constraints() as f64;
-        let is_first_satisfied = self.problem[ConstraintIndex(0)].is_satisfied(assignment);
-        let values = self.problem[ConstraintIndex(0)].iter_scope().map(|v| assignment[v.0]).collect::<Vec<isize>>();
-        let satisfied = self.problem.iter_constraints().filter(|&constraint| self.problem[constraint].is_satisfied(assignment)).count() as f64;
-        satisfied / number_constraints
     }
 
     pub fn is_unsat(&self) -> bool {

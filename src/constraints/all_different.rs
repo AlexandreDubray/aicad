@@ -3,6 +3,7 @@ use crate::modelling::{VariableIndex, Problem};
 use crate::mdd::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use crate::utils::SparseBitset;
+use std::hash::{Hash, Hasher};
 
 // Structures for the allDifferent constraint.
 //
@@ -43,6 +44,7 @@ impl AllDifferentProperty {
             value_some_path,
         }
     }
+
 }
 
 pub struct AllDifferent {
@@ -245,6 +247,31 @@ impl Constraint for AllDifferent {
             set.insert(value);
         }
         true
+    }
+
+    fn hash_node_state(&self, node: NodeIndex, state: &mut dyn Hasher) {
+        let NodeIndex(layer, index) = node;
+        for word in self.top_down_properties[layer][index].value_all_path.words().iter().copied() {
+            state.write_u64(word);
+        }
+        for word in self.top_down_properties[layer][index].value_some_path.words().iter().copied() {
+            state.write_u64(word);
+        }
+        for word in self.bottom_up_properties[layer][index].value_all_path.words().iter().copied() {
+            state.write_u64(word);
+        }
+        for word in self.bottom_up_properties[layer][index].value_some_path.words().iter().copied() {
+            state.write_u64(word);
+        }
+    }
+
+    fn eq_node_state(&self, node: NodeIndex, other: NodeIndex) -> bool {
+        let NodeIndex(layer, index) = node;
+        let NodeIndex(olayer, oindex) = other;
+        self.top_down_properties[layer][index].value_all_path == self.top_down_properties[olayer][oindex].value_all_path &&
+        self.top_down_properties[layer][index].value_some_path == self.top_down_properties[olayer][oindex].value_some_path &&
+        self.bottom_up_properties[layer][index].value_all_path == self.bottom_up_properties[olayer][oindex].value_all_path &&
+        self.bottom_up_properties[layer][index].value_some_path == self.bottom_up_properties[olayer][oindex].value_some_path
     }
 }
 

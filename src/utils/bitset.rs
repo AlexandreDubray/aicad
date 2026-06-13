@@ -1,7 +1,7 @@
 use rustc_hash::FxHashMap;
-use std::hash::Hash;
+use std::hash::{Hash, Hasher};
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Bitset {
     words: Vec<u64>,
 }
@@ -119,6 +119,10 @@ impl<T: Eq + Hash + Copy> SparseBitset<T> {
     pub fn reset(&mut self, value: u64) {
         self.plain.reset(value);
     }
+
+    pub fn words(&self) -> &[u64] {
+        &self.plain.words
+    }
 }
 
 impl std::fmt::Display for Bitset {
@@ -144,3 +148,9 @@ impl<T: Eq + Hash + Copy> PartialEq for SparseBitset<T> {
 }
 
 impl<T: Eq + Hash + Copy> Eq for SparseBitset<T> {}
+
+impl<T: Eq + Hash + Copy> Hash for SparseBitset<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.plain.hash(state);
+    }
+}

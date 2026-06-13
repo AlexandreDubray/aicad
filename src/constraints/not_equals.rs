@@ -2,6 +2,7 @@ use super::*;
 use crate::utils::SparseBitset;
 use crate::modelling::*;
 use crate::mdd::*;
+use std::hash::{Hash, Hasher};
 use rustc_hash::FxHashSet;
 
 pub struct NotEquals {
@@ -115,5 +116,22 @@ impl Constraint for NotEquals {
 
     fn is_satisfied(&self, assignment: &[isize]) -> bool {
         assignment[*self.x] != assignment[*self.y]
+    }
+
+    fn hash_node_state(&self, node: NodeIndex, state: &mut dyn Hasher) {
+        let NodeIndex(layer, index) = node;
+        for word in self.top_down_properties[layer][index].words().iter().copied() {
+            state.write_u64(word);
+        }
+        for word in self.bottom_up_properties[layer][index].words().iter().copied() {
+            state.write_u64(word);
+        }
+    }
+
+    fn eq_node_state(&self, node: NodeIndex, other: NodeIndex) -> bool {
+        let NodeIndex(layer, index) = node;
+        let NodeIndex(olayer, oindex) = other;
+        self.top_down_properties[layer][index] == self.top_down_properties[olayer][oindex] &&
+        self.bottom_up_properties[layer][index] == self.bottom_up_properties[olayer][oindex]
     }
 }

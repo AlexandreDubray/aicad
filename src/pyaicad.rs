@@ -68,6 +68,13 @@ impl Solver {
         y
     }
 
+    fn set_probabilities(&mut self, probabilities: Vec<Vec<f64>>) {
+        if let Some(mdd) = &mut self.mdd {
+            mdd.set_probabilities(&probabilities);
+        }
+    }
+
+    // --- SOLVE --- //
     fn compile(&mut self, max_width: Option<usize>, pyordering: PyOrderingHeuristic, pymerge: PyMergeHeuristic) {
         let width = max_width.unwrap_or(usize::MAX);
         let ordering = match pyordering {
@@ -104,10 +111,12 @@ impl Solver {
             self.mdd.as_ref().unwrap().get_solution()
         };
         if let Some(sol) = solution.as_ref() {
-            self.is_solution_sat = self.mdd.as_ref().unwrap().is_solution(sol);
+            self.is_solution_sat = self.is_solution(sol.clone());
         }
         solution
     }
+
+    // --- SOLUTION INFO --- //
 
     fn is_unsat(&self) -> bool {
         self.is_unsat
@@ -117,22 +126,53 @@ impl Solver {
         self.is_solution_sat
     }
 
-    fn set_probabilities(&mut self, probabilities: Vec<Vec<f64>>) {
-        if let Some(mdd) = &mut self.mdd {
-            mdd.set_probabilities(&probabilities);
-        }
-    }
-
     fn is_solution(&self, solution: Vec<isize>) -> bool {
-        self.mdd.as_ref().unwrap().is_solution(&solution)
+        for constraint in self.problem.iter_constraints() {
+            if !self.problem[constraint].is_satisfied(&solution) {
+                return false;
+            }
+        }
+        true
     }
 
     fn proportion_satisfied_constraints(&self, solution: Vec<isize>) -> f64 {
-        self.mdd.as_ref().unwrap().proportion_satisfied_constraints(&solution)
+        let number_constraints = self.problem.number_constraints() as f64;
+        let satisfied = self.problem.iter_constraints().filter(|&constraint| self.problem[constraint].is_satisfied(&solution)).count() as f64;
+        satisfied / number_constraints
     }
 
     fn topological_order(&self) -> Vec<(usize, usize, usize, isize)> {
         self.mdd.as_ref().unwrap().topological_order()
+    }
+
+    fn sample_domains(&self) -> Vec<isize> {
+        self.problem.iter_variables().map(|variable| {
+            let domain_size = self.problem[variable].domain_size();
+            let value = ValueIndex(rand::random::<u64>() as usize % domain_size);
+            self.problem[variable].value(value)
+        }).collect::<Vec<isize>>()
+    }
+
+    // --- MODEL INFO --- //
+
+    fn number_variables(&self) -> usize {
+        self.problem.number_variables()
+    }
+
+    fn number_constraints(&self) -> usize {
+        self.problem.number_constraints()
+    }
+
+    fn constraint_scope(&self, constraint: usize) -> Vec<usize> {
+        self.problem[ConstraintIndex(constraint)].iter_scope().map(|v| v.0).collect::<Vec<usize>>()
+    }
+
+    fn variable_domain_size(&self, variable: usize) -> usize {
+        self.problem[VariableIndex(variable)].domain_size()
+    }
+
+    fn variable_domain(&self, variable: usize) -> Vec<isize> {
+        self.problem[VariableIndex(variable)].iter_domain().collect()
     }
 }
 
