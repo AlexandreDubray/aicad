@@ -286,6 +286,7 @@ impl std::fmt::Display for AllDifferentProperty {
 mod test_all_diff {
 
     use crate::modelling::*;
+    use crate::constraints::{AllDifferent, Constraint};
     use crate::mdd::*;
     use crate::mdd::heuristics::*;
     use crate::mdd::mdd::test_mdd::*;
@@ -402,6 +403,63 @@ mod test_all_diff {
         assert_eq!(solutions.len(), 2);
         assert!(is_solution(vec![1, 2, 0, 3], &solutions));
         assert!(is_solution(vec![3, 2, 0, 1], &solutions));
+    }
+
+    // --- is_satisfied: pure logic, no MDD involved --- //
+
+    #[test]
+    pub fn test_is_satisfied_true() {
+        let all_diff = AllDifferent::new(vec![VariableIndex(0), VariableIndex(1), VariableIndex(2)]);
+        assert!(all_diff.is_satisfied(&[0, 1, 2]));
+    }
+
+    #[test]
+    pub fn test_is_satisfied_false() {
+        let all_diff = AllDifferent::new(vec![VariableIndex(0), VariableIndex(1), VariableIndex(2)]);
+        assert!(!all_diff.is_satisfied(&[0, 1, 0]));
+    }
+
+    #[test]
+    pub fn test_is_satisfied_ignores_out_of_scope_variables() {
+        // Only variables 0 and 2 are in scope; variable 1 can duplicate freely.
+        let all_diff = AllDifferent::new(vec![VariableIndex(0), VariableIndex(2)]);
+        assert!(all_diff.is_satisfied(&[0, 0, 1]));
+    }
+
+    #[test]
+    pub fn test_is_satisfied_empty_scope() {
+        let all_diff = AllDifferent::new(vec![]);
+        assert!(all_diff.is_satisfied(&[]));
+    }
+
+    // --- Additional MDD-level edge cases --- //
+
+    #[test]
+    pub fn test_unsat_domain_too_small() {
+        // Three variables, each with a 2-value domain, cannot all be pairwise different.
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(3, vec![0, 1], None);
+        all_different(&mut problem, vars);
+
+        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        assert!(mdd.is_unsat());
+        assert_eq!(mdd.get_solution(), None);
+    }
+
+    #[test]
+    pub fn test_single_variable_always_sat() {
+        // A single variable is trivially all-different from itself.
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1, 2], None);
+        all_different(&mut problem, vec![x]);
+
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        mdd.refine();
+        let solutions = get_all_solutions(&mdd);
+        assert_eq!(solutions.len(), 3);
+        assert!(is_solution(vec![0], &solutions));
+        assert!(is_solution(vec![1], &solutions));
+        assert!(is_solution(vec![2], &solutions));
     }
 
 }

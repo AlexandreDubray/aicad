@@ -62,6 +62,11 @@ impl Solver {
         equal(&mut self.problem, VariableIndex(x), value);
     }
 
+    fn add_among(&mut self, scope: Vec<usize>, values: Vec<isize>, lb: usize, ub: usize) {
+        let vars = scope.into_iter().map(VariableIndex).collect();
+        among(&mut self.problem, vars, values, lb, ub);
+    }
+
     fn negate(&mut self, x: usize) -> usize {
         let y = self.add_bool_var();
         self.add_not_equals(x, y);
@@ -141,10 +146,6 @@ impl Solver {
         satisfied / number_constraints
     }
 
-    fn topological_order(&self) -> Vec<(usize, usize, usize, isize)> {
-        self.mdd.as_ref().unwrap().topological_order()
-    }
-
     fn sample_domains(&self) -> Vec<isize> {
         self.problem.iter_variables().map(|variable| {
             let domain_size = self.problem[variable].domain_size();
@@ -173,6 +174,16 @@ impl Solver {
 
     fn variable_domain(&self, variable: usize) -> Vec<isize> {
         self.problem[VariableIndex(variable)].iter_domain().collect()
+    }
+
+    // --- Visualisation and structure handling --- //
+
+    fn topological_order(&self) -> Vec<(usize, usize, usize, isize)> {
+        self.mdd.as_ref().unwrap().topological_order()
+    }
+
+    fn as_graphviz(&self) -> String {
+        self.mdd.as_ref().unwrap().as_graphviz()
     }
 }
 

@@ -1,5 +1,6 @@
 pub mod all_different;
 pub mod not_equals;
+pub mod among;
 
 use std::hash::Hasher;
 
@@ -9,6 +10,7 @@ use crate::modelling::variable::Variable;
 
 pub use all_different::AllDifferent;
 pub use not_equals::NotEquals;
+pub use among::Among;
 
 pub trait Constraint {
     /// Initialise the data structures for constraint propagation (e.g., properties)

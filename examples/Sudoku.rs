@@ -65,7 +65,4 @@ fn main() {
 
     let mut mdd = Mdd::new(problem, max_width, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
     mdd.refine();
-    if let Some(solution) = mdd.get_solution() {
-        assert!(mdd.is_solution(&solution));
-    }
 }

@@ -3,12 +3,9 @@ pub mod variable;
 
 pub use problem::Problem;
 use crate::constraints::*;
+use rustc_hash::FxHashSet;
 
 pub fn all_different(problem: &mut Problem, variables: Vec<VariableIndex>) {
-    let constraint_index = ConstraintIndex(problem.number_constraints());
-    for variable in variables.iter().copied() {
-        problem[variable].add_constraint(constraint_index);
-    }
     problem.add_constraint(AllDifferent::new(variables));
 }
 
@@ -18,6 +15,10 @@ pub fn not_equals(problem: &mut Problem, x: VariableIndex, y: VariableIndex) {
 
 pub fn equal(problem: &mut Problem, variable: VariableIndex, value: isize) {
     problem[variable].set_domain(vec![value]);
+}
+
+pub fn among(problem: &mut Problem, variables: Vec<VariableIndex>, values: Vec<isize>, lb: usize, ub: usize) {
+    problem.add_constraint(Among::new(variables, FxHashSet::from_iter(values.iter().cloned()), lb, ub));
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Default)]
