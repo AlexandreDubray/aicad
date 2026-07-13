@@ -21,6 +21,10 @@ pub fn among(problem: &mut Problem, variables: Vec<VariableIndex>, values: Vec<i
     problem.add_constraint(Among::new(variables, FxHashSet::from_iter(values.iter().cloned()), lb, ub));
 }
 
+pub fn sum(problem: &mut Problem, variables: Vec<VariableIndex>, target: isize) {
+    problem.add_constraint(Sum::new(variables, target));
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Default)]
 pub struct VariableIndex(pub usize);
 

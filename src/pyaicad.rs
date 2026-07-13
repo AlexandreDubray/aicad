@@ -67,6 +67,11 @@ impl Solver {
         among(&mut self.problem, vars, values, lb, ub);
     }
 
+    fn add_sum(&mut self, scope: Vec<usize>, target: isize) {
+        let vars = scope.into_iter().map(VariableIndex).collect();
+        sum(&mut self.problem, vars, target);
+    }
+
     fn negate(&mut self, x: usize) -> usize {
         let y = self.add_bool_var();
         self.add_not_equals(x, y);
