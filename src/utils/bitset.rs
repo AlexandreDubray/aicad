@@ -1,7 +1,6 @@
-use rustc_hash::FxHashMap;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash, deepsize::DeepSizeOf)]
 pub struct Bitset {
     words: Vec<u64>,
 }
@@ -63,65 +62,8 @@ impl Bitset {
         }
     }
 
-}
-
-#[derive(Clone)]
-pub struct SparseBitset<T: Eq + Hash + Copy> {
-    plain: Bitset,
-    map: FxHashMap<T, usize>,
-}
-
-impl<T: Eq + Hash + Copy> SparseBitset<T> {
-
-    pub fn new(elements: impl Iterator<Item = T>) -> Self {
-        let mut map = FxHashMap::<T, usize>::default();
-        for (bit, element) in elements.enumerate() {
-            map.insert(element, bit);
-        }
-        Self {
-            plain: Bitset::new(map.len()),
-            map,
-        }
-    }
-
-
-    pub fn contains(&self, element: T) -> bool {
-        let element = *self.map.get(&element).unwrap();
-        self.plain.contains(element)
-    }
-
-    pub fn insert(&mut self, element: T) {
-        let element = *self.map.get(&element).unwrap();
-        self.plain.insert(element);
-    }
-
-    pub fn remove(&mut self, element: T) {
-        let element = *self.map.get(&element).unwrap();
-        self.plain.remove(element);
-    }
-
-    pub fn size(&self) -> usize {
-        self.plain.size()
-    }
-
-    pub fn size_union(&self, other: &SparseBitset<T>) -> usize {
-        self.plain.size_union(&other.plain)
-    }
-
-    pub fn union(&mut self, other: &SparseBitset<T>) {
-        self.plain.union(&other.plain);
-    }
-
-    pub fn interesect(&mut self, other: &SparseBitset<T>) {
-        self.plain.intersect(&other.plain);
-    }
-
-    pub fn reset(&mut self, value: u64) {
-        self.plain.reset(value);
-    }
-
-    pub fn words(&self) -> &[u64] {
-        &self.plain.words
+    pub fn iter(&self) -> impl Iterator<Item = u64> {
+        self.words.iter().copied()
     }
 }
 
@@ -132,25 +74,5 @@ impl std::fmt::Display for Bitset {
             write!(f, " {:b}", word)?;
         }
         write!(f, "")
-    }
-}
-impl<T: Eq + Hash + Copy> std::fmt::Display for SparseBitset<T> {
-
-    fn fmt(&self, f:&mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.plain)
-    }
-}
-
-impl<T: Eq + Hash + Copy> PartialEq for SparseBitset<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.plain == other.plain
-    }
-}
-
-impl<T: Eq + Hash + Copy> Eq for SparseBitset<T> {}
-
-impl<T: Eq + Hash + Copy> Hash for SparseBitset<T> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.plain.hash(state);
     }
 }

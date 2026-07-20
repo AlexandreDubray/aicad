@@ -4,6 +4,7 @@ use crate::mdd::*;
 use std::hash::Hasher;
 use rustc_hash::FxHashSet;
 
+#[derive(deepsize::DeepSizeOf)]
 pub struct Among {
     variables: Vec<VariableIndex>,
     values: FxHashSet<isize>,
@@ -166,6 +167,17 @@ impl Constraint for Among {
         let NodeIndex(olayer, oindex) = other;
         self.top_down_properties[layer][index] == self.top_down_properties[olayer][oindex] &&
         self.bottom_up_properties[layer][index] == self.bottom_up_properties[olayer][oindex]
+    }
+
+    fn name(&self) -> &'static str {
+        "Among"
+    }
+
+    fn shrink_layers(&mut self, layers_size: &[usize]) {
+        for layer in 0..self.top_down_properties.len() {
+            self.top_down_properties[layer].truncate(layers_size[layer]);
+            self.bottom_up_properties[layer].truncate(layers_size[layer]);
+        }
     }
 }
 

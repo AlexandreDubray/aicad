@@ -1,9 +1,9 @@
 use super::*;
-use crate::modelling::{VariableIndex, Problem};
+use crate::modelling::VariableIndex;
 use crate::mdd::*;
 use rustc_hash::{FxHashMap, FxHashSet};
-use crate::utils::SparseBitset;
-use std::hash::{Hash, Hasher};
+use crate::utils::Bitset;
+use std::hash::Hasher;
 
 // Structures for the allDifferent constraint.
 //
@@ -23,22 +23,22 @@ use std::hash::{Hash, Hasher};
 ///        implemented using the | operator
 ///     2. The aggregation of two properties $(A, S)$ and $(A^\prime, S^\prime)$ is computed as $$(A, S) \oplus
 ///        (A^\prime, S^\prime) = (A \cap A^\prime, S \cup S^\prime)$$
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, deepsize::DeepSizeOf)]
 struct AllDifferentProperty {
     /// Values that appear on all source-n (top-down property) or n-sink (bottom-up
     /// property) path.
-    value_all_path: SparseBitset<isize>,
+    value_all_path: Bitset,
     /// Values that appear on some source-n (top-down property) or n-sink (bottom-up
     /// property) path.
-    value_some_path: SparseBitset<isize>,
+    value_some_path: Bitset,
 }
 
 impl AllDifferentProperty {
 
     /// Creates a new property with bitsiets of nb_words 64-bit unsigned integers
-    pub fn new(domain: &FxHashSet<isize>) -> Self {
-        let value_all_path = SparseBitset::new(domain.iter().copied());
-        let value_some_path = SparseBitset::new(domain.iter().copied());
+    pub fn new(n: usize) -> Self {
+        let value_all_path = Bitset::new(n);
+        let value_some_path = Bitset::new(n);
         Self {
             value_all_path,
             value_some_path,
@@ -47,11 +47,14 @@ impl AllDifferentProperty {
 
 }
 
+#[derive(deepsize::DeepSizeOf)]
 pub struct AllDifferent {
     /// Scope of the constraint
     variables: Vec<VariableIndex>,
     /// Union of the domain of the variables in the scope
     domain: FxHashSet<isize>,
+    /// Map each value of the joint domains to a bit in the properties' bitvectors
+    val_to_bit: FxHashMap<isize, usize>,
     /// Top-down properties for each node in the MDD
     top_down_properties: Vec<Vec<AllDifferentProperty>>,
     /// Bottom-up properties for each node in the MDD
@@ -70,6 +73,7 @@ impl AllDifferent {
         Self {
             variables,
             domain: FxHashSet::<isize>::default(),
+            val_to_bit: FxHashMap::<isize, usize>::default(),
             top_down_properties: vec![],
             bottom_up_properties: vec![],
             map_hall_set: FxHashMap::<VariableIndex, (usize, usize)>::default(),
@@ -87,8 +91,12 @@ impl Constraint for AllDifferent {
                 self.domain.insert(value);
             }
         }
-        self.top_down_properties = (0..vars.len() + 1).map(|_| vec![AllDifferentProperty::new(&self.domain)]).collect::<Vec<Vec<AllDifferentProperty>>>();
-        self.bottom_up_properties = (0..vars.len() + 1).map(|_| vec![AllDifferentProperty::new(&self.domain)]).collect::<Vec<Vec<AllDifferentProperty>>>();
+        for value in self.domain.iter().copied() {
+            let bit = self.val_to_bit.len();
+            self.val_to_bit.insert(value, bit);
+        }
+        self.top_down_properties = (0..vars.len() + 1).map(|_| vec![AllDifferentProperty::new(self.domain.len())]).collect::<Vec<Vec<AllDifferentProperty>>>();
+        self.bottom_up_properties = (0..vars.len() + 1).map(|_| vec![AllDifferentProperty::new(self.domain.len())]).collect::<Vec<Vec<AllDifferentProperty>>>();
         self.layer_in_scope = (0..(vars.len() / 64 + 1)).map(|_| 0).collect::<Vec<u64>>();
     }
 
@@ -121,6 +129,8 @@ impl Constraint for AllDifferent {
     }
 
     fn update_property_top_down(&mut self, source: NodeIndex, target: NodeIndex, assignment: isize) {
+        // First, we need to map the assignment to its local value as used in the bitsets
+        let assignment = *self.val_to_bit.get(&assignment).unwrap();
         let NodeIndex(source_layer, source_index) = source;
         let NodeIndex(target_layer, target_index) = target;
         let layer_in_scope = self.is_layer_in_scope(source_layer);
@@ -143,7 +153,7 @@ impl Constraint for AllDifferent {
         // to non-overlapping slice of the top_down_properties vector. Then, we can use
         // these references to update the properties.
         let (td_properties_above, td_properties_below) = self.top_down_properties.split_at_mut(target_layer);
-        td_properties_below[0][target_index].value_all_path.interesect(&td_properties_above[source_layer][source_index].value_all_path);
+        td_properties_below[0][target_index].value_all_path.intersect(&td_properties_above[source_layer][source_index].value_all_path);
         td_properties_below[0][target_index].value_some_path.union(&td_properties_above[source_layer][source_index].value_some_path);
 
         // Reverse the integration of the edge into the $A^\prime$ set.
@@ -159,6 +169,7 @@ impl Constraint for AllDifferent {
     }
 
     fn update_property_bottom_up(&mut self, source: NodeIndex, target: NodeIndex, assignment: isize) {
+        let assignment = *self.val_to_bit.get(&assignment).unwrap();
         let NodeIndex(source_layer, source_index) = source;
         let NodeIndex(target_layer, target_index) = target;
         let layer_in_scope = self.is_layer_in_scope(target_layer);
@@ -181,7 +192,7 @@ impl Constraint for AllDifferent {
         // to non-overlapping slice of the top_down_properties vector. Then, we can use
         // these references to update the properties.
         let (bu_properties_above, bu_properties_below) = self.bottom_up_properties.split_at_mut(source_layer);
-        bu_properties_above[target_layer][target_index].value_all_path.interesect(&bu_properties_below[0][source_index].value_all_path);
+        bu_properties_above[target_layer][target_index].value_all_path.intersect(&bu_properties_below[0][source_index].value_all_path);
         bu_properties_above[target_layer][target_index].value_some_path.union(&bu_properties_below[0][source_index].value_some_path);
 
         // Reverse the integration of the edge into the $A^\prime$ set.
@@ -196,9 +207,9 @@ impl Constraint for AllDifferent {
     }
 
     fn is_assignment_invalid(&self, source: NodeIndex, target: NodeIndex, decision: VariableIndex, assignment: isize) -> bool {
+        let assignment = *self.val_to_bit.get(&assignment).unwrap();
         let NodeIndex(source_layer, source_index) = source;
         let NodeIndex(target_layer, target_index) = target;
-
 
         // If the value appears on all path from the source or to the sink, then it will be taken
         // by another variable and can not be assigned to this one.
@@ -227,8 +238,8 @@ impl Constraint for AllDifferent {
     }
 
     fn add_node_in_layer(&mut self, layer: usize) {
-        let top_down_property = AllDifferentProperty::new(&self.domain);
-        let bottom_up_property = AllDifferentProperty::new(&self.domain);
+        let top_down_property = AllDifferentProperty::new(self.domain.len());
+        let bottom_up_property = AllDifferentProperty::new(self.domain.len());
         self.top_down_properties[layer].push(top_down_property);
         self.bottom_up_properties[layer].push(bottom_up_property);
     }
@@ -251,16 +262,16 @@ impl Constraint for AllDifferent {
 
     fn hash_node_state(&self, node: NodeIndex, state: &mut dyn Hasher) {
         let NodeIndex(layer, index) = node;
-        for word in self.top_down_properties[layer][index].value_all_path.words().iter().copied() {
+        for word in self.top_down_properties[layer][index].value_all_path.iter() {
             state.write_u64(word);
         }
-        for word in self.top_down_properties[layer][index].value_some_path.words().iter().copied() {
+        for word in self.top_down_properties[layer][index].value_some_path.iter() {
             state.write_u64(word);
         }
-        for word in self.bottom_up_properties[layer][index].value_all_path.words().iter().copied() {
+        for word in self.bottom_up_properties[layer][index].value_all_path.iter() {
             state.write_u64(word);
         }
-        for word in self.bottom_up_properties[layer][index].value_some_path.words().iter().copied() {
+        for word in self.bottom_up_properties[layer][index].value_some_path.iter() {
             state.write_u64(word);
         }
     }
@@ -272,6 +283,17 @@ impl Constraint for AllDifferent {
         self.top_down_properties[layer][index].value_some_path == self.top_down_properties[olayer][oindex].value_some_path &&
         self.bottom_up_properties[layer][index].value_all_path == self.bottom_up_properties[olayer][oindex].value_all_path &&
         self.bottom_up_properties[layer][index].value_some_path == self.bottom_up_properties[olayer][oindex].value_some_path
+    }
+    
+    fn name(&self) -> &'static str {
+        "AllDifferent"
+    }
+
+    fn shrink_layers(&mut self, layers_size: &[usize]) {
+        for layer in 0..self.top_down_properties.len() {
+            self.top_down_properties[layer].truncate(layers_size[layer]);
+            self.bottom_up_properties[layer].truncate(layers_size[layer]);
+        }
     }
 }
 

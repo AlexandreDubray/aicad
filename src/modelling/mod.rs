@@ -25,7 +25,7 @@ pub fn sum(problem: &mut Problem, variables: Vec<VariableIndex>, target: isize) 
     problem.add_constraint(Sum::new(variables, target));
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Default)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Default, deepsize::DeepSizeOf)]
 pub struct VariableIndex(pub usize);
 
 impl std::ops::Deref for VariableIndex {
@@ -36,7 +36,7 @@ impl std::ops::Deref for VariableIndex {
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Default)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Default, deepsize::DeepSizeOf)]
 pub struct ValueIndex(pub usize);
 
 impl std::ops::Deref for ValueIndex {
@@ -47,7 +47,7 @@ impl std::ops::Deref for ValueIndex {
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Default)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Default, deepsize::DeepSizeOf)]
 pub struct ConstraintIndex(pub usize);
 
 impl std::ops::Deref for ConstraintIndex {

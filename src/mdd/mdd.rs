@@ -1,6 +1,7 @@
 use crate::modelling::*;
 use super::*;
 use super::heuristics::*;
+use crate::utils::MemoryReport;
 
 use std::cell::RefCell;
 use rand;
@@ -150,6 +151,7 @@ impl Mdd {
             self.merge_layer(layer);
             self.clean();
         }
+        //self.show_memory_footprint();
     }
 
     fn split_node(&mut self, node: NodeIndex) {
@@ -393,6 +395,11 @@ impl Mdd {
                 }
             }
         }
+
+        let layers_size = self.nodes.iter().map(|layer| layer.len()).collect::<Vec<usize>>();
+        for constraint in (0..self.problem.number_constraints()).map(ConstraintIndex) {
+            self.problem[constraint].shrink_layers(&layers_size);
+        }
     }
 
     pub fn number_nodes(&self) -> usize {
@@ -505,6 +512,7 @@ impl Mdd {
         }
         toporder
     }
+
 }
 
 /* ---- Various helper implementation to make life easier ---- */
@@ -552,6 +560,12 @@ impl Mdd {
 
     pub fn to_file(&self, filename: &str) {
         fs::write(filename, self.as_graphviz()).unwrap();
+    }
+
+    fn show_memory_footprint(&self) {
+        println!("Memory report for mdd with {} nodes", self.nodes.iter().map(|layer| layer.len()).sum::<usize>());
+        let report = MemoryReport::build(self.problem.constraints().iter());
+        report.print(80);
     }
 }
 

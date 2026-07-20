@@ -3,6 +3,7 @@ use crate::modelling::*;
 use crate::mdd::*;
 use std::hash::Hasher;
 
+#[derive(deepsize::DeepSizeOf)]
 pub struct Sum {
     /// Scope of the constraint
     variables: Vec<VariableIndex>,
@@ -147,6 +148,17 @@ impl Constraint for Sum {
         let NodeIndex(olayer, oindex) = other;
         self.top_down_properties[layer][index] == self.top_down_properties[olayer][oindex] &&
         self.bottom_up_properties[layer][index] == self.bottom_up_properties[olayer][oindex]
+    }
+
+    fn name(&self) -> &'static str {
+        "Sum"
+    }
+
+    fn shrink_layers(&mut self, layers_size: &[usize]) {
+        for layer in 0..self.top_down_properties.len() {
+            self.top_down_properties[layer].truncate(layers_size[layer]);
+            self.bottom_up_properties[layer].truncate(layers_size[layer]);
+        }
     }
 }
 

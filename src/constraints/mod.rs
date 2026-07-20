@@ -4,6 +4,7 @@ pub mod among;
 pub mod sum;
 
 use std::hash::Hasher;
+use deepsize::{Context, DeepSizeOf};
 
 use crate::mdd::*;
 use crate::modelling::*;
@@ -14,7 +15,7 @@ pub use not_equals::NotEquals;
 pub use among::Among;
 pub use sum::Sum;
 
-pub trait Constraint {
+pub trait Constraint: DeepSizeOf {
     /// Initialise the data structures for constraint propagation (e.g., properties)
     fn init(&mut self, vars: &[Variable]);
     /// Update the variable ordering. Update the (optional) information for the constraint's
@@ -38,4 +39,7 @@ pub trait Constraint {
     fn is_satisfied(&self, assignment: &[isize]) -> bool;
     fn hash_node_state(&self, node: NodeIndex, hasher: &mut dyn Hasher);
     fn eq_node_state(&self, node: NodeIndex, other: NodeIndex) -> bool;
+    fn name(&self) -> &'static str;
+    fn shrink_layers(&mut self, layers_size: &[usize]);
 }
+

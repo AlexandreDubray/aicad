@@ -1,16 +1,18 @@
 use super::*;
-use crate::utils::SparseBitset;
+use crate::utils::Bitset;
 use crate::modelling::*;
 use crate::mdd::*;
-use std::hash::{Hash, Hasher};
-use rustc_hash::FxHashSet;
+use std::hash::Hasher;
+use rustc_hash::{FxHashSet, FxHashMap};
 
+#[derive(deepsize::DeepSizeOf)]
 pub struct NotEquals {
     x: VariableIndex,
     y: VariableIndex,
     domains: FxHashSet<isize>,
-    top_down_properties: Vec<Vec<SparseBitset<isize>>>,
-    bottom_up_properties: Vec<Vec<SparseBitset<isize>>>,
+    val_to_bit: FxHashMap<isize, usize>,
+    top_down_properties: Vec<Vec<Bitset>>,
+    bottom_up_properties: Vec<Vec<Bitset>>,
     layer_x: usize,
     layer_y: usize,
 }
@@ -22,6 +24,7 @@ impl NotEquals {
             x,
             y,
             domains: FxHashSet::<isize>::default(),
+            val_to_bit: FxHashMap::<isize, usize>::default(),
             top_down_properties: vec![],
             bottom_up_properties: vec![],
             layer_x: 0,
@@ -40,12 +43,16 @@ impl Constraint for NotEquals {
         for value in vars[*self.y].iter_domain() {
             self.domains.insert(value);
         }
+        for value in self.domains.iter().copied() {
+            let bit = self.val_to_bit.len();
+            self.val_to_bit.insert(value, bit);
+        }
         self.top_down_properties = (0..vars.len() + 1).map(|_| {
-            vec![SparseBitset::new(self.domains.iter().copied())]
-        }).collect::<Vec<Vec<SparseBitset<isize>>>>();
+            vec![Bitset::new(self.domains.len())]
+        }).collect::<Vec<Vec<Bitset>>>();
         self.bottom_up_properties = (0..vars.len() + 1).map(|_| {
-            vec![SparseBitset::new(self.domains.iter().copied())]
-        }).collect::<Vec<Vec<SparseBitset<isize>>>>();
+            vec![Bitset::new(self.domains.len())]
+        }).collect::<Vec<Vec<Bitset>>>();
     }
 
     fn update_variable_ordering(&mut self, ordering: &[usize]) {
@@ -59,6 +66,7 @@ impl Constraint for NotEquals {
     }
 
     fn update_property_top_down(&mut self, source: NodeIndex, target: NodeIndex, assignment: isize)  {
+        let assignment = *self.val_to_bit.get(&assignment).unwrap();
         let NodeIndex(source_layer, source_index) = source;
         let NodeIndex(target_layer, target_index) = target;
         if self.is_layer_in_scope(source_layer) {
@@ -74,6 +82,7 @@ impl Constraint for NotEquals {
     }
 
     fn update_property_bottom_up(&mut self, source: NodeIndex, target: NodeIndex, assignment: isize) {
+        let assignment = *self.val_to_bit.get(&assignment).unwrap();
         let NodeIndex(source_layer, source_index) = source;
         let NodeIndex(target_layer, target_index) = target;
         if self.is_layer_in_scope(target_layer) {
@@ -88,6 +97,7 @@ impl Constraint for NotEquals {
     }
 
     fn is_assignment_invalid(&self, source: NodeIndex, _target: NodeIndex, decision: VariableIndex, assignment: isize) -> bool {
+        let assignment = *self.val_to_bit.get(&assignment).unwrap();
         let NodeIndex(source_layer, source_index) = source;
 
         if decision == self.x {
@@ -104,8 +114,8 @@ impl Constraint for NotEquals {
     }
 
     fn add_node_in_layer(&mut self, layer: usize) {
-        let top_down_property = SparseBitset::new(self.domains.iter().copied());
-        let bottom_up_property = SparseBitset::new(self.domains.iter().copied());
+        let top_down_property = Bitset::new(self.domains.len());
+        let bottom_up_property = Bitset::new(self.domains.len());
         self.top_down_properties[layer].push(top_down_property);
         self.bottom_up_properties[layer].push(bottom_up_property);
     }
@@ -120,10 +130,10 @@ impl Constraint for NotEquals {
 
     fn hash_node_state(&self, node: NodeIndex, state: &mut dyn Hasher) {
         let NodeIndex(layer, index) = node;
-        for word in self.top_down_properties[layer][index].words().iter().copied() {
+        for word in self.top_down_properties[layer][index].iter() {
             state.write_u64(word);
         }
-        for word in self.bottom_up_properties[layer][index].words().iter().copied() {
+        for word in self.bottom_up_properties[layer][index].iter() {
             state.write_u64(word);
         }
     }
@@ -133,6 +143,17 @@ impl Constraint for NotEquals {
         let NodeIndex(olayer, oindex) = other;
         self.top_down_properties[layer][index] == self.top_down_properties[olayer][oindex] &&
         self.bottom_up_properties[layer][index] == self.bottom_up_properties[olayer][oindex]
+    }
+
+    fn name(&self) -> &'static str {
+        "Not Equals"
+    }
+
+    fn shrink_layers(&mut self, layers_size: &[usize]) {
+        for layer in 0..self.top_down_properties.len() {
+            self.top_down_properties[layer].truncate(layers_size[layer]);
+            self.bottom_up_properties[layer].truncate(layers_size[layer]);
+        }
     }
 }
 
