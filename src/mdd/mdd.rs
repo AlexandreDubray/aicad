@@ -461,6 +461,13 @@ impl Mdd {
         }
     }
 
+    pub fn get_edge_probability(&self, edge: EdgeIndex) -> f64 {
+        let EdgeIndex(source_layer, _) = edge;
+        let variable = self.decision_at_layer(source_layer);
+        let assignment = self[edge].assignment();
+        self.problem[variable].probability(assignment)
+    }
+
     pub fn sample(&self) -> Vec<isize> {
         let mut assignments = vec![0; self.number_layers() - 1];
         RNG.with_borrow_mut(|rng| {
