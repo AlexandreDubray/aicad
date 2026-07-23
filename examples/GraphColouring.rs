@@ -48,6 +48,6 @@ fn main() {
         not_equals(&mut problem, variables[u], variables[v]);
     }
 
-    let mut mdd = Mdd::new(problem, max_width, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+    let mut mdd = Mdd::new(problem, max_width, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
     mdd.refine();
 }

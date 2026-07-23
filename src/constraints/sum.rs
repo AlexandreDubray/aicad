@@ -216,7 +216,7 @@ mod test_sum {
         let y = problem.add_variable(vec![0, 1, 2], None);
         sum(&mut problem, vec![x, y], 3);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 2);
@@ -232,7 +232,7 @@ mod test_sum {
         let z = problem.add_variable(vec![0, 1, 2, 3], None);
         sum(&mut problem, vec![x, y, z], 5);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
 
@@ -261,7 +261,7 @@ mod test_sum {
         // Both variables are forced to 0, so the sum is always 0, never 5.
         sum(&mut problem, vec![x, y], 5);
 
-        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         assert!(mdd.is_unsat());
         assert_eq!(mdd.get_solution(), None);
     }
@@ -274,7 +274,7 @@ mod test_sum {
         // The maximum reachable sum is 2, so a target of 10 is unreachable.
         sum(&mut problem, vec![x, y], 10);
 
-        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         assert!(mdd.is_unsat());
         assert_eq!(mdd.get_solution(), None);
     }
@@ -287,7 +287,7 @@ mod test_sum {
         // The minimum reachable sum is 0, so a target of -10 is unreachable.
         sum(&mut problem, vec![x, y], -10);
 
-        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         assert!(mdd.is_unsat());
         assert_eq!(mdd.get_solution(), None);
     }
@@ -301,7 +301,7 @@ mod test_sum {
         let y = problem.add_variable(vec![0, 1, 2], None);
         sum(&mut problem, vec![x, y], 3);
 
-        let mdd = Mdd::new(problem, 1, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        let mdd = Mdd::new(problem, 1, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         let solutions = get_all_solutions(&mdd);
         assert!(is_solution(vec![1, 2], &solutions));
         assert!(is_solution(vec![2, 1], &solutions));
@@ -314,7 +314,7 @@ mod test_sum {
         let y = problem.add_variable(vec![-1, 0, 1], None);
         sum(&mut problem, vec![x, y], 0);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 3);
@@ -332,7 +332,7 @@ mod test_sum {
         all_different(&mut problem, vec![x, y, z]);
         sum(&mut problem, vec![x, y, z], 6);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
 

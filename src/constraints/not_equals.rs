@@ -189,7 +189,7 @@ mod test_not_equals {
         let y = problem.add_variable(vec![0, 1], None);
         not_equals(&mut problem, x, y);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 2);
@@ -204,7 +204,7 @@ mod test_not_equals {
         let y = problem.add_variable(vec![0, 1, 2], None);
         not_equals(&mut problem, x, y);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
 
@@ -237,7 +237,7 @@ mod test_not_equals {
         let y = problem.add_variable(vec![1], None);
         not_equals(&mut problem, x, y);
 
-        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1]), MergeHeuristic::LessRelaxed);
+        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         assert!(!mdd.is_unsat());
         assert_eq!(mdd.get_solution(), Some(vec![0, 1]));
     }
@@ -250,7 +250,7 @@ mod test_not_equals {
         let y = problem.add_variable(vec![1], None);
         not_equals(&mut problem, x, y);
 
-        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![1, 0]), MergeHeuristic::LessRelaxed);
+        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![1, 0]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         assert!(!mdd.is_unsat());
         assert_eq!(mdd.get_solution(), Some(vec![0, 1]));
     }
@@ -265,7 +265,7 @@ mod test_not_equals {
         let y = problem.add_variable(vec![5], None);
         not_equals(&mut problem, x, y);
 
-        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1]), MergeHeuristic::LessRelaxed);
+        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         assert!(mdd.is_unsat());
         assert_eq!(mdd.get_solution(), None);
     }
@@ -278,7 +278,7 @@ mod test_not_equals {
         let y = problem.add_variable(vec![5], None);
         not_equals(&mut problem, x, y);
 
-        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         assert!(mdd.is_unsat());
         assert_eq!(mdd.get_solution(), None);
     }
@@ -292,7 +292,7 @@ mod test_not_equals {
         let y = problem.add_variable(vec![0, 1, 2], None);
         not_equals(&mut problem, x, y);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1]), MergeHeuristic::LessRelaxed);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 6);
@@ -310,7 +310,7 @@ mod test_not_equals {
         let y = problem.add_variable(vec![0, 1, 2], None);
         not_equals(&mut problem, x, y);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![1, 0]), MergeHeuristic::LessRelaxed);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![1, 0]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 6);
@@ -328,7 +328,7 @@ mod test_not_equals {
         let y = problem.add_variable(vec![0, 1], None);
         not_equals(&mut problem, x, y);
 
-        let mdd = Mdd::new(problem, 1, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        let mdd = Mdd::new(problem, 1, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         let solutions = get_all_solutions(&mdd);
         assert!(is_solution(vec![0, 1], &solutions));
         assert!(is_solution(vec![1, 0], &solutions));
@@ -346,7 +346,7 @@ mod test_not_equals {
         not_equals(&mut problem, y, z);
         not_equals(&mut problem, x, z);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
 

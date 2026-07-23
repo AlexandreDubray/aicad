@@ -31,6 +31,8 @@ pub struct Mdd {
     max_width: usize,
     /// Heuristic used to score nodes during merging operation
     merge_heuristic: MergeHeuristic,
+    /// Heuristic to select nodes to split
+    select_heuristic: SelectHeuristic,
     /// Is the MDD unsat
     unsat: bool,
     /// Root of the MDD
@@ -43,7 +45,11 @@ impl Mdd {
 
     /// Creates a new MDD for the given problem and variable ordering. The ordering array gives,
     /// for each variable, the layer at which it is branched on.
-    pub fn new(problem: Problem, max_width: usize, order: OrderingHeuristic, merge_heuristic: MergeHeuristic) -> Self {
+    pub fn new(problem: Problem,
+        max_width: usize,
+        order: OrderingHeuristic,
+        merge_heuristic: MergeHeuristic,
+        select_heuristic: SelectHeuristic) -> Self {
         let number_layers = problem.number_variables() + 1;
         let mut mdd = Self {
             nodes: vec![vec![]; problem.number_variables() + 1],
@@ -51,6 +57,7 @@ impl Mdd {
             order: vec![],
             max_width,
             merge_heuristic,
+            select_heuristic,
             problem,
             unsat: false,
             root: NodeIndex(0, 0),
@@ -140,22 +147,22 @@ impl Mdd {
             if self.number_nodes_in_layer(layer) == self.max_width {
                 continue;
             }
-            let node = NodeIndex(layer, 0);
-            self.split_node(node);
-            self.propagate_constraints();
-            if !self[self.root].is_active() || !self[self.sink].is_active() {
-                self.unsat = true;
-                return;
+            if let Some(node) = self.select_heuristic.select_node(self, layer) {
+                self.split_node(node);
+                self.propagate_constraints();
+                if !self[self.root].is_active() || !self[self.sink].is_active() {
+                    self.unsat = true;
+                    return;
+                }
+                self.collapse();
+                self.merge_layer(layer);
+                self.clean();
             }
-            self.collapse();
-            self.merge_layer(layer);
-            self.clean();
         }
-        //self.show_memory_footprint();
     }
 
     fn split_node(&mut self, node: NodeIndex) {
-        let layer = self[node].layer();
+        let NodeIndex(layer, _) = node;
         let n = self[node].number_parents();
         let outgoing_assignments = self[node]
             .iter_children()
@@ -195,7 +202,6 @@ impl Mdd {
                         let assignment = self.problem[variable].value(self[edge].assignment());
                         self.problem[constraint].update_property_top_down(source, target, assignment);
                     }
-
                 }
             }
         }
@@ -319,10 +325,18 @@ impl Mdd {
             return;
         }
         let node_ranks = self.merge_heuristic.rank_nodes(self, layer);
-        let into = NodeIndex(layer, node_ranks[self.max_width - 1].1);
+        // `node_ranks` is sorted by ascending score, and a higher score means the node is
+        // "better" to keep distinct (less relaxed / more likely). We therefore keep the top
+        // `max_width - 1` highest-scored nodes untouched, and merge the remaining (lowest
+        // scored) nodes into a single relaxed node.
+        let active_nodes = node_ranks.len();
+        if active_nodes <= self.max_width {
+            return;
+        }
+        let into = node_ranks[active_nodes - self.max_width].1;
         self[into].set_relaxed(true);
-        for i in self.max_width..number_nodes {
-            let from = NodeIndex(layer, node_ranks[i].1);
+        for i in 0..active_nodes - self.max_width {
+            let from = node_ranks[i].1;
             self.merge_nodes(from, into);
             self[from].deactivate();
         }
@@ -403,7 +417,7 @@ impl Mdd {
     }
 
     pub fn number_nodes(&self) -> usize {
-        self.nodes.len()
+        self.nodes.iter().map(|layer| layer.len()).sum::<usize>()
     }
 
     pub fn number_nodes_in_layer(&self, layer: usize) -> usize {
@@ -420,8 +434,8 @@ impl Mdd {
 
     pub fn get_solution(&self) -> Option<Vec<isize>> {
         let mut assignment = vec![0; self.nodes.len() - 1];
-        let root = NodeIndex(0, 0);
-        if self.extract_solution(root, &mut assignment) {
+        let sink = NodeIndex(self.nodes.len() - 1, 0);
+        if self.extract_solution(sink, &mut assignment) {
             Some(assignment)
         } else {
             None
@@ -430,22 +444,16 @@ impl Mdd {
 
     fn extract_solution(&self, node: NodeIndex, assignment: &mut Vec<isize>) -> bool {
         let layer = node.0;
-        if layer == self.nodes.len() - 1 {
+        if layer == 0 {
             return true;
         }
-        if self[node].is_relaxed() {
-            return false;
-        }
-        let variable = self.order[layer];
-        for edge in self[node].iter_children() {
-            if !self[edge].is_active() {
-                continue;
-            }
-            let to = self[edge].to();
-            let value = self.problem[variable].value(self[edge].assignment());
-            assignment[*variable] = value;
-            if self.extract_solution(to, assignment) {
-                return true;
+        for edge in self[node].iter_parents() {
+            let from = self[edge].from();
+            if !self[from].is_relaxed() {
+                let variable = self.order[layer - 1];
+                let value = self.problem[variable].value(self[edge].assignment());
+                assignment[*variable] = value;
+                return self.extract_solution(from, assignment);
             }
         }
         false
@@ -569,7 +577,7 @@ impl Mdd {
         fs::write(filename, self.as_graphviz()).unwrap();
     }
 
-    fn show_memory_footprint(&self) {
+    pub fn show_memory_footprint(&self) {
         println!("Memory report for mdd with {} nodes", self.nodes.iter().map(|layer| layer.len()).sum::<usize>());
         let report = MemoryReport::build(self.problem.constraints().iter());
         report.print(80);
@@ -705,7 +713,7 @@ pub mod test_mdd {
         problem.add_variable(vec![0, 1], None);
         problem.add_variable(vec![0, 1, 2], None);
 
-        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 2*2*3);
         assert!(is_solution(vec![0, 0, 0], &solutions));
@@ -733,7 +741,7 @@ pub mod test_mdd {
         not_equals(&mut problem, y, z);
         not_equals(&mut problem, x, z);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         mdd.refine();
         // TODO assert?
     }

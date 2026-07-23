@@ -7,8 +7,6 @@ use aicad::modelling::*;
 use aicad::mdd::*;
 use aicad::mdd::heuristics::*;
 
-use std::time::Duration;
-
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() != 3 && args.len() != 4 {
@@ -63,6 +61,6 @@ fn main() {
         all_different(&mut problem, block);
     }
 
-    let mut mdd = Mdd::new(problem, max_width, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+    let mut mdd = Mdd::new(problem, max_width, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
     mdd.refine();
 }

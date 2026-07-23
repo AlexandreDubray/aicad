@@ -245,7 +245,7 @@ mod test_among {
         let y = problem.add_variable(vec![0, 1], None);
         among(&mut problem, vec![x, y], vec![1], 1, 1);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 2);
@@ -261,7 +261,7 @@ mod test_among {
         let z = problem.add_variable(vec![0, 1, 2], None);
         among(&mut problem, vec![x, y, z], vec![0, 1], 1, 2);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
 
@@ -293,7 +293,7 @@ mod test_among {
         // Neither variable can ever take value 1, so the count is always 0 < lb = 1.
         among(&mut problem, vec![x, y], vec![1], 1, 2);
 
-        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         assert!(mdd.is_unsat());
         assert_eq!(mdd.get_solution(), None);
     }
@@ -306,7 +306,7 @@ mod test_among {
         // Both variables are forced to 1, so the count is always 2 > ub = 0.
         among(&mut problem, vec![x, y], vec![1], 0, 0);
 
-        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         assert!(mdd.is_unsat());
         assert_eq!(mdd.get_solution(), None);
     }
@@ -320,7 +320,8 @@ mod test_among {
         let y = problem.add_variable(vec![0, 1], None);
         among(&mut problem, vec![x, y], vec![1], 1, 1);
 
-        let mdd = Mdd::new(problem, 1, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        
+        let mdd = Mdd::new(problem, 1, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         let solutions = get_all_solutions(&mdd);
         assert!(is_solution(vec![0, 1], &solutions));
         assert!(is_solution(vec![1, 0], &solutions));
@@ -335,7 +336,7 @@ mod test_among {
         let z = problem.add_variable(vec![0, 1], None);
         among(&mut problem, vec![x, y, z], vec![1], 3, 3);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 1);
@@ -351,7 +352,7 @@ mod test_among {
         let y = problem.add_variable(vec![0, 1], None);
         among(&mut problem, vec![x, y], vec![1], 0, 2);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 4);
@@ -370,7 +371,7 @@ mod test_among {
         not_equals(&mut problem, x, y);
         among(&mut problem, vec![x, y, z], vec![2], 1, 1);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
 

@@ -25,6 +25,10 @@ pub fn sum(problem: &mut Problem, variables: Vec<VariableIndex>, target: isize) 
     problem.add_constraint(Sum::new(variables, target));
 }
 
+pub fn gcc(problem: &mut Problem, variables: Vec<VariableIndex>, bounds: Vec<(isize, usize, usize)>) {
+    problem.add_constraint(Gcc::new(variables, bounds));
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Default, deepsize::DeepSizeOf)]
 pub struct VariableIndex(pub usize);
 

@@ -19,6 +19,12 @@ pub enum PyMergeHeuristic {
 }
 
 #[pyclass]
+#[derive(Clone)]
+pub enum PySelectHeuristic {
+    Greedy,
+}
+
+#[pyclass]
 pub struct Solver {
     problem: Problem,
     mdd: Option<Mdd>,
@@ -72,6 +78,11 @@ impl Solver {
         sum(&mut self.problem, vars, target);
     }
 
+    fn add_gcc(&mut self, scope: Vec<usize>, bounds: Vec<(isize, usize, usize)>) {
+        let vars = scope.into_iter().map(VariableIndex).collect();
+        gcc(&mut self.problem, vars, bounds);
+    }
+
     fn negate(&mut self, x: usize) -> usize {
         let y = self.add_bool_var();
         self.add_not_equals(x, y);
@@ -85,7 +96,7 @@ impl Solver {
     }
 
     // --- SOLVE --- //
-    fn compile(&mut self, max_width: Option<usize>, pyordering: PyOrderingHeuristic, pymerge: PyMergeHeuristic) {
+    fn compile(&mut self, max_width: Option<usize>, pyordering: PyOrderingHeuristic, pymerge: PyMergeHeuristic, pyselect: PySelectHeuristic) {
         let width = max_width.unwrap_or(usize::MAX);
         let ordering = match pyordering {
             PyOrderingHeuristic::MinDomMaxLinked() => OrderingHeuristic::MinDomMaxLinked,
@@ -97,7 +108,11 @@ impl Solver {
             PyMergeHeuristic::MostLikely => MergeHeuristic::MostLikely,
         };
 
-        let mut mdd = Mdd::new(std::mem::take(&mut self.problem), width, ordering, merge);
+        let select = match pyselect {
+            PySelectHeuristic::Greedy => SelectHeuristic::Greedy,
+        };
+
+        let mut mdd = Mdd::new(std::mem::take(&mut self.problem), width, ordering, merge, select);
         mdd.refine();
         self.is_unsat = mdd.is_unsat();
         self.mdd = Some(mdd);
@@ -106,11 +121,18 @@ impl Solver {
     #[pyo3(signature = (max_width=None,
             pyordering=PyOrderingHeuristic::MinDomMaxLinked(),
             pymerge=PyMergeHeuristic::LessRelaxed,
+            pyselect=PySelectHeuristic::Greedy,
             recompile=false,
             sample=false))]
-    fn solve(&mut self, max_width: Option<usize>, pyordering: PyOrderingHeuristic, pymerge: PyMergeHeuristic, recompile: bool, sample: bool) -> Option<Vec<isize>> {
+    fn solve(&mut self,
+        max_width: Option<usize>,
+        pyordering: PyOrderingHeuristic,
+        pymerge: PyMergeHeuristic,
+        pyselect: PySelectHeuristic,
+        recompile: bool,
+        sample: bool) -> Option<Vec<isize>> {
         if self.mdd.is_none() || recompile {
-            self.compile(max_width, pyordering, pymerge);
+            self.compile(max_width, pyordering, pymerge, pyselect);
         }
         if self.is_unsat() {
             return None;
@@ -190,6 +212,12 @@ impl Solver {
     fn as_graphviz(&self) -> String {
         self.mdd.as_ref().unwrap().as_graphviz()
     }
+
+    fn show_memory_info(&self) {
+        if let Some(mdd) = self.mdd.as_ref() {
+            mdd.show_memory_footprint();
+        }
+    }
 }
 
 #[pymodule]
@@ -197,5 +225,6 @@ fn pyaicad(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Solver>()?;
     m.add_class::<PyOrderingHeuristic>()?;
     m.add_class::<PyMergeHeuristic>()?;
+    m.add_class::<PySelectHeuristic>()?;
     Ok(())
 }

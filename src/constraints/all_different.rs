@@ -228,8 +228,8 @@ impl Constraint for AllDifferent {
         } else if is_on_bu_path && hall_set_size_down == self.bottom_up_properties[target_layer][target_index].value_some_path.size() {
             // Same but for the variables in later layers.
             return true;
-        } else if is_on_bu_path
-            && is_on_td_path
+        } else if (is_on_bu_path
+            || is_on_td_path)
             && hall_set_size_up + hall_set_size_down == self.top_down_properties[source_layer][source_index].value_some_path.size_union(&self.bottom_up_properties[target_layer][target_index].value_some_path) {
             // Same but for all other variables in the constraint.
             return true;
@@ -308,6 +308,7 @@ impl std::fmt::Display for AllDifferentProperty {
 mod test_all_diff {
 
     use crate::modelling::*;
+    use crate::modelling::variable::Variable;
     use crate::constraints::{AllDifferent, Constraint};
     use crate::mdd::*;
     use crate::mdd::heuristics::*;
@@ -321,7 +322,7 @@ mod test_all_diff {
 
         all_different(&mut problem, vec![x, y]);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 1);
@@ -336,7 +337,7 @@ mod test_all_diff {
 
         all_different(&mut problem, vec![x, y]);
 
-        let mdd = Mdd::new(problem, 1, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        let mdd = Mdd::new(problem, 1, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 4);
         assert!(is_solution(vec![0, 0], &solutions));
@@ -353,7 +354,7 @@ mod test_all_diff {
         let z = problem.add_variable(vec![0, 1, 2], None);
         all_different(&mut problem, vec![x, y, z]);
 
-        let mdd = Mdd::new(problem, 1, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed);
+        let mdd = Mdd::new(problem, 1, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 4);
         assert!(is_solution(vec![0, 0, 2], &solutions));
@@ -370,7 +371,7 @@ mod test_all_diff {
         let z = problem.add_variable(vec![0, 1],None);
         all_different(&mut problem, vec![x, y, z]);
 
-        let mdd = Mdd::new(problem, 1, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed);
+        let mdd = Mdd::new(problem, 1, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 4);
         assert!(is_solution(vec![2, 0, 0], &solutions));
@@ -387,7 +388,7 @@ mod test_all_diff {
         let z = problem.add_variable(vec![0, 1], None);
         all_different(&mut problem, vec![x, y, z]);
 
-        let mdd = Mdd::new(problem, 1, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed);
+        let mdd = Mdd::new(problem, 1, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 4);
         assert!(is_solution(vec![0, 2, 0], &solutions));
@@ -402,7 +403,7 @@ mod test_all_diff {
         let vars = problem.add_variables(2, vec![0, 1], None);
         all_different(&mut problem, vars.clone());
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1]), MergeHeuristic::LessRelaxed);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         mdd.refine();
         mdd.to_file("mdd.txt");
         let solutions = get_all_solutions(&mdd);
@@ -419,7 +420,7 @@ mod test_all_diff {
         equal(&mut problem, vars[1], 2);
         equal(&mut problem, vars[2], 0);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 2);
@@ -463,7 +464,7 @@ mod test_all_diff {
         let vars = problem.add_variables(3, vec![0, 1], None);
         all_different(&mut problem, vars);
 
-        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         assert!(mdd.is_unsat());
         assert_eq!(mdd.get_solution(), None);
     }
@@ -475,13 +476,76 @@ mod test_all_diff {
         let x = problem.add_variable(vec![0, 1, 2], None);
         all_different(&mut problem, vec![x]);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed);
+        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 3);
         assert!(is_solution(vec![0], &solutions));
         assert!(is_solution(vec![1], &solutions));
         assert!(is_solution(vec![2], &solutions));
+    }
+
+    // --- Regression test for the combined (up + down) Hall-set branch of
+    // `is_assignment_invalid`. That branch requires the candidate value to appear on
+    // BOTH the top-down and the bottom-up "some" path (`is_on_bu_path &&
+    // is_on_td_path`), but the necessary condition it implements only needs the
+    // value to be a member of the *union* of the two Hall sets, i.e. it should be an
+    // OR. As written it silently misses assignments it should reject whenever the
+    // value only shows up on one side. This only matters once a node aggregates
+    // several top-down/bottom-up histories (as happens once the compiler is forced
+    // to merge nodes to respect a width bound); for a fully exact node the leading
+    // `value_all_path` check already subsumes it. --- //
+
+    #[test]
+    pub fn test_combined_hall_condition_should_use_or_not_and() {
+        // Scope v0..v3, decided in that order. We probe the decision for v2
+        // (hall_set_size_up = 2, hall_set_size_down = 1).
+        let vars = vec![
+            Variable::new(vec![0, 1, 2], None),
+            Variable::new(vec![0, 1, 2], None),
+            Variable::new(vec![0, 1, 2], None),
+            Variable::new(vec![0, 1, 2], None),
+        ];
+
+        let mut all_diff = AllDifferent::new(vec![VariableIndex(0), VariableIndex(1), VariableIndex(2), VariableIndex(3)]);
+        all_diff.init(&vars);
+        all_diff.update_variable_ordering(&[0, 1, 2, 3]);
+
+        // Top-down side: merge two constituent histories into the node at v2's
+        // layer. Both agree on v0 = 0 but disagree on v1:
+        //   - constituent A: v0 = 0, v1 = 1  (still feasible at this point)
+        //   - constituent B: v0 = 0, v1 = 2  (will collide with v3 = 2 below, so it
+        //     is a dead/spurious prefix -- exactly the kind of state a width-bounded
+        //     merge can produce)
+        // After merging: top_down some = {0, 1, 2}, all = {0}.
+        //
+        // Note: we deliberately do NOT call reset_property_top_down on the root
+        // (layer 0) or reset_property_bottom_up on the sink (last layer): the real
+        // propagate_constraints() never resets those (its passes run over
+        // `1..number_layers` and `(0..number_layers-1).rev()` respectively), so they
+        // must be left at the all-zero state `init()` gives them. Resetting them here
+        // would set their value_all_path to all-ones (the reset's identity value),
+        // which turns every downstream intersection into a no-op and corrupts the
+        // whole chain -- that was an earlier bug in this test, not in the compiler.
+        all_diff.reset_property_top_down(NodeIndex(1, 0));
+        all_diff.update_property_top_down(NodeIndex(0, 0), NodeIndex(1, 0), 0);
+
+        all_diff.reset_property_top_down(NodeIndex(2, 0));
+        all_diff.update_property_top_down(NodeIndex(1, 0), NodeIndex(2, 0), 1); // constituent A
+        all_diff.update_property_top_down(NodeIndex(1, 0), NodeIndex(2, 0), 2); // constituent B
+
+        // Bottom-up side: a single, exact history with v3 = 2.
+        all_diff.reset_property_bottom_up(NodeIndex(3, 0));
+        all_diff.update_property_bottom_up(NodeIndex(4, 0), NodeIndex(3, 0), 2);
+
+        // For the real constituent (v0=0, v1=1, v3=2), the other 3 variables
+        // already use exactly 3 distinct values {0, 1, 2} -- a saturated Hall set
+        // over every variable except v2. Assigning v2 = 1 collides with v1 and must
+        // be rejected, even though 1 only appears on the top-down side.
+        //
+        // This currently fails: `is_on_bu_path` is false (1 isn't in {2}), so the
+        // buggy `&&` short-circuits and the assignment is wrongly accepted.
+        assert!(all_diff.is_assignment_invalid(NodeIndex(2, 0), NodeIndex(3, 0), VariableIndex(2), 1));
     }
 
 }

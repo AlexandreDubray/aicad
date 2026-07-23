@@ -2,9 +2,10 @@ pub mod all_different;
 pub mod not_equals;
 pub mod among;
 pub mod sum;
+pub mod gcc;
 
 use std::hash::Hasher;
-use deepsize::{Context, DeepSizeOf};
+use deepsize::DeepSizeOf;
 
 use crate::mdd::*;
 use crate::modelling::*;
@@ -14,6 +15,7 @@ pub use all_different::AllDifferent;
 pub use not_equals::NotEquals;
 pub use among::Among;
 pub use sum::Sum;
+pub use gcc::Gcc;
 
 pub trait Constraint: DeepSizeOf {
     /// Initialise the data structures for constraint propagation (e.g., properties)
