@@ -9,7 +9,6 @@ pub struct Sum {
     variables: Vec<VariableIndex>,
     /// Target value the sum of the scope's variables must equal
     target: isize,
-    /// For each node, (guaranteed sum, achievable sum, has-been-initialised).
     top_down_properties: Vec<Vec<(isize, isize, bool)>>,
     bottom_up_properties: Vec<Vec<(isize, isize, bool)>>,
     /// Bitvector to indicate if a layer is in the scope of the constraint or not
@@ -65,17 +64,17 @@ impl Constraint for Sum {
         // sits at layer L-1, target at layer L, and the variable branched on for this edge is
         // the one assigned to layer L-1.
         let delta = if self.is_layer_in_scope(source_layer) { assignment } else { 0 };
-        let (source_min, source_max, _) = self.top_down_properties[source_layer][source_index];
-        let candidate_min = source_min + delta;
-        let candidate_max = source_max + delta;
-        let (min, max, initialized) = &mut self.top_down_properties[target_layer][target_index];
-        if *initialized {
-            *min = (*min).min(candidate_min);
-            *max = (*max).max(candidate_max);
+        let source_property = self.top_down_properties[source_layer][source_index];
+        let candidate_min = source_property.0 + delta;
+        let candidate_max = source_property.1 + delta;
+        let target_property = &mut self.top_down_properties[target_layer][target_index];
+        if target_property.2 {
+            target_property.0 = target_property.0.min(candidate_min);
+            target_property.1 = target_property.1.max(candidate_max);
         } else {
-            *min = candidate_min;
-            *max = candidate_max;
-            *initialized = true;
+            target_property.0 = candidate_min;
+            target_property.1 = candidate_max;
+            target_property.2 = true;
         }
     }
 
@@ -91,17 +90,17 @@ impl Constraint for Sum {
         // already computed since layers are processed bottom-up). The edge belongs to layer
         // L, i.e. `target`'s layer, since that's where this edge's branching variable lives.
         let delta = if self.is_layer_in_scope(target_layer) { assignment } else { 0 };
-        let (source_min, source_max, _) = self.bottom_up_properties[source_layer][source_index];
-        let candidate_min = source_min + delta;
-        let candidate_max = source_max + delta;
-        let (min, max, initialized) = &mut self.bottom_up_properties[target_layer][target_index];
-        if *initialized {
-            *min = (*min).min(candidate_min);
-            *max = (*max).max(candidate_max);
+        let source_property = self.bottom_up_properties[source_layer][source_index];
+        let candidate_min = source_property.0 + delta;
+        let candidate_max = source_property.1 + delta;
+        let target_property = &mut self.bottom_up_properties[target_layer][target_index];
+        if target_property.2 {
+            target_property.0 = target_property.0.min(candidate_min);
+            target_property.1 = target_property.1.max(candidate_max);
         } else {
-            *min = candidate_min;
-            *max = candidate_max;
-            *initialized = true;
+            target_property.0 = candidate_min;
+            target_property.1 = candidate_max;
+            target_property.2 = true;
         }
     }
 
@@ -146,8 +145,13 @@ impl Constraint for Sum {
     fn eq_node_state(&self, node: NodeIndex, other: NodeIndex) -> bool {
         let NodeIndex(layer, index) = node;
         let NodeIndex(olayer, oindex) = other;
-        self.top_down_properties[layer][index] == self.top_down_properties[olayer][oindex] &&
-        self.bottom_up_properties[layer][index] == self.bottom_up_properties[olayer][oindex]
+        // Compare only the substantive min/max bounds - `accumulated`/`ever_computed`
+        // are propagation bookkeeping, not part of the node's logical state, and
+        // comparing them here could keep otherwise-identical nodes from merging.
+        self.top_down_properties[layer][index].0 == self.top_down_properties[olayer][oindex].0 &&
+        self.top_down_properties[layer][index].1 == self.top_down_properties[olayer][oindex].1 &&
+        self.bottom_up_properties[layer][index].0 == self.bottom_up_properties[olayer][oindex].0 &&
+        self.bottom_up_properties[layer][index].1 == self.bottom_up_properties[olayer][oindex].1
     }
 
     fn name(&self) -> &'static str {
@@ -159,6 +163,22 @@ impl Constraint for Sum {
             self.top_down_properties[layer].truncate(layers_size[layer]);
             self.bottom_up_properties[layer].truncate(layers_size[layer]);
         }
+    }
+
+    fn rank_nodes(&self, nodes: &[NodeIndex]) -> Vec<f64> {
+        let mut scores = vec![0.0; nodes.len()];
+        let mut sorted_nodes = (0..nodes.len()).map(|i| {
+            let NodeIndex(layer, index) = nodes[i];
+            let node_score = (self.top_down_properties[layer][index].0,
+                self.top_down_properties[layer][index].1);
+            (node_score, i)
+        }).collect::<Vec<((isize, isize), usize)>>();
+        sorted_nodes.sort_unstable();
+        let n = nodes.len() as f64;
+        for (rank, (_, i)) in sorted_nodes.iter().copied().enumerate() {
+            scores[i] = (rank as f64) / n;
+        }
+        scores
     }
 }
 

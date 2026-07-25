@@ -10,10 +10,6 @@ pub struct Among {
     values: FxHashSet<isize>,
     lb: usize,
     ub: usize,
-    /// For each node, (guaranteed count, achievable count, has-been-initialised). The
-    /// guaranteed count is the minimum number of value-in-set assignments over all
-    /// source-n (top-down) or n-sink (bottom-up) paths; the achievable count is the
-    /// maximum over the same paths.
     top_down_properties: Vec<Vec<(usize, usize, bool)>>,
     bottom_up_properties: Vec<Vec<(usize, usize, bool)>>,
     /// Bitvector to indicate if a layer is in the scope of the constraint or not
@@ -70,21 +66,21 @@ impl Constraint for Among {
         // are decided top-down, source sits at layer L-1, target at layer L, and the variable
         // branched on for this edge is the one assigned to layer L-1.
         let delta = if self.is_layer_in_scope(source_layer) && self.values.contains(&assignment) { 1 } else { 0 };
-        let (source_lb, source_ub, _) = self.top_down_properties[source_layer][source_index];
-        let candidate_lb = source_lb + delta;
-        let candidate_ub = source_ub + delta;
-        let (lb, ub, initialized) = &mut self.top_down_properties[target_layer][target_index];
-        if *initialized {
+        let source_property = self.top_down_properties[source_layer][source_index];
+        let candidate_lb = source_property.0 + delta;
+        let candidate_ub = source_property.1 + delta;
+        let target_property = &mut self.top_down_properties[target_layer][target_index];
+        if target_property.2 {
             // Several parents (or several parallel edges from the same parent) can reach the
             // same node: the guaranteed count is the min over all of them, the achievable
             // count is the max - mirroring the all_path/some_path (intersection/union)
             // aggregation used by AllDifferent.
-            *lb = (*lb).min(candidate_lb);
-            *ub = (*ub).max(candidate_ub);
+            target_property.0 = target_property.0.min(candidate_lb);
+            target_property.1 = target_property.1.max(candidate_ub);
         } else {
-            *lb = candidate_lb;
-            *ub = candidate_ub;
-            *initialized = true;
+            target_property.0 = candidate_lb;
+            target_property.1 = candidate_ub;
+            target_property.2 = true;
         }
     }
 
@@ -101,17 +97,17 @@ impl Constraint for Among {
         // layer L, i.e. `target`'s layer, since that's where this edge's branching variable
         // lives.
         let delta = if self.is_layer_in_scope(target_layer) && self.values.contains(&assignment) { 1 } else { 0 };
-        let (source_lb, source_ub, _) = self.bottom_up_properties[source_layer][source_index];
-        let candidate_lb = source_lb + delta;
-        let candidate_ub = source_ub + delta;
-        let (lb, ub, initialized) = &mut self.bottom_up_properties[target_layer][target_index];
-        if *initialized {
-            *lb = (*lb).min(candidate_lb);
-            *ub = (*ub).max(candidate_ub);
+        let source_property = self.bottom_up_properties[source_layer][source_index];
+        let candidate_lb = source_property.0 + delta;
+        let candidate_ub = source_property.1 + delta;
+        let target_property = &mut self.bottom_up_properties[target_layer][target_index];
+        if target_property.2 {
+            target_property.0 = target_property.0.min(candidate_lb);
+            target_property.1 = target_property.1.max(candidate_ub);
         } else {
-            *lb = candidate_lb;
-            *ub = candidate_ub;
-            *initialized = true;
+            target_property.0 = candidate_lb;
+            target_property.1 = candidate_ub;
+            target_property.2 = true;
         }
     }
 
@@ -122,7 +118,6 @@ impl Constraint for Among {
     fn is_assignment_invalid(&self, source: NodeIndex, target: NodeIndex, _decision: VariableIndex, assignment: isize) -> bool {
         let NodeIndex(source_layer, source_index) = source;
         let NodeIndex(target_layer, target_index) = target;
-
         let mut local_lb = self.top_down_properties[source_layer][source_index].0 + self.bottom_up_properties[target_layer][target_index].0;
         if self.values.contains(&assignment) {
             local_lb += 1;
@@ -165,8 +160,10 @@ impl Constraint for Among {
     fn eq_node_state(&self, node: NodeIndex, other: NodeIndex) -> bool {
         let NodeIndex(layer, index) = node;
         let NodeIndex(olayer, oindex) = other;
-        self.top_down_properties[layer][index] == self.top_down_properties[olayer][oindex] &&
-        self.bottom_up_properties[layer][index] == self.bottom_up_properties[olayer][oindex]
+        self.top_down_properties[layer][index].0 == self.top_down_properties[olayer][oindex].0 &&
+        self.top_down_properties[layer][index].1 == self.top_down_properties[olayer][oindex].1 &&
+        self.bottom_up_properties[layer][index].0 == self.bottom_up_properties[olayer][oindex].0 &&
+        self.bottom_up_properties[layer][index].1 == self.bottom_up_properties[olayer][oindex].1
     }
 
     fn name(&self) -> &'static str {
@@ -178,6 +175,21 @@ impl Constraint for Among {
             self.top_down_properties[layer].truncate(layers_size[layer]);
             self.bottom_up_properties[layer].truncate(layers_size[layer]);
         }
+    }
+
+    fn rank_nodes(&self, nodes: &[NodeIndex]) -> Vec<f64> {
+        let mut scores = vec![0.0; nodes.len()];
+        let mut sorted_nodes = (0..nodes.len()).map(|i| {
+            let NodeIndex(layer, index) = nodes[i];
+            let node_score = (self.top_down_properties[layer][index].0, self.top_down_properties[layer][index].1);
+            (node_score, i)
+        }).collect::<Vec<((usize, usize), usize)>>();
+        sorted_nodes.sort_unstable();
+        let n = nodes.len() as f64;
+        for (rank, (_, i)) in sorted_nodes.iter().copied().enumerate() {
+            scores[i] = (rank as f64) / n;
+        }
+        scores
     }
 }
 

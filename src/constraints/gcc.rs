@@ -267,6 +267,27 @@ impl Constraint for Gcc {
             self.bottom_up_properties[layer].truncate(layers_size[layer]);
         }
     }
+
+    fn rank_nodes(&self, nodes: &[NodeIndex]) -> Vec<f64> {
+        let mut scores = vec![0.0; nodes.len()];
+        let n = self.bounds.len();
+        for i in 0..n {
+            let mut sorted_nodes = (0..nodes.len()).map(|j| {
+                let NodeIndex(layer, index) = nodes[j];
+                let node_score = (self.top_down_properties[layer][index].guaranteed[i], self.top_down_properties[layer][index].achievable[i]);
+                (node_score, j)
+            }).collect::<Vec<((usize, usize), usize)>>();
+            sorted_nodes.sort_unstable();
+            let k = nodes.len() as f64;
+            for (rank, (_, l)) in sorted_nodes.iter().copied().enumerate() {
+                scores[l] += (rank as f64) / k;
+            }
+        }
+        for score in scores.iter_mut() {
+            *score /= n as f64;
+        }
+        scores
+    }
 }
 
 #[cfg(test)]

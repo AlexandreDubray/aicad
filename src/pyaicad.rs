@@ -16,6 +16,7 @@ pub enum PyOrderingHeuristic {
 pub enum PyMergeHeuristic {
     LessRelaxed,
     MostLikely,
+    StateSimilarity,
 }
 
 #[pyclass]
@@ -106,6 +107,7 @@ impl Solver {
         let merge = match pymerge {
             PyMergeHeuristic::LessRelaxed => MergeHeuristic::LessRelaxed,
             PyMergeHeuristic::MostLikely => MergeHeuristic::MostLikely,
+            PyMergeHeuristic::StateSimilarity => MergeHeuristic::StateSimilarity,
         };
 
         let select = match pyselect {

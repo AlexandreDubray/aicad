@@ -295,6 +295,21 @@ impl Constraint for AllDifferent {
             self.bottom_up_properties[layer].truncate(layers_size[layer]);
         }
     }
+
+    fn rank_nodes(&self, nodes: &[NodeIndex]) -> Vec<f64> {
+        let mut scores = vec![0.0; nodes.len()];
+        let mut sorted_nodes = (0..nodes.len()).map(|i| {
+            let NodeIndex(layer, index) = nodes[i];
+            let node_score = self.top_down_properties[layer][index].value_all_path.size();
+            (node_score, i)
+        }).collect::<Vec<(usize, usize)>>();
+        sorted_nodes.sort_unstable();
+        let n = nodes.len() as f64;
+        for (rank, (_, i)) in sorted_nodes.iter().copied().enumerate() {
+            scores[i] = (rank as f64) / n;
+        }
+        scores
+    }
 }
 
 impl std::fmt::Display for AllDifferentProperty {

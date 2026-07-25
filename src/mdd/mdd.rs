@@ -9,6 +9,8 @@ use rand::prelude::*;
 use rand_xoshiro::Xoshiro256Plus;
 use rand::SeedableRng;
 
+use std::collections::VecDeque;
+
 use std::fs;
 use rustc_hash::{FxHashSet, FxHashMap};
 
@@ -137,6 +139,10 @@ impl Mdd {
         self.order[layer]
     }
 
+    pub fn problem(&self) -> &Problem {
+        &self.problem
+    }
+
     // --- split and refine strategy ---- //
 
     pub fn refine(&mut self) {
@@ -161,7 +167,8 @@ impl Mdd {
         }
     }
 
-    fn split_node(&mut self, node: NodeIndex) {
+    fn split_node(&mut self, node: NodeIndex) -> Vec<NodeIndex> {
+        let mut nodes = vec![node];
         let NodeIndex(layer, _) = node;
         let n = self[node].number_parents();
         let outgoing_assignments = self[node]
@@ -172,6 +179,7 @@ impl Mdd {
         self[node].set_relaxed(false);
         for i in (1..n).rev() {
             let new_node = self.add_node(layer, false);
+            nodes.push(new_node);
             let edge = self[node].parent_edge_at(i);
             let from = self[edge].from();
             let assignment = self[edge].assignment();
@@ -182,8 +190,8 @@ impl Mdd {
             self[edge].deactivate();
             self[node].swap_remove_parent_edge(i);
         }
+        nodes
     }
-
 
     pub fn propagate_constraints(&mut self) {
         let number_layers = self.nodes.len();
@@ -245,6 +253,8 @@ impl Mdd {
             }
         }
     }
+
+
 
     fn remove_node(&mut self, node: NodeIndex) {
         if !self[node].is_active() {
@@ -325,20 +335,42 @@ impl Mdd {
             return;
         }
         let node_ranks = self.merge_heuristic.rank_nodes(self, layer);
-        // `node_ranks` is sorted by ascending score, and a higher score means the node is
-        // "better" to keep distinct (less relaxed / more likely). We therefore keep the top
-        // `max_width - 1` highest-scored nodes untouched, and merge the remaining (lowest
-        // scored) nodes into a single relaxed node.
         let active_nodes = node_ranks.len();
         if active_nodes <= self.max_width {
             return;
         }
-        let into = node_ranks[active_nodes - self.max_width].1;
-        self[into].set_relaxed(true);
-        for i in 0..active_nodes - self.max_width {
-            let from = node_ranks[i].1;
-            self.merge_nodes(from, into);
-            self[from].deactivate();
+        if !self.merge_heuristic.bucket_merge() {
+            let into = node_ranks[active_nodes - self.max_width].1;
+            self[into].set_relaxed(true);
+            for i in 0..active_nodes - self.max_width {
+                let from = node_ranks[i].1;
+                self.merge_nodes(from, into);
+                self[from].deactivate();
+            }
+        } else {
+            let q = node_ranks.len() / self.max_width;
+            let r = node_ranks.len() % self.max_width;
+            let mut bucket_sizes = vec![q; self.max_width - r];
+            bucket_sizes.extend(vec![q + 1; r]);
+            let mut i = 0;
+            for _ in 0..self.max_width - r {
+                let into = node_ranks[i].1;
+                for j in (i+1)..(i + q) {
+                    let from  = node_ranks[j].1;
+                    self.merge_nodes(from, into);
+                    self[from].deactivate();
+                }
+                i += q;
+            }
+            for _ in 0..r {
+                let into = node_ranks[i].1;
+                for j in (i+1)..(i + q + 1) {
+                    let from  = node_ranks[j].1;
+                    self.merge_nodes(from, into);
+                    self[from].deactivate();
+                }
+                i += q + 1;
+            }
         }
     }
 

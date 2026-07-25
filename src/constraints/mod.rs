@@ -43,5 +43,6 @@ pub trait Constraint: DeepSizeOf {
     fn eq_node_state(&self, node: NodeIndex, other: NodeIndex) -> bool;
     fn name(&self) -> &'static str;
     fn shrink_layers(&mut self, layers_size: &[usize]);
+    fn rank_nodes(&self, nodes: &[NodeIndex]) -> Vec<f64>;
 }
 
