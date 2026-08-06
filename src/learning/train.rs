@@ -84,7 +84,7 @@ where
         + Send
         + Sync
         + 'static,
-    L: Loss<B, NC::N>,
+    L: Loss<B, NC::N> + Loss<B::InnerBackend, <NC::N as AutodiffModule<B>>::InnerModule>,
 {
     // Initialise the network architecture with the given parameters
     let mut network = network_config.init(device);
@@ -100,7 +100,7 @@ where
 
     let mut optim = AdamConfig::new().init();
 
-    let mut best_score = f64::NEG_INFINITY;
+    let mut best_score = f64::INFINITY;
 
     for epoch in 0..training.num_epochs {
         let mut epoch_loss = 0.0;
@@ -128,47 +128,55 @@ where
             report.print(40);
         }
 
-        // Model selection: only ever looks at `valid_dataloader`, which the optimiser never
-        // touches. Runs in inference mode (`network.valid()`), on `B::InnerBackend`, with no
-        // gradient bookkeeping.
         if (epoch + 1) % training.validation_interval == 0 {
+            // Pass the network in validation mode
             let valid_network = network.valid();
             let mut valid_report: Option<SatisfactionReport> = None;
+            let mut valid_loss_sum = 0.0f64;
+            let mut valid_batches = 0usize;
 
             for batch in valid_dataloader.iter() {
                 let logits = valid_network.forward(&batch);
-                let batch_report = SatisfactionReport::build(logits, &batch);
-                match &mut valid_report {
-                    Some(report) => report.merge(batch_report),
-                    None => valid_report = Some(batch_report),
-                }
-            }
 
-            if let Some(report) = valid_report {
-                let score = match training.model_selection {
+                match training.model_selection {
                     ModelSelection::Loss => {
-                        let l = 0.0;
-                        println!("epoch {epoch}: validation loss = {:.3}", l);
-                        l
+                        let loss = loss_fn.loss(logits, &batch);
+                        valid_loss_sum += loss.into_scalar().elem::<f32>() as f64;
                     }
                     ModelSelection::ConstraintSatisfaction => {
-                        let rate = report.overall_rate();
-                        println!(
-                            "epoch {epoch}: validation satisfaction rate = {:.1}%",
-                            rate * 100.0
-                        );
-                        1.0 - report.overall_rate()
+                        let batch_report = SatisfactionReport::build(logits.clone(), &batch);
+                        match &mut valid_report {
+                            Some(report) => report.merge(batch_report),
+                            None => valid_report = Some(batch_report),
+                        }
                     }
-                };
+                }
+                valid_batches += 1;
+            }
 
-                if score < best_score {
-                    best_score = score;
-                    if let Err(e) = network
-                        .clone()
-                        .save_file(out_dir.join("weights"), &CompactRecorder::new())
-                    {
-                        eprintln!("warning: failed to save checkpoint at epoch {epoch}: {e}");
-                    }
+            let score = match training.model_selection {
+                ModelSelection::Loss => {
+                    let avg_valid_loss = valid_loss_sum / valid_batches as f64;
+                    println!("epoch {epoch}: validation loss = {avg_valid_loss:.4}");
+                    avg_valid_loss
+                }
+                ModelSelection::ConstraintSatisfaction => {
+                    let rate = valid_report.unwrap().overall_rate();
+                    println!(
+                        "epoch {epoch}: validation satisfaction rate = {:.3}%",
+                        rate * 100.0
+                    );
+                    1.0 - rate
+                }
+            };
+
+            if score < best_score {
+                best_score = score;
+                if let Err(e) = network
+                    .clone()
+                    .save_file(out_dir.join("weights"), &CompactRecorder::new())
+                {
+                    eprintln!("warning: failed to save checkpoint at epoch {epoch}: {e}");
                 }
             }
         }

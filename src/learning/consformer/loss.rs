@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use burn::tensor::activation::softmax;
-use burn::tensor::backend::{AutodiffBackend, Backend};
+use burn::tensor::backend::Backend;
 use burn::tensor::{Int, Tensor};
 
 use crate::constraints::{AllDifferent, Constraint, NotEquals};
@@ -63,7 +63,7 @@ fn constraint_loss<B: Backend>(
 
 pub struct ConsFormerLoss;
 
-impl<B: AutodiffBackend> Loss<B, ConsFormer<B>> for ConsFormerLoss {
+impl<B: Backend> Loss<B, ConsFormer<B>> for ConsFormerLoss {
     fn loss(&self, logits: Tensor<B, 3>, batch: &ConsFormerBatch<B>) -> Tensor<B, 1> {
         let probs = softmax(logits, 2);
         let problems = batch.problems();
@@ -100,8 +100,6 @@ impl<B: AutodiffBackend> Loss<B, ConsFormer<B>> for ConsFormerLoss {
                         .or_default()
                         .extend(scope);
                 } else {
-                    // Fallback: no grouped fast path for this constraint type
-                    // yet -- same per-instance dispatch as before.
                     let sample_probs: Tensor<B, 2> = probs.clone().slice([i..i + 1]).squeeze();
                     total = total + constraint_loss(c, &sample_probs);
                 }

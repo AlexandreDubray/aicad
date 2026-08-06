@@ -36,7 +36,7 @@ pub trait NetworkConfig<B: Backend> {
 }
 
 /// Generic loss function. It receives the logits of the network as input and returns the loss of
-/// each sample in the batch
-pub trait Loss<B: burn::tensor::backend::AutodiffBackend, N: Network<B>> {
+/// each sample in the batch.
+pub trait Loss<B: Backend, N: Network<B>> {
     fn loss(&self, logits: Tensor<B, 3>, batch: &N::Batch) -> Tensor<B, 1>;
 }
