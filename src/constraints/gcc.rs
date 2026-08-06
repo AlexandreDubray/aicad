@@ -261,6 +261,10 @@ impl Constraint for Gcc {
         "GCC"
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn shrink_layers(&mut self, layers_size: &[usize]) {
         for layer in 0..self.top_down_properties.len() {
             self.top_down_properties[layer].truncate(layers_size[layer]);

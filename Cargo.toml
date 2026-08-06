@@ -10,6 +10,8 @@ pyo3 = { version= "0.28", features = ["extension-module"] }
 rand = "0.10"
 rand_xoshiro = "0.8"
 deepsize = "0.2.0"
+burn = { version = "~0.21", features = ["train", "ndarray", "cuda"] }
+serde = "1.0"
 
 [package.metadata.docs.rs]
 rustdoc-args = [ "--html-in-header", "katex-header.html" ]

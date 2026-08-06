@@ -9,7 +9,6 @@ use rand::prelude::*;
 use rand_xoshiro::Xoshiro256Plus;
 use rand::SeedableRng;
 
-use std::collections::VecDeque;
 
 use std::fs;
 use rustc_hash::{FxHashSet, FxHashMap};

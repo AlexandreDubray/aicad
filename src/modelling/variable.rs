@@ -1,4 +1,5 @@
 use super::*;
+use rand::RngExt;
 
 pub struct Variable {
     domain: Vec<isize>,
@@ -7,7 +8,6 @@ pub struct Variable {
 }
 
 impl Variable {
-
     pub fn new(domain: Vec<isize>, probs: Option<Vec<f64>>) -> Self {
         let probabilities = match probs {
             Some(probabilities) => probabilities,
@@ -15,7 +15,7 @@ impl Variable {
                 let n = domain.len();
                 let p = 1.0 / (n as f64);
                 vec![p; n]
-            },
+            }
         };
         Self {
             domain,
@@ -23,7 +23,6 @@ impl Variable {
             constraints: vec![],
         }
     }
-
 
     /// Returns the value of the domain at the given index
     pub fn value(&self, index: ValueIndex) -> isize {
@@ -73,4 +72,14 @@ impl Variable {
         self.constraints.len()
     }
 
+    pub fn sample(&self) -> isize {
+        let mut roll: f64 = rand::rng().random();
+        for (index, prob) in self.probabilities.iter().copied().enumerate() {
+            roll -= prob;
+            if roll < 0.0 {
+                return self.domain[index];
+            }
+        }
+        *self.domain.last().unwrap()
+    }
 }
