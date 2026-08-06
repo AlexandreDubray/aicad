@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use burn::prelude::ElementConversion;
 use burn::tensor::backend::Backend;
 use burn::tensor::{Int, Tensor};
 
@@ -46,14 +47,14 @@ impl SatisfactionReport {
         let problems = batch.problems();
         let batch_size = problems.len();
 
-        // Arg-max tensor of shape (batch_size, number_var, domain_size) over the last dimension
-        // result in (batch_size, number_var, 1). Squeeze reduce all dimensions of size 1
         let assignment: Tensor<B, 2, Int> = logits.argmax(2).squeeze();
-        // Get back the assignments as a flat tensor
         let assignment: Vec<i64> = assignment
             .into_data()
-            .to_vec::<i64>()
-            .expect("decoded assignment should be an integer tensor");
+            .to_vec::<B::IntElem>()
+            .expect("decoded assignment should be an integer tensor")
+            .into_iter()
+            .map(|v| v.elem::<i64>())
+            .collect();
 
         let mut by_constraint: HashMap<&'static str, ConstraintStats> = HashMap::new();
 

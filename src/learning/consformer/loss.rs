@@ -19,20 +19,8 @@ impl<B: Backend> ConstraintLoss<B> for AllDifferent {
     // TODO: Handle the two cases defined in ConsFormer paper's based on the domain size and the
     // number of variable in the scope
     fn constraint_penalty(&self, probs: Tensor<B, 2>) -> Tensor<B, 1> {
-        let [n, domain_size] = probs.dims();
-        let device = probs.device();
-        let mut penalty = Tensor::<B, 1>::zeros([1], &device);
-
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let pi = probs.clone().slice([i..i + 1, 0..domain_size]);
-                let pj = probs.clone().slice([j..j + 1, 0..domain_size]);
-                let pair_collision = (pi * pj).sum();
-                penalty = penalty + pair_collision.reshape([1]);
-            }
-        }
-
-        penalty
+        let collisions = probs.clone().matmul(probs.transpose());
+        collisions.triu(1).sum().reshape([1])
     }
 }
 
