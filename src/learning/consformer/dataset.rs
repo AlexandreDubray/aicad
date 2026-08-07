@@ -5,8 +5,50 @@ use burn::data::dataset::Dataset;
 use burn::tensor::backend::Backend;
 use burn::tensor::{Bool, Int, Tensor};
 
-use crate::learning::HasProblems;
+use crate::learning::Batch;
 use crate::modelling::{Problem, VariableIndex};
+
+/// Computes the attention mask and variable indicator mask for ConsFormer
+pub fn consformer_masks<B: Backend>(
+    problem: &Problem,
+    device: &B::Device,
+) -> (Tensor<B, 2, Bool>, Tensor<B, 1, Bool>) {
+    let n = problem.number_variables();
+    let mut flat_attention_mask = vec![false; n * n];
+
+    // Every variable always attends to itself, unconditionally. Without
+    // this, a variable with no constraints at all would have a fully -inf
+    // attention row, and softmax over an all -inf row produces NaN
+    for i in 0..n {
+        flat_attention_mask[i * n + i] = true;
+    }
+
+    // Each variable linked in the primal graph gets attention between them.
+    for constraint in problem.iter_constraints() {
+        let scope = problem[constraint]
+            .iter_scope()
+            .collect::<Vec<VariableIndex>>();
+        for i in 0..scope.len() {
+            let u = *scope[i];
+            for j in i + 1..scope.len() {
+                let v = *scope[j];
+                flat_attention_mask[u * n + v] = true;
+                flat_attention_mask[v * n + u] = true;
+            }
+        }
+    }
+
+    let attention_mask: Tensor<B, 2, Bool> =
+        Tensor::<B, 1, Bool>::from_data(flat_attention_mask.as_slice(), device).reshape([n, n]);
+
+    let is_var = problem
+        .iter_variables()
+        .map(|v| problem[v].domain_size() > 1)
+        .collect::<Vec<bool>>();
+    let var_mask = Tensor::from_data(is_var.as_slice(), device);
+
+    (attention_mask, var_mask)
+}
 
 /// Sample used to train ConsFormer. We have the problem, the attention mask (derived from the
 /// problem), and the var mask (derived from the problem).
@@ -42,42 +84,7 @@ impl<B: Backend> ConsFormerDataset<B> {
         let samples = problems
             .into_iter()
             .map(|problem| {
-                let n = problem.number_variables();
-                let mut flat_attention_mask = vec![false; n * n];
-
-                // Every variable always attends to itself, unconditionally --
-                // without this, a variable with no constraints at all would have
-                // a fully -inf attention row, and softmax over an all -inf row
-                // produces NaN
-                for i in 0..n {
-                    flat_attention_mask[i * n + i] = true;
-                }
-
-                // Each variable linked in the primal graph get attention between them.
-                for constraint in problem.iter_constraints() {
-                    let scope = problem[constraint]
-                        .iter_scope()
-                        .collect::<Vec<VariableIndex>>();
-                    for i in 0..scope.len() {
-                        let u = *scope[i];
-                        for j in i + 1..scope.len() {
-                            let v = *scope[j];
-                            flat_attention_mask[u * n + v] = true;
-                            flat_attention_mask[v * n + u] = true;
-                        }
-                    }
-                }
-
-                let attention_mask: Tensor<B, 2, Bool> =
-                    Tensor::<B, 1, Bool>::from_data(flat_attention_mask.as_slice(), device)
-                        .reshape([n, n]);
-
-                let is_var = problem
-                    .iter_variables()
-                    .map(|v| problem[v].domain_size() > 1)
-                    .collect::<Vec<bool>>();
-                let var_mask = Tensor::from_data(is_var.as_slice(), device);
-
+                let (attention_mask, var_mask) = consformer_masks::<B>(&problem, device);
                 ConsFormerSample {
                     problem,
                     attention_mask,
@@ -125,12 +132,6 @@ impl<B: Backend> std::fmt::Debug for ConsFormerBatch<B> {
     }
 }
 
-impl<B: Backend> HasProblems<B> for ConsFormerBatch<B> {
-    fn problems(&self) -> &[Arc<Problem>] {
-        &self.problems
-    }
-}
-
 impl<B: Backend> Batcher<B, ConsFormerSample<B>, ConsFormerBatch<B>> for ConsFormerBatcher {
     /// Computes the batch from a set of samples. This function just stack the associated tensors
     /// and create initial assignments by sampling uniformly each variable. Note that this respect
@@ -157,6 +158,34 @@ impl<B: Backend> Batcher<B, ConsFormerSample<B>, ConsFormerBatch<B>> for ConsFor
         let n = problems[0].number_variables();
         let assignments: Tensor<B, 2, Int> =
             Tensor::<B, 1, Int>::from_data(init.as_slice(), device).reshape([problems.len(), n]);
+
+        ConsFormerBatch {
+            assignments,
+            attention_masks,
+            var_masks,
+            problems,
+        }
+    }
+}
+
+impl<B: Backend> Batch<B> for ConsFormerBatch<B> {
+    fn problems(&self) -> &[Arc<Problem>] {
+        &self.problems
+    }
+
+    /// Batch used for inference. This is basically a batch for the same problem. We allow to have
+    /// multiple assignments for the same problem, allowing parallel execution of local search.
+    fn for_assignments(problem: &Arc<Problem>, assignments: Tensor<B, 2, Int>, device: &B::Device) -> Self {
+        let number_assignments = assignments.dims()[0];
+        let (attention_mask, var_mask) = consformer_masks::<B>(problem, device);
+
+        let attention_masks = attention_mask
+            .unsqueeze::<3>()
+            .repeat_dim(0, number_assignments);
+        let var_masks = var_mask.unsqueeze::<2>().repeat_dim(0, number_assignments);
+        let problems: Vec<Arc<Problem>> = std::iter::repeat_with(|| Arc::clone(problem))
+            .take(number_assignments)
+            .collect();
 
         ConsFormerBatch {
             assignments,

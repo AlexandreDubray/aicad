@@ -3,7 +3,7 @@ pub mod dataset;
 pub mod loss;
 
 pub use architecture::ConsFormer;
-pub use dataset::{ConsFormerBatch, ConsFormerBatcher, ConsFormerDataset, ConsFormerSample};
+pub use dataset::{consformer_masks, ConsFormerBatch, ConsFormerBatcher, ConsFormerDataset, ConsFormerSample};
 pub use loss::{ConsFormerLoss, ConstraintLoss};
 
 use burn::config::Config;

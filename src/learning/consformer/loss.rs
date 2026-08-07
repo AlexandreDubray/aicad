@@ -5,7 +5,7 @@ use burn::tensor::backend::Backend;
 use burn::tensor::{Int, Tensor};
 
 use crate::constraints::{AllDifferent, Constraint, NotEquals};
-use crate::learning::{HasProblems, Loss};
+use crate::learning::{Batch, Loss};
 
 use super::architecture::ConsFormer;
 use super::dataset::ConsFormerBatch;

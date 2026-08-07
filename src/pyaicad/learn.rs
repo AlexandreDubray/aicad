@@ -145,7 +145,7 @@ impl From<&PyTrainingConfig> for TrainingConfig {
 /// `#[derive(Default)]` wrapper around a device index (`CudaDevice(0)`). To actually touch the
 /// GPU, we need to create a tensor. To avoid lazy initialisation, we turn it into_data(). If no
 /// cude device is available, this should panic; which we catch manually.
-fn cuda_available() -> bool {
+pub(super) fn cuda_available() -> bool {
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let result = std::panic::catch_unwind(|| {

@@ -6,18 +6,28 @@ use std::sync::Arc;
 
 use burn::module::Module;
 use burn::tensor::backend::Backend;
-use burn::tensor::Tensor;
+use burn::tensor::{Int, Tensor};
 
 use crate::modelling::Problem;
 
-/// Trait that must be implemented by the network's batch to get access to the underlying problems
-pub trait HasProblems<B: Backend> {
+/// Batch type each network operates on. Covers both what's needed at
+/// training time and at inference time. One trait, implemented once per
+/// architecture.
+pub trait Batch<B: Backend>: Clone + Send + Sync + std::fmt::Debug + 'static {
     fn problems(&self) -> &[Arc<Problem>];
+
+    /// Builds a batch for a population of `assignments.dims()[0]` parallel
+    /// candidate assignments to the same `problem`.
+    fn for_assignments(
+        problem: &Arc<Problem>,
+        assignments: Tensor<B, 2, Int>,
+        device: &B::Device,
+    ) -> Self;
 }
 
 /// Trait that each network, independent of its architecture, must implement.
 pub trait Network<B: Backend>: Module<B> {
-    type Batch: HasProblems<B> + Clone + Send + Sync + std::fmt::Debug + 'static;
+    type Batch: Batch<B>;
 
     /// Evaluate the network. It receive a batch, which can be of arbitrary size during training,
     /// or a singleton at inference, and return logits over the variable domains (which can then be
