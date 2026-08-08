@@ -20,8 +20,8 @@ impl Default for ConstraintStats {
             count: 0,
             sum_rate: 0.0,
             sum_rate_sq: 0.0,
-            min: 0.0,
-            max: 1.0,
+            min: f64::INFINITY,
+            max: f64::NEG_INFINITY,
         }
     }
 }
@@ -54,21 +54,17 @@ impl ConstraintStats {
     }
 }
 
-/// For each constraint, get a report on how it is satisfied by a neural-network prediction. This
-/// is used to monitor training, regardless of the loss function.
-/// The intuition is that, if given enough time, the neural network should learn to satisfy
-/// constraints. We group the stat per constraint.
 pub struct SatisfactionReport {
     by_constraint: HashMap<&'static str, ConstraintStats>,
 }
 
 impl SatisfactionReport {
-    /// Builds a report for the current batch
+    /// Builds a report for the current batch.
     pub fn build<B: Backend, Ba: Batch<B>>(logits: Tensor<B, 3>, batch: &Ba) -> Self {
         let problems = batch.problems();
         let batch_size = problems.len();
 
-        let assignment: Tensor<B, 2, Int> = logits.argmax(2).squeeze();
+        let assignment: Tensor<B, 2, Int> = logits.argmax(2).squeeze_dim(2);
         let assignment: Vec<i64> = assignment
             .into_data()
             .to_vec::<B::IntElem>()
@@ -82,59 +78,53 @@ impl SatisfactionReport {
         for (i, problem) in problems.iter().enumerate().take(batch_size) {
             let number_vars = problem.number_variables();
             let start = i * number_vars;
-            // Get the assignment from this sample
             let sample_assignment: Vec<isize> = assignment[start..start + number_vars]
                 .iter()
                 .map(|&v| v as isize)
                 .collect();
 
+            // First tally (satisfied, total) per constraint type, within
+            // this problem only.
+            let mut per_type: HashMap<&'static str, (usize, usize)> = HashMap::new();
             for constraint in problem.iter_constraints() {
                 let c = &problem[constraint];
-                let satisfied = if c.is_satisfied(&sample_assignment) {
-                    1.0
-                } else {
-                    0.0
-                };
+                let entry = per_type.entry(c.name()).or_insert((0, 0));
+                entry.1 += 1;
+                if c.is_satisfied(&sample_assignment) {
+                    entry.0 += 1;
+                }
+            }
 
-                let entry = by_constraint.entry(c.name()).or_default();
+            // Then fold this problem's per-type rate in as a single sample
+            // -- this is the step that makes it "per problem" rather than
+            // "per instance".
+            for (name, (satisfied, total)) in per_type {
+                if total == 0 {
+                    continue;
+                }
+                let rate = satisfied as f64 / total as f64;
+                let entry = by_constraint.entry(name).or_default();
                 entry.count += 1;
-                entry.sum_rate += satisfied;
-                entry.sum_rate_sq += satisfied * satisfied;
-                entry.min = entry.min.min(satisfied);
-                entry.max = entry.max.max(satisfied);
+                entry.sum_rate += rate;
+                entry.sum_rate_sq += rate * rate;
+                entry.min = entry.min.min(rate);
+                entry.max = entry.max.max(rate);
             }
         }
 
         SatisfactionReport { by_constraint }
     }
 
-    /// Overall satisfaction rate across every constraint instance seen,
-    /// pooled (not averaged-per-type -- a constraint type with 10x more
-    /// instances counts 10x more), for use as a single model-selection score
-    /// against a validation set.
-    pub fn overall_rate(&self) -> f64 {
-        let (total_count, total_rate) = self
-            .by_constraint
-            .values()
-            .fold((0usize, 0.0), |(count, rate), stats| {
-                (count + stats.count, rate + stats.sum_rate)
-            });
-
-        if total_count == 0 {
-            0.0
-        } else {
-            total_rate / total_count as f64
-        }
-    }
-
-    /// Merges the other satisfaction report into this one. Used for merging reports from multiple
-    /// batch in a given epoch
+    /// Merges another report into this one, e.g. across multiple batches in
+    /// an epoch.
     pub fn merge(&mut self, other: SatisfactionReport) {
         for (name, stats) in other.by_constraint {
             let entry = self.by_constraint.entry(name).or_default();
             entry.count += stats.count;
             entry.sum_rate += stats.sum_rate;
             entry.sum_rate_sq += stats.sum_rate_sq;
+            entry.min = entry.min.min(stats.min);
+            entry.max = entry.max.max(stats.max);
         }
     }
 
@@ -152,23 +142,18 @@ impl SatisfactionReport {
 
         println!(
             "{:<name_width$} {:>8} {:>8}  {:>8}  {:>8}  {:>8}",
-            "TYPE", "MIN", "MAX", "AVG SAT", "STDDEV", "COUNT",
+            "TYPE", "MIN", "MAX", "AVG SAT", "STDDEV", "PROBLEMS",
         );
         println!("{}", "-".repeat(name_width + width + 32));
 
         for (name, stats) in &rows {
-            let mean = stats.mean();
-            let min = stats.min();
-            let max = stats.max();
-            let std = stats.stddev();
-
             println!(
                 "{:<name_width$} {:>8.0} {:>8.0}  {:>7.1}%  {:>7.1}%  {:>8}",
                 name,
-                mean * 100.0,
-                min * 100.0,
-                max * 100.0,
-                std * 100.0,
+                stats.min() * 100.0,
+                stats.max() * 100.0,
+                stats.mean() * 100.0,
+                stats.stddev() * 100.0,
                 stats.count,
             );
         }

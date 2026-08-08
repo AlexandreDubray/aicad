@@ -109,7 +109,6 @@ where
         for batch in train_dataloader.iter() {
             let logits = network.forward(&batch);
 
-            // Purely informative -- see `SatisfactionReport`'s doc comment.
             let batch_report = SatisfactionReport::build(logits.clone(), &batch);
             match &mut epoch_report {
                 Some(report) => report.merge(batch_report),
@@ -161,12 +160,7 @@ where
                     avg_valid_loss
                 }
                 ModelSelection::ConstraintSatisfaction => {
-                    let rate = valid_report.unwrap().overall_rate();
-                    println!(
-                        "epoch {epoch}: validation satisfaction rate = {:.3}%",
-                        rate * 100.0
-                    );
-                    1.0 - rate
+                    panic!("Constraint satisfaction for model selection is not implemented");
                 }
             };
 
