@@ -6,11 +6,24 @@ use burn::tensor::{Int, Tensor};
 
 use crate::learning::Batch;
 
-#[derive(Default)]
 struct ConstraintStats {
     count: usize,
     sum_rate: f64,
     sum_rate_sq: f64,
+    min: f64,
+    max: f64,
+}
+
+impl Default for ConstraintStats {
+    fn default() -> Self {
+        Self {
+            count: 0,
+            sum_rate: 0.0,
+            sum_rate_sq: 0.0,
+            min: 0.0,
+            max: 1.0,
+        }
+    }
 }
 
 impl ConstraintStats {
@@ -30,6 +43,14 @@ impl ConstraintStats {
             let variance = self.sum_rate_sq / self.count as f64 - mean * mean;
             variance.max(0.0).sqrt()
         }
+    }
+
+    fn min(&self) -> f64 {
+        self.min
+    }
+
+    fn max(&self) -> f64 {
+        self.max
     }
 }
 
@@ -79,6 +100,8 @@ impl SatisfactionReport {
                 entry.count += 1;
                 entry.sum_rate += satisfied;
                 entry.sum_rate_sq += satisfied * satisfied;
+                entry.min = entry.min.min(satisfied);
+                entry.max = entry.max.max(satisfied);
             }
         }
 
@@ -128,19 +151,24 @@ impl SatisfactionReport {
         let name_width = rows.iter().map(|(n, _)| n.len()).max().unwrap_or(4).max(4);
 
         println!(
-            "{:<name_width$}  {:>8}  {:>8}  {:>8}",
-            "TYPE", "AVG SAT", "STDDEV", "COUNT",
+            "{:<name_width$} {:>8} {:>8}  {:>8}  {:>8}  {:>8}",
+            "TYPE", "MIN", "MAX", "AVG SAT", "STDDEV", "COUNT",
         );
         println!("{}", "-".repeat(name_width + width + 32));
 
         for (name, stats) in &rows {
             let mean = stats.mean();
+            let min = stats.min();
+            let max = stats.max();
+            let std = stats.stddev();
 
             println!(
-                "{:<name_width$}  {:>7.1}%  {:>7.1}%  {:>8}",
+                "{:<name_width$} {:>8.0} {:>8.0}  {:>7.1}%  {:>7.1}%  {:>8}",
                 name,
                 mean * 100.0,
-                stats.stddev() * 100.0,
+                min * 100.0,
+                max * 100.0,
+                std * 100.0,
                 stats.count,
             );
         }

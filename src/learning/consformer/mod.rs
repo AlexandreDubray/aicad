@@ -3,7 +3,9 @@ pub mod dataset;
 pub mod loss;
 
 pub use architecture::ConsFormer;
-pub use dataset::{consformer_masks, ConsFormerBatch, ConsFormerBatcher, ConsFormerDataset, ConsFormerSample};
+pub use dataset::{
+    consformer_masks, ConsFormerBatch, ConsFormerBatcher, ConsFormerDataset, ConsFormerSample,
+};
 pub use loss::{ConsFormerLoss, ConstraintLoss};
 
 use burn::config::Config;
@@ -35,8 +37,8 @@ pub struct ConsFormerConfig {
     /// Insert bias in feed-forward block
     #[config(default = true)]
     pub bias: bool,
-    /// Number of variables in the problem
-    pub num_vars: usize,
+    /// Positional encodign for the network. Either none, or structured along n dimensions
+    pub positional_encoding: Option<PositionalStructure>,
 }
 
 impl<B: Backend> NetworkConfig<B> for ConsFormerConfig {
@@ -59,6 +61,15 @@ impl<B: Backend> NetworkConfig<B> for ConsFormerConfig {
             })
             .collect();
 
+        let position_embedding = match &self.positional_encoding {
+            None => None,
+            Some(structure) => Some(StructuredPositionalEmbedding::new(
+                self.embedding_size,
+                structure,
+                device,
+            )),
+        };
+
         ConsFormer {
             mask_embedding: Param::from_tensor(Tensor::random(
                 [self.embedding_size],
@@ -73,11 +84,21 @@ impl<B: Backend> NetworkConfig<B> for ConsFormerConfig {
             embedding_mixer: EmbeddingMixerConfig::new(self.embedding_size).init(device),
             transformer_blocks,
             head: LinearConfig::new(self.hidden_size, self.domain_size).init(device),
-            position_embedding: FixedPositionalEmbedding::new(
-                self.embedding_size,
-                self.num_vars,
-                device,
-            ),
+            position_embedding,
         }
     }
+}
+
+/// Places each variable of a problem along one or more positional axes
+/// (e.g. Sudoku: a row axis and a column axis; nurse rostering: nurse/day/
+/// shift axes). The number of axes is entirely per-problem
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PositionalStructure {
+    /// axis_sizes[i] = number of distinct positions along axis `i`, i.e.
+    /// how large that axis's embedding table needs to be.
+    pub axis_sizes: Vec<usize>,
+    /// positions[v][i] = variable `v`'s index along axis `i`. Must have one
+    /// entry per problem variable (in `VariableIndex` order), each with
+    /// `axis_sizes.len()` coordinates, each `< axis_sizes[a]`.
+    pub positions: Vec<Vec<usize>>,
 }

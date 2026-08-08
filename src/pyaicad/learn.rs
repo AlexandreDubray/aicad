@@ -15,11 +15,39 @@ use rand::seq::SliceRandom;
 
 use crate::learning::consformer::{
     ConsFormerBatcher, ConsFormerConfig, ConsFormerDataset, ConsFormerLoss, ConsFormerSample,
+    PositionalStructure,
 };
 use crate::learning::train::{train_model, ModelSelection, TrainingConfig};
 use crate::modelling::Problem;
 
 use super::problem::PyProblem;
+
+#[pyclass(from_py_object)]
+#[derive(Clone)]
+pub struct PyPositionalEncoding {
+    axis_sizes: Vec<usize>,
+    positions: Vec<Vec<usize>>,
+}
+
+#[pymethods]
+impl PyPositionalEncoding {
+    #[new]
+    fn new(axis_sizes: Vec<usize>, positions: Vec<Vec<usize>>) -> Self {
+        PyPositionalEncoding {
+            axis_sizes,
+            positions,
+        }
+    }
+}
+
+impl From<&PyPositionalEncoding> for PositionalStructure {
+    fn from(p: &PyPositionalEncoding) -> Self {
+        PositionalStructure {
+            axis_sizes: p.axis_sizes.clone(),
+            positions: p.positions.clone(),
+        }
+    }
+}
 
 #[pyclass]
 pub struct PyConsFormerConfig {
@@ -31,23 +59,24 @@ pub struct PyConsFormerConfig {
     pub num_layers: usize,
     pub drop_out: f64,
     pub bias: bool,
-    pub num_vars: usize,
+    pub positional_encoding: Option<PyPositionalEncoding>,
 }
 
 #[pymethods]
 impl PyConsFormerConfig {
     #[new]
-    #[pyo3(signature = (domain_size, embedding_size, hidden_size, num_heads, expand_size, num_vars, num_layers=1, drop_out=0.0, bias=true))]
+    #[pyo3(signature = (domain_size, embedding_size, hidden_size, num_heads, expand_size, num_layers=1, drop_out=0.0, bias=true, positional_encoding=None))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         domain_size: usize,
         embedding_size: usize,
         hidden_size: usize,
         num_heads: usize,
         expand_size: usize,
-        num_vars: usize,
         num_layers: usize,
         drop_out: f64,
         bias: bool,
+        positional_encoding: Option<PyPositionalEncoding>,
     ) -> Self {
         PyConsFormerConfig {
             domain_size,
@@ -58,13 +87,17 @@ impl PyConsFormerConfig {
             num_layers,
             drop_out,
             bias,
-            num_vars,
+            positional_encoding,
         }
     }
 }
 
 impl From<&PyConsFormerConfig> for ConsFormerConfig {
     fn from(c: &PyConsFormerConfig) -> Self {
+        let positional_encoding: Option<PositionalStructure> = match &c.positional_encoding {
+            None => None,
+            Some(p) => Some(p.into()),
+        };
         ConsFormerConfig {
             domain_size: c.domain_size,
             embedding_size: c.embedding_size,
@@ -74,7 +107,7 @@ impl From<&PyConsFormerConfig> for ConsFormerConfig {
             num_layers: c.num_layers,
             drop_out: c.drop_out,
             bias: c.bias,
-            num_vars: c.num_vars,
+            positional_encoding,
         }
     }
 }

@@ -8,8 +8,9 @@ use burn::nn::{
 };
 use burn::tensor::{backend::Backend, Bool, Int, Tensor};
 
-use crate::learning::*;
 use super::dataset::ConsFormerBatch;
+use super::PositionalStructure;
+use crate::learning::*;
 
 // --- Embedding --- //
 
@@ -45,16 +46,6 @@ impl<B: Backend> AssignmentEmbedding<B> {
 }
 
 /// Positional embedding used for identify variables in the attention masks.
-///
-/// This derives `Module` (rather than being a plain struct) even though it has no
-/// trainable parameters, specifically so it can live as a plain field on
-/// `ConsFormer` and correctly participate in device movement -- e.g. if the whole
-/// model is ever moved to a different device, this table needs to move with it.
-/// A non-`Module` field wrapped in `Ignored` would silently *not* move, since
-/// `Ignored` means "nothing here to track," which isn't true of a field that
-/// holds a real tensor. Burn supports plain (non-`Param`) tensor fields directly
-/// in a `Module` struct for exactly this case -- the same way `BatchNorm` stores
-/// its running mean/variance: tracked for device movement, not for gradients.
 #[derive(Module, Debug)]
 pub struct FixedPositionalEmbedding<B: Backend> {
     /// table: pre-computed table to map variable index to position. Tensor of shape (max_len, embedding_size)
@@ -97,6 +88,66 @@ impl<B: Backend> FixedPositionalEmbedding<B> {
         let gathered = self.table.clone().select(0, flat_ids);
 
         gathered.reshape([batch_size, number_variables, embedding_size])
+    }
+}
+
+/// Sums a `FixedPositionalEmbedding` per positional axis (e.g. Sudoku: row
+/// axis + column axis; nurse rostering: nurse/day/shift axes), built from a
+/// `PositionalStructure`. Each axis is looked up independently and the
+/// results are summed (rather than concatenated, the way the original
+/// ConsFormer's hardcoded 2-axis case does) -- summing composes to any
+/// number of axes without needing `embedding_size` to be divisible by the
+/// axis count, and matches how the rest of the embedding mix (assignment,
+/// mask, position) is already combined by `EmbeddingMixer`.
+#[derive(Module, Debug)]
+pub struct StructuredPositionalEmbedding<B: Backend> {
+    /// One table per axis, each sized to that axis's cardinality.
+    axes: Vec<FixedPositionalEmbedding<B>>,
+    #[module(skip)]
+    axis_ids: Vec<Vec<usize>>,
+}
+
+impl<B: Backend> StructuredPositionalEmbedding<B> {
+    /// Creates a new structural positional embedding
+    pub fn new(embedding_size: usize, structure: &PositionalStructure, device: &B::Device) -> Self {
+        // Number of dimensions used to position variables
+        let num_axes = structure.axis_sizes.len();
+
+        let axes = structure
+            .axis_sizes
+            .iter()
+            .map(|&axis_size| FixedPositionalEmbedding::new(embedding_size, axis_size, device))
+            .collect();
+
+        let axis_ids: Vec<Vec<usize>> = (0..num_axes)
+            .map(|a| structure.positions.iter().map(|coords| coords[a]).collect())
+            .collect();
+
+        StructuredPositionalEmbedding {
+            axes,
+            axis_ids: axis_ids,
+        }
+    }
+
+    /// batch_size: number of parallel assignments in this forward call.
+    /// returns: (batch_size, number_vars, embedding_size), summed across
+    /// axes.
+    pub fn forward(&self, batch_size: usize, device: &B::Device) -> Tensor<B, 3> {
+        let mut acc: Option<Tensor<B, 3>> = None;
+        for (axis_embed, ids) in self.axes.iter().zip(self.axis_ids.iter()) {
+            let number_vars = ids.len();
+            let ids_flat: Vec<i64> = ids.iter().map(|&v| v as i64).collect();
+            let ids_2d: Tensor<B, 2, Int> =
+                Tensor::<B, 1, Int>::from_data(ids_flat.as_slice(), device)
+                    .reshape([1, number_vars])
+                    .repeat_dim(0, batch_size);
+            let embed = axis_embed.forward(ids_2d);
+            acc = Some(match acc {
+                None => embed,
+                Some(prev) => prev + embed,
+            });
+        }
+        acc.expect("PositionalStructure must have at least one axis")
     }
 }
 
@@ -396,31 +447,29 @@ pub struct ConsFormer<B: Backend> {
     pub(crate) transformer_blocks: Vec<TransformerBlock<B>>,
     /// Linear layer at the end to re-combine the output of the last multi-head transformer block
     pub(crate) head: Linear<B>,
-    /// Positional embedding, sized to a specific problem's variable count at
-    /// construction time (see `ConsFormerConfig::init`). Living here rather than
-    /// in the training loop keeps position-id construction out of caller code
-    /// entirely -- a plain sequential scheme (0..number_vars) is task-agnostic,
-    /// unlike the original Python's per-task hardcoded position schemes, so
-    /// folding it in here doesn't reintroduce that coupling.
-    pub(crate) position_embedding: FixedPositionalEmbedding<B>,
+    /// Positional structure, built from the config's `PositionalEncoding`
+    /// (see `ConsFormerConfig::init`). `None` means the network gets no
+    /// positional signal at all and relies purely on attention
+    pub(crate) position_embedding: Option<StructuredPositionalEmbedding<B>>,
 }
 
 impl<B: Backend> Network<B> for ConsFormer<B> {
     type Batch = ConsFormerBatch<B>;
 
     fn forward(&self, batch: &ConsFormerBatch<B>) -> Tensor<B, 3> {
-        let [batch_size, seq_len] = batch.assignments.dims();
+        let [batch_size, _seq_len] = batch.assignments.dims();
+        let device = batch.assignments.device();
 
-        let position_ids = Tensor::<B, 1, Int>::arange(0..seq_len as i64, &batch.assignments.device())
-            .reshape([1, seq_len])
-            .repeat_dim(0, batch_size);
-        let position_embeds = self.position_embedding.forward(position_ids);
+        let position_embeds = self
+            .position_embedding
+            .as_ref()
+            .map(|pe| pe.forward(batch_size, &device));
 
         let x = self.assignment_embedding.forward(batch.assignments.clone());
         let mut x = self.embedding_mixer.forward(
             x,
             self.mask_embedding.val(),
-            Some(position_embeds),
+            position_embeds,
             batch.var_masks.clone(),
         );
 
