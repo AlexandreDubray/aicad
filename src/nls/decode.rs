@@ -28,8 +28,8 @@ impl<B: Backend> DecodingOperator<B> for Argmax {
         destroy_mask: Tensor<B, 2, Bool>,
         current: Tensor<B, 2, Int>,
     ) -> Tensor<B, 2, Int> {
-        let proposed: Tensor<B, 2, Int> = logits.argmax(2).squeeze();
-        blend(proposed, current, destroy_mask)
+        let proposed: Tensor<B, 2, Int> = logits.argmax(2).squeeze_dim(2);
+        current.mask_where(destroy_mask, proposed)
     }
 }
 
@@ -52,19 +52,7 @@ impl<B: Backend> DecodingOperator<B> for Sampling {
         let gumbel = -neg_log_u.log(); // Gumbel(0, 1) noise: -ln(-ln(u))
 
         let scaled = logits.div_scalar(self.temperature) + gumbel;
-        let proposed: Tensor<B, 2, Int> = scaled.argmax(2).squeeze();
-        blend(proposed, current, destroy_mask)
+        let proposed: Tensor<B, 2, Int> = scaled.argmax(2).squeeze_dim(2);
+        current.mask_where(destroy_mask, proposed)
     }
-}
-
-/// `result[i] = destroy_mask[i] ? proposed[i] : current[i]`
-fn blend<B: Backend>(
-    proposed: Tensor<B, 2, Int>,
-    current: Tensor<B, 2, Int>,
-    destroy_mask: Tensor<B, 2, Bool>,
-) -> Tensor<B, 2, Int> {
-    let device = destroy_mask.device();
-    let destroy_i = destroy_mask.int();
-    let keep_i = Tensor::<B, 2, Int>::ones(destroy_i.dims(), &device) - destroy_i.clone();
-    proposed * destroy_i + current * keep_i
 }

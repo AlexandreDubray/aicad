@@ -175,14 +175,18 @@ impl<B: Backend> Batch<B> for ConsFormerBatch<B> {
 
     /// Batch used for inference. This is basically a batch for the same problem. We allow to have
     /// multiple assignments for the same problem, allowing parallel execution of local search.
-    fn for_assignments(problem: &Arc<Problem>, assignments: Tensor<B, 2, Int>, device: &B::Device) -> Self {
+    fn for_assignments(
+        problem: &Arc<Problem>,
+        assignments: Tensor<B, 2, Int>,
+        destroy_mask: Tensor<B, 2, Bool>,
+        device: &B::Device,
+    ) -> Self {
         let number_assignments = assignments.dims()[0];
-        let (attention_mask, var_mask) = consformer_masks::<B>(problem, device);
+        let (attention_mask, _) = consformer_masks::<B>(problem, device);
 
         let attention_masks = attention_mask
             .unsqueeze::<3>()
             .repeat_dim(0, number_assignments);
-        let var_masks = var_mask.unsqueeze::<2>().repeat_dim(0, number_assignments);
         let problems: Vec<Arc<Problem>> = std::iter::repeat_with(|| Arc::clone(problem))
             .take(number_assignments)
             .collect();
@@ -190,7 +194,7 @@ impl<B: Backend> Batch<B> for ConsFormerBatch<B> {
         ConsFormerBatch {
             assignments,
             attention_masks,
-            var_masks,
+            var_masks: destroy_mask,
             problems,
         }
     }

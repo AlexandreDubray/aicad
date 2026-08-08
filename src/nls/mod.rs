@@ -65,6 +65,28 @@ impl StoppingCriterion {
         self.start.elapsed() >= self.budget.time_limit
             || self.iters_done >= self.budget.iteration_limit
     }
+
+    fn log(&self, assignments: &Vec<Vec<isize>>, problem: &Arc<Problem>) {
+        if self.iters_done % 10 == 0 {
+            let n = problem.number_constraints() as f64;
+            let satisfaction_rates = assignments
+                .iter()
+                .map(|assignment| {
+                    problem
+                        .iter_constraints()
+                        .filter(|&cstr| problem[cstr].is_satisfied(assignment))
+                        .count() as f64
+                        / n
+                })
+                .collect::<Vec<f64>>();
+            println!(
+                "Iteration {}, elapsed: {} seconds. Satisfaction rates of candidates: {:?}",
+                self.iters_done,
+                self.start.elapsed().as_secs(),
+                satisfaction_rates,
+            );
+        }
+    }
 }
 
 /// Loads a network's hyperparameters (JSON config) and trained weights from
@@ -147,7 +169,12 @@ impl<B: Backend, N: Network<B>> NeuralLocalSearch<B, N> {
                 Tensor::<B, 1, Bool>::from_data(destroy_mask_data.as_slice(), &self.device)
                     .reshape([p, n]);
 
-            let batch = N::Batch::for_assignments(&self.problem, assignments.clone(), &self.device);
+            let batch = N::Batch::for_assignments(
+                &self.problem,
+                assignments.clone(),
+                destroy_mask.clone(),
+                &self.device,
+            );
             let logits = self.network.forward(&batch);
             assignments = self.decode_op.decode(logits, destroy_mask, assignments);
             rows = to_rows(&assignments, p, n);
@@ -163,6 +190,7 @@ impl<B: Backend, N: Network<B>> NeuralLocalSearch<B, N> {
             }
 
             stop.tick();
+            stop.log(&rows, &self.problem);
         }
         None
     }

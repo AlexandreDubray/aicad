@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use burn::module::Module;
 use burn::tensor::backend::Backend;
-use burn::tensor::{Int, Tensor};
+use burn::tensor::{Bool, Int, Tensor};
 
 use crate::modelling::Problem;
 
@@ -17,10 +17,12 @@ pub trait Batch<B: Backend>: Clone + Send + Sync + std::fmt::Debug + 'static {
     fn problems(&self) -> &[Arc<Problem>];
 
     /// Builds a batch for a population of `assignments.dims()[0]` parallel
-    /// candidate assignments to the same `problem`.
+    /// candidate assignments.
+    /// `destroy_mask` flags which variables are being modified this iteration.
     fn for_assignments(
         problem: &Arc<Problem>,
         assignments: Tensor<B, 2, Int>,
+        destroy_mask: Tensor<B, 2, Bool>,
         device: &B::Device,
     ) -> Self;
 }
