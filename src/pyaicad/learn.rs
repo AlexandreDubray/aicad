@@ -60,12 +60,13 @@ pub struct PyConsFormerConfig {
     pub drop_out: f64,
     pub bias: bool,
     pub positional_encoding: Option<PyPositionalEncoding>,
+    pub mask_fraction: f64,
 }
 
 #[pymethods]
 impl PyConsFormerConfig {
     #[new]
-    #[pyo3(signature = (domain_size, embedding_size, hidden_size, num_heads, expand_size, num_layers=1, drop_out=0.0, bias=true, positional_encoding=None))]
+    #[pyo3(signature = (domain_size, embedding_size, hidden_size, num_heads, expand_size, mask_fraction, num_layers=1, drop_out=0.0, bias=true, positional_encoding=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         domain_size: usize,
@@ -73,6 +74,7 @@ impl PyConsFormerConfig {
         hidden_size: usize,
         num_heads: usize,
         expand_size: usize,
+        mask_fraction: f64,
         num_layers: usize,
         drop_out: f64,
         bias: bool,
@@ -88,6 +90,7 @@ impl PyConsFormerConfig {
             drop_out,
             bias,
             positional_encoding,
+            mask_fraction,
         }
     }
 }
@@ -108,6 +111,7 @@ impl From<&PyConsFormerConfig> for ConsFormerConfig {
             drop_out: c.drop_out,
             bias: c.bias,
             positional_encoding,
+            mask_fraction: c.mask_fraction,
         }
     }
 }
@@ -238,7 +242,9 @@ fn run_training<B: AutodiffBackend>(
     let train_dataset = ConsFormerDataset::<B>::new(problems, &device);
     let validation_dataset =
         ConsFormerDataset::<B::InnerBackend>::new(validation_problems, &device);
-    let batcher = ConsFormerBatcher;
+    let batcher = ConsFormerBatcher {
+        mask_fraction: network_config.mask_fraction,
+    };
 
     std::fs::create_dir_all(checkpoint_dir)
         .map_err(|e| PyRuntimeError::new_err(format!("failed to create checkpoint dir: {e}")))?;

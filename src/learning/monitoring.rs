@@ -141,20 +141,19 @@ impl SatisfactionReport {
         let name_width = rows.iter().map(|(n, _)| n.len()).max().unwrap_or(4).max(4);
 
         println!(
-            "{:<name_width$} {:>8} {:>8}  {:>8}  {:>8}  {:>8}",
-            "TYPE", "MIN", "MAX", "AVG SAT", "STDDEV", "PROBLEMS",
+            "{:<name_width$} {:>8} {:>8}  {:>8}  {:>8}",
+            "TYPE", "MIN", "MAX", "AVG SAT", "STDDEV",
         );
         println!("{}", "-".repeat(name_width + width + 32));
 
         for (name, stats) in &rows {
             println!(
-                "{:<name_width$} {:>8.0} {:>8.0}  {:>7.1}%  {:>7.1}%  {:>8}",
+                "{:<name_width$} {:>8.1}% {:>8.1}%  {:>7.1}%  {:>7.1}%",
                 name,
                 stats.min() * 100.0,
                 stats.max() * 100.0,
                 stats.mean() * 100.0,
                 stats.stddev() * 100.0,
-                stats.count,
             );
         }
     }

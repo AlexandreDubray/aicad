@@ -2,8 +2,11 @@ use std::sync::Arc;
 
 use burn::data::dataloader::batcher::Batcher;
 use burn::data::dataset::Dataset;
+use burn::prelude::ElementConversion;
 use burn::tensor::backend::Backend;
 use burn::tensor::{Bool, Int, Tensor};
+
+use rand::RngExt;
 
 use crate::learning::Batch;
 use crate::modelling::{Problem, VariableIndex};
@@ -107,7 +110,9 @@ impl<B: Backend> Dataset<ConsFormerSample<B>> for ConsFormerDataset<B> {
 }
 
 #[derive(Clone, Copy)]
-pub struct ConsFormerBatcher;
+pub struct ConsFormerBatcher {
+    pub mask_fraction: f64,
+}
 
 /// A batch is just a collection of samples with the addition of initial assignments that are
 /// passed to the neural network.
@@ -142,7 +147,31 @@ impl<B: Backend> Batcher<B, ConsFormerSample<B>, ConsFormerBatch<B>> for ConsFor
             samples.iter().map(|s| s.attention_mask.clone()).collect(),
             0,
         );
-        let var_masks = Tensor::stack(samples.iter().map(|s| s.var_mask.clone()).collect(), 0);
+
+        let n = samples[0].problem.number_variables();
+        let mut rng = rand::rng();
+        let mut var_masks_data: Vec<bool> = Vec::with_capacity(samples.len() * n);
+        for s in &samples {
+            let candidates: Vec<i64> = s
+                .var_mask
+                .clone()
+                .int()
+                .into_data()
+                .to_vec::<B::IntElem>()
+                .expect("var mask should convert to int")
+                .into_iter()
+                .map(|v| v.elem::<i64>())
+                .collect();
+            var_masks_data.extend(
+                candidates
+                    .into_iter()
+                    .map(|is_candidate| is_candidate != 0 && rng.random_bool(self.mask_fraction)),
+            );
+        }
+        let var_masks: Tensor<B, 2, Bool> =
+            Tensor::<B, 1, Bool>::from_data(var_masks_data.as_slice(), device)
+                .reshape([samples.len(), n]);
+
         let problems: Vec<Arc<Problem>> = samples.into_iter().map(|s| s.problem).collect();
 
         let init = problems
@@ -155,7 +184,6 @@ impl<B: Backend> Batcher<B, ConsFormerSample<B>, ConsFormerBatch<B>> for ConsFor
             })
             .flatten()
             .collect::<Vec<i64>>();
-        let n = problems[0].number_variables();
         let assignments: Tensor<B, 2, Int> =
             Tensor::<B, 1, Int>::from_data(init.as_slice(), device).reshape([problems.len(), n]);
 

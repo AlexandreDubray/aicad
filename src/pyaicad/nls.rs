@@ -6,6 +6,7 @@ use pyo3::prelude::*;
 
 use burn::backend::cuda::{Cuda, CudaDevice};
 use burn::backend::ndarray::{NdArray, NdArrayDevice};
+use burn::config::Config;
 use burn::tensor::backend::Backend;
 
 use rand::RngExt;
@@ -71,9 +72,9 @@ impl PyDecodeKind {
     iteration_limit=None,
     population_size=1,
     destroy_kind=PyDestroyKind::Random,
-    destroy_fraction=0.5,
+    destroy_fraction=None,
     decode_kind=PyDecodeKind::Argmax,
-    temperature=1.0,
+    temperature=0.1,
     seed=None,
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -85,7 +86,7 @@ pub fn neural_local_search(
     iteration_limit: Option<usize>,
     population_size: usize,
     destroy_kind: PyDestroyKind,
-    destroy_fraction: f64,
+    destroy_fraction: Option<f64>,
     decode_kind: PyDecodeKind,
     temperature: f64,
     seed: Option<u64>,
@@ -97,7 +98,6 @@ pub fn neural_local_search(
         iteration_limit: iteration_limit.unwrap_or(usize::MAX),
     };
     let seed = seed.unwrap_or_else(|| rand::rng().random_range(0..u64::MAX));
-    let destroy_op = destroy_kind.build(destroy_fraction);
 
     if cuda_available() {
         Ok(run::<Cuda>(
@@ -105,7 +105,8 @@ pub fn neural_local_search(
             problem,
             &checkpoint_dir,
             &network_kind,
-            destroy_op,
+            &destroy_kind,
+            destroy_fraction,
             &decode_kind,
             temperature,
             population_size,
@@ -118,7 +119,8 @@ pub fn neural_local_search(
             problem,
             &checkpoint_dir,
             &network_kind,
-            destroy_op,
+            &destroy_kind,
+            destroy_fraction,
             &decode_kind,
             temperature,
             population_size,
@@ -128,16 +130,14 @@ pub fn neural_local_search(
     }
 }
 
-/// Monomorphized per-backend run: loads the requested network onto `B`,
-/// builds the decode operator (backend-typed, unlike destroy), and runs the
-/// search loop.
 #[allow(clippy::too_many_arguments)]
 fn run<B: Backend>(
     device: B::Device,
     problem: Arc<Problem>,
     checkpoint_dir: &Path,
     network_kind: &PyNetworkKind,
-    destroy_op: Box<dyn DestroyOperator>,
+    destroy_kind: &PyDestroyKind,
+    destroy_fraction: Option<f64>,
     decode_kind: &PyDecodeKind,
     temperature: f64,
     population_size: usize,
@@ -148,6 +148,11 @@ fn run<B: Backend>(
 
     match network_kind {
         PyNetworkKind::ConsFormer => {
+            let config = ConsFormerConfig::load(checkpoint_dir.join("config.json"))
+                .expect("failed to load network config");
+            let fraction = destroy_fraction.unwrap_or(config.mask_fraction);
+            let destroy_op = destroy_kind.build(fraction);
+
             let network = load_network::<B, ConsFormerConfig>(checkpoint_dir, &device);
             let nls = NeuralLocalSearch::<B, ConsFormer<B>>::new(
                 problem,

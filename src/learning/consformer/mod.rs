@@ -39,6 +39,9 @@ pub struct ConsFormerConfig {
     pub bias: bool,
     /// Positional encodign for the network. Either none, or structured along n dimensions
     pub positional_encoding: Option<PositionalStructure>,
+    /// Fraction of free variables randomly marked eligible for update on
+    /// each training step (see `ConsFormerBatcher::mask_fraction`).
+    pub mask_fraction: f64,
 }
 
 impl<B: Backend> NetworkConfig<B> for ConsFormerConfig {
