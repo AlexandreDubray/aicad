@@ -17,7 +17,9 @@ pub struct MemoryReport {
 }
 
 impl MemoryReport {
-    pub fn build<'a>(constraints: impl Iterator<Item = &'a Box<dyn Constraint + Send + Sync>>) -> Self {
+    pub fn build<'a>(
+        constraints: impl Iterator<Item = &'a Box<dyn Constraint + Send + Sync>>,
+    ) -> Self {
         let mut by_type: HashMap<&'static str, TypeStats> = HashMap::new();
         let mut grand_total = 0usize;
 
@@ -30,14 +32,17 @@ impl MemoryReport {
             grand_total += bytes;
         }
 
-        MemoryReport { by_type, grand_total }
+        MemoryReport {
+            by_type,
+            grand_total,
+        }
     }
 
     /// Pretty-print a sorted bar chart to the terminal.
     /// `width` controls how wide the bar column is (in characters).
     pub fn print(&self, width: usize) {
         if self.grand_total == 0 {
-            println!("No constraints recorded.");
+            log::warn!("Trying to show mdd memory report: no constraints recorded.");
             return;
         }
 
@@ -47,12 +52,17 @@ impl MemoryReport {
 
         let name_width = rows.iter().map(|(n, _)| n.len()).max().unwrap_or(4).max(4);
 
-        println!(
+        log::info!(
             "{:<name_width$}  {:>10}  {:>8}  {:>10}  {:>6}  {}",
-            "TYPE", "TOTAL", "COUNT", "AVG", "%", "",
+            "TYPE",
+            "TOTAL",
+            "COUNT",
+            "AVG",
+            "%",
+            "",
             name_width = name_width
         );
-        println!("{}", "-".repeat(name_width + width + 45));
+        log::info!("{}", "-".repeat(name_width + width + 45));
 
         for (name, stats) in &rows {
             let pct = stats.total_bytes as f64 / self.grand_total as f64;
@@ -60,7 +70,7 @@ impl MemoryReport {
             let bar: String = "█".repeat(bar_len) + &"░".repeat(width - bar_len);
             let avg = stats.total_bytes / stats.count.max(1);
 
-            println!(
+            log::info!(
                 "{:<name_width$}  {:>10}  {:>8}  {:>10}  {:>5.1}%  {}",
                 name,
                 human_bytes(stats.total_bytes),
@@ -72,8 +82,8 @@ impl MemoryReport {
             );
         }
 
-        println!("{}", "-".repeat(name_width + width + 45));
-        println!(
+        log::info!("{}", "-".repeat(name_width + width + 45));
+        log::info!(
             "{:<name_width$}  {:>10}",
             "TOTAL",
             human_bytes(self.grand_total),

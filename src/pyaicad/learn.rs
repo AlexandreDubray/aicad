@@ -249,7 +249,6 @@ fn run_training<B: AutodiffBackend>(
     training_config: TrainingConfig,
     checkpoint_dir: &Path,
 ) -> PyResult<()> {
-    println!("Splitting 80/20 train-validation data set");
     let training_size = (problems.len() as f64 * 0.8).round() as usize;
     problems.shuffle(&mut rng());
     let validation_problems = problems.split_off(training_size);

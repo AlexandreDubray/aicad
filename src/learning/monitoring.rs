@@ -130,7 +130,7 @@ impl SatisfactionReport {
 
     pub fn print(&self, width: usize) {
         if self.by_constraint.is_empty() {
-            println!("No constraints recorded.");
+            log::warn!("Can not show constraint satisfaction: no constraints recorded.");
             return;
         }
 
@@ -140,14 +140,18 @@ impl SatisfactionReport {
 
         let name_width = rows.iter().map(|(n, _)| n.len()).max().unwrap_or(4).max(4);
 
-        println!(
+        log::info!(
             "{:<name_width$} {:>8} {:>8}  {:>8}  {:>8}",
-            "TYPE", "MIN", "MAX", "AVG SAT", "STDDEV",
+            "TYPE",
+            "MIN",
+            "MAX",
+            "AVG SAT",
+            "STDDEV",
         );
-        println!("{}", "-".repeat(name_width + width + 32));
+        log::info!("{}", "-".repeat(name_width + width + 32));
 
         for (name, stats) in &rows {
-            println!(
+            log::info!(
                 "{:<name_width$} {:>8.1}% {:>8.1}%  {:>7.1}%  {:>7.1}%",
                 name,
                 stats.min() * 100.0,

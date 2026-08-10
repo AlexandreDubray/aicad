@@ -122,7 +122,7 @@ where
             epoch_loss += loss.into_scalar().elem::<f32>();
         }
 
-        println!("epoch {epoch}: loss = {epoch_loss}");
+        log::info!("epoch {epoch}: loss = {epoch_loss}");
         if let Some(report) = epoch_report {
             report.print(40);
         }
@@ -156,7 +156,7 @@ where
             let score = match training.model_selection {
                 ModelSelection::Loss => {
                     let avg_valid_loss = valid_loss_sum / valid_batches as f64;
-                    println!("epoch {epoch}: validation loss = {avg_valid_loss:.4}");
+                    log::info!("epoch {epoch}: validation loss = {avg_valid_loss:.4}");
                     avg_valid_loss
                 }
                 ModelSelection::ConstraintSatisfaction => {
@@ -170,12 +170,12 @@ where
                     .clone()
                     .save_file(out_dir.join("weights"), &CompactRecorder::new())
                 {
-                    eprintln!("warning: failed to save checkpoint at epoch {epoch}: {e}");
+                    log::warn!("warning: failed to save checkpoint at epoch {epoch}: {e}");
                 }
             }
         }
 
-        println!();
+        log::info!("");
     }
     network
 }

@@ -1,17 +1,16 @@
-use crate::modelling::*;
-use super::*;
 use super::heuristics::*;
+use super::*;
+use crate::modelling::*;
 use crate::utils::MemoryReport;
 
-use std::cell::RefCell;
 use rand;
 use rand::prelude::*;
-use rand_xoshiro::Xoshiro256Plus;
 use rand::SeedableRng;
+use rand_xoshiro::Xoshiro256Plus;
+use std::cell::RefCell;
 
-
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::fs;
-use rustc_hash::{FxHashSet, FxHashMap};
 
 thread_local! {
     static RNG: RefCell<Xoshiro256Plus> = RefCell::new(Xoshiro256Plus::from_rng(&mut rand::rng()));
@@ -43,14 +42,15 @@ pub struct Mdd {
 }
 
 impl Mdd {
-
     /// Creates a new MDD for the given problem and variable ordering. The ordering array gives,
     /// for each variable, the layer at which it is branched on.
-    pub fn new(problem: Problem,
+    pub fn new(
+        problem: Problem,
         max_width: usize,
         order: OrderingHeuristic,
         merge_heuristic: MergeHeuristic,
-        select_heuristic: SelectHeuristic) -> Self {
+        select_heuristic: SelectHeuristic,
+    ) -> Self {
         let number_layers = problem.number_variables() + 1;
         let mut mdd = Self {
             nodes: vec![vec![]; problem.number_variables() + 1],
@@ -84,7 +84,11 @@ impl Mdd {
 
         // For each constraint, update its variable order if necessary. For example, it is used in
         // the allDifferent constraint to compute hall sets
-        for constraint in mdd.problem.iter_constraints().collect::<Vec<ConstraintIndex>>() {
+        for constraint in mdd
+            .problem
+            .iter_constraints()
+            .collect::<Vec<ConstraintIndex>>()
+        {
             mdd.problem[constraint].update_variable_ordering(&var_order_inv);
         }
 
@@ -207,7 +211,8 @@ impl Mdd {
                         let edge = self[target].parent_edge_at(j);
                         let source = self[edge].from();
                         let assignment = self.problem[variable].value(self[edge].assignment());
-                        self.problem[constraint].update_property_top_down(source, target, assignment);
+                        self.problem[constraint]
+                            .update_property_top_down(source, target, assignment);
                     }
                 }
             }
@@ -230,13 +235,17 @@ impl Mdd {
                         let edge = self.nodes[layer][node_index].child_edge_at(edge_index);
                         let source = self[edge].to();
                         let assignment = self.problem[decision].value(self[edge].assignment());
-                        self.problem[constraint].update_property_bottom_up(source, target, assignment);
+                        self.problem[constraint]
+                            .update_property_bottom_up(source, target, assignment);
                     }
                     for edge_index in (0..self[target].number_children()).rev() {
                         let edge = self.nodes[layer][node_index].child_edge_at(edge_index);
                         let source = self[edge].to();
                         let assignment = self.problem[decision].value(self[edge].assignment());
-                        if self.problem[constraint].is_layer_in_scope(layer) && self.problem[constraint].is_assignment_invalid(target, source, decision, assignment) {
+                        if self.problem[constraint].is_layer_in_scope(layer)
+                            && self.problem[constraint]
+                                .is_assignment_invalid(target, source, decision, assignment)
+                        {
                             self[target].swap_remove_child_edge(edge_index);
                             if self[target].number_children() == 0 {
                                 self.remove_node(target);
@@ -252,8 +261,6 @@ impl Mdd {
             }
         }
     }
-
-
 
     fn remove_node(&mut self, node: NodeIndex) {
         if !self[node].is_active() {
@@ -293,13 +300,13 @@ impl Mdd {
                     constraints: self.problem.constraints(),
                 };
                 if let Some(&primary_node) = map.get(&key) {
-
                     let NodeIndex(primary_layer, primary_index) = primary_node;
 
                     for i in 0..self[node].number_parents() {
                         let EdgeIndex(edge_layer, edge_index) = self[node].parent_edge_at(i);
                         self.edges[edge_layer][edge_index].set_to(primary_node);
-                        self.nodes[primary_layer][primary_index].add_parent_edge(EdgeIndex(edge_layer, edge_index));
+                        self.nodes[primary_layer][primary_index]
+                            .add_parent_edge(EdgeIndex(edge_layer, edge_index));
                     }
 
                     let mut existing_children = FxHashSet::<(NodeIndex, ValueIndex)>::default();
@@ -328,7 +335,7 @@ impl Mdd {
         }
     }
 
-    fn merge_layer(&mut self, layer :usize) {
+    fn merge_layer(&mut self, layer: usize) {
         let number_nodes = self.nodes[layer].len();
         if number_nodes <= self.max_width {
             return;
@@ -354,8 +361,8 @@ impl Mdd {
             let mut i = 0;
             for _ in 0..self.max_width - r {
                 let into = node_ranks[i].1;
-                for j in (i+1)..(i + q) {
-                    let from  = node_ranks[j].1;
+                for j in (i + 1)..(i + q) {
+                    let from = node_ranks[j].1;
                     self.merge_nodes(from, into);
                     self[from].deactivate();
                 }
@@ -363,8 +370,8 @@ impl Mdd {
             }
             for _ in 0..r {
                 let into = node_ranks[i].1;
-                for j in (i+1)..(i + q + 1) {
-                    let from  = node_ranks[j].1;
+                for j in (i + 1)..(i + q + 1) {
+                    let from = node_ranks[j].1;
                     self.merge_nodes(from, into);
                     self[from].deactivate();
                 }
@@ -421,7 +428,9 @@ impl Mdd {
             for index in 0..self.edges[layer].len() {
                 let from = self.edges[layer][index].from();
                 let to = self.edges[layer][index].to();
-                if self.edges[layer][index].is_active() && !(map_node_index.get(&from).is_none() || map_node_index.get(&to).is_none()) {
+                if self.edges[layer][index].is_active()
+                    && !(map_node_index.get(&from).is_none() || map_node_index.get(&to).is_none())
+                {
                     map_edge_index.insert(EdgeIndex(layer, index), EdgeIndex(layer, new_index));
                     self.edges[layer].swap(new_index, index);
                     new_index += 1;
@@ -441,7 +450,11 @@ impl Mdd {
             }
         }
 
-        let layers_size = self.nodes.iter().map(|layer| layer.len()).collect::<Vec<usize>>();
+        let layers_size = self
+            .nodes
+            .iter()
+            .map(|layer| layer.len())
+            .collect::<Vec<usize>>();
         for constraint in (0..self.problem.number_constraints()).map(ConstraintIndex) {
             self.problem[constraint].shrink_layers(&layers_size);
         }
@@ -558,14 +571,12 @@ impl Mdd {
         }
         toporder
     }
-
 }
 
 /* ---- Various helper implementation to make life easier ---- */
 
 impl Mdd {
-
-    pub fn as_graphviz(&self) ->  String {
+    pub fn as_graphviz(&self) -> String {
         let mut out = String::new();
         out.push_str("digraph {\nrankdir=TD;\ntranksep = 3;\n\n");
 
@@ -575,12 +586,20 @@ impl Mdd {
         layer_labels.push_str("subgraph labels {\n");
 
         for (layer, variable) in self.order.iter().copied().enumerate() {
-            layer_labels.push_str(&format!("\tL{} [shape=plaintext, label=\"x{}\"];\n", layer, variable.0));
+            layer_labels.push_str(&format!(
+                "\tL{} [shape=plaintext, label=\"x{}\"];\n",
+                layer, variable.0
+            ));
         }
 
         for layer in 0..self.nodes.len() {
-            for index in (0..self.nodes[layer].len()).filter(|i| self[NodeIndex(layer, *i)].is_active()) {
-                let id = format!("{{rank=same; N{}_{} [shape=point,width=0.05] L{}}}", layer, index, layer);
+            for index in
+                (0..self.nodes[layer].len()).filter(|i| self[NodeIndex(layer, *i)].is_active())
+            {
+                let id = format!(
+                    "{{rank=same; N{}_{} [shape=point,width=0.05] L{}}}",
+                    layer, index, layer
+                );
                 subgraph.push_str(&format!("\t{id};\n"));
             }
         }
@@ -591,7 +610,10 @@ impl Mdd {
                 let NodeIndex(layer_from, index_from) = edge.from();
                 let NodeIndex(layer_to, index_to) = edge.to();
                 let assignment = self.problem[variable].value(edge.assignment());
-                subgraph.push_str(&format!("\tN{}_{} -> N{}_{} [penwidth=1, label=\"{}\"];\n", layer_from, index_from, layer_to, index_to, assignment));
+                subgraph.push_str(&format!(
+                    "\tN{}_{} -> N{}_{} [penwidth=1, label=\"{}\"];\n",
+                    layer_from, index_from, layer_to, index_to, assignment
+                ));
             }
         }
 
@@ -609,7 +631,10 @@ impl Mdd {
     }
 
     pub fn show_memory_footprint(&self) {
-        println!("Memory report for mdd with {} nodes", self.nodes.iter().map(|layer| layer.len()).sum::<usize>());
+        log::info!(
+            "Memory report for mdd with {} nodes",
+            self.nodes.iter().map(|layer| layer.len()).sum::<usize>()
+        );
         let report = MemoryReport::build(self.problem.constraints().iter());
         report.print(80);
     }
@@ -638,20 +663,23 @@ impl std::ops::Index<NodeIndex> for Mdd {
 }
 
 impl std::ops::IndexMut<NodeIndex> for Mdd {
-
     fn index_mut(&mut self, index: NodeIndex) -> &mut Self::Output {
         &mut self.nodes[index.0][index.1]
     }
 }
 
 impl std::fmt::Debug for Mdd {
-
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         if self.unsat {
             write!(f, "UNSAT")?;
         } else {
             // First, we print the variable order
-            let vorder_str = self.order.iter().map(|variable| format!("{}", variable.0)).collect::<Vec<String>>().join(" ");
+            let vorder_str = self
+                .order
+                .iter()
+                .map(|variable| format!("{}", variable.0))
+                .collect::<Vec<String>>()
+                .join(" ");
             writeln!(f, "{}", vorder_str)?;
             let mut number_nodes = 0;
             let mut number_edges = 0;
@@ -676,7 +704,8 @@ impl std::fmt::Debug for Mdd {
                 for i in 0..self.edges[layer].len() {
                     let source = map_node_id[&self.edges[layer][i].from()];
                     let to = map_node_id[&self.edges[layer][i].to()];
-                    let assignment = self.problem[variable].value(self.edges[layer][i].assignment());
+                    let assignment =
+                        self.problem[variable].value(self.edges[layer][i].assignment());
                     if layer < self.edges.len() - 1 || i < self.edges[layer].len() - 1 {
                         writeln!(f, "{} {} {}", source, to, assignment)?;
                     } else {
@@ -692,9 +721,9 @@ impl std::fmt::Debug for Mdd {
 #[cfg(test)]
 pub mod test_mdd {
 
-    use crate::modelling::*;
-    use crate::mdd::*;
     use crate::mdd::heuristics::*;
+    use crate::mdd::*;
+    use crate::modelling::*;
 
     pub fn get_all_solutions(mdd: &Mdd) -> Vec<Vec<isize>> {
         let mut solutions: Vec<Vec<isize>> = vec![];
@@ -704,7 +733,12 @@ pub mod test_mdd {
         solutions
     }
 
-    fn _get_all_solutions(mdd: &Mdd, node: NodeIndex, solutions: &mut Vec<Vec<isize>>, current_solution: &mut Vec<isize>) {
+    fn _get_all_solutions(
+        mdd: &Mdd,
+        node: NodeIndex,
+        solutions: &mut Vec<Vec<isize>>,
+        current_solution: &mut Vec<isize>,
+    ) {
         let NodeIndex(layer, _) = node;
         if layer == mdd.number_layers() - 1 {
             solutions.push(current_solution.clone());
@@ -727,7 +761,7 @@ pub mod test_mdd {
             for i in 0..sol.len() {
                 if sol[i] != solution[i] {
                     eq = false;
-                    break
+                    break;
                 }
             }
             if eq {
@@ -744,9 +778,15 @@ pub mod test_mdd {
         problem.add_variable(vec![0, 1], None);
         problem.add_variable(vec![0, 1, 2], None);
 
-        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let mdd = Mdd::new(
+            problem,
+            usize::MAX,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+        );
         let solutions = get_all_solutions(&mdd);
-        assert_eq!(solutions.len(), 2*2*3);
+        assert_eq!(solutions.len(), 2 * 2 * 3);
         assert!(is_solution(vec![0, 0, 0], &solutions));
         assert!(is_solution(vec![0, 0, 1], &solutions));
         assert!(is_solution(vec![0, 0, 2], &solutions));
@@ -772,7 +812,13 @@ pub mod test_mdd {
         not_equals(&mut problem, y, z);
         not_equals(&mut problem, x, z);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let mut mdd = Mdd::new(
+            problem,
+            usize::MAX,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+        );
         mdd.refine();
         // TODO assert?
     }

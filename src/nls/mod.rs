@@ -26,6 +26,34 @@ use rand::SeedableRng;
 use crate::learning::{Batch, Network, NetworkConfig};
 use crate::modelling::Problem;
 
+/// A solution returned by the solver, with its statistics
+pub struct Solution {
+    /// Number of seconds elapsed before finding the solution
+    runtime: u64,
+    /// Number of local search steps before finding the solution
+    iterations: usize,
+    /// Solution to the problem, None if the problem is UNSAT.
+    solution: Option<Vec<isize>>,
+}
+
+impl Solution {
+    pub fn runtime(&self) -> u64 {
+        self.runtime
+    }
+
+    pub fn iterations(&self) -> usize {
+        self.iterations
+    }
+
+    pub fn solution(&self) -> &Option<Vec<isize>> {
+        &self.solution
+    }
+
+    pub fn is_sat(&self) -> bool {
+        self.solution.is_some()
+    }
+}
+
 /// Stopping criterion for the search; whichever limit is first reached stops it.
 #[derive(Debug, Clone, Copy)]
 pub struct Budget {
@@ -79,7 +107,7 @@ impl StoppingCriterion {
                         / n
                 })
                 .collect::<Vec<f64>>();
-            println!(
+            log::info!(
                 "Iteration {}, elapsed: {} seconds. Satisfaction rates of candidates: {:?}",
                 self.iters_done,
                 self.start.elapsed().as_secs(),
@@ -146,7 +174,7 @@ impl<B: Backend, N: Network<B>> NeuralLocalSearch<B, N> {
     /// Runs the search until `budget` is exhausted or a feasible solution is
     /// found. `seed` controls the destroy operator's randomness
     /// Returns a solution if found, None otherwise
-    pub fn run(&self, budget: Budget, seed: u64) -> Option<Vec<isize>> {
+    pub fn run(&self, budget: Budget, seed: u64) -> Option<Solution> {
         let mut rng = StdRng::seed_from_u64(seed);
         let mut stop = StoppingCriterion::new(budget);
 
@@ -185,7 +213,12 @@ impl<B: Backend, N: Network<B>> NeuralLocalSearch<B, N> {
                     .iter_constraints()
                     .all(|cstr| self.problem[cstr].is_satisfied(row))
                 {
-                    return Some(row.to_owned());
+                    let sol = row.to_owned();
+                    return Some(Solution {
+                        runtime: stop.start.elapsed().as_secs(),
+                        iterations: stop.iters_done + 1,
+                        solution: Some(sol),
+                    });
                 }
             }
 

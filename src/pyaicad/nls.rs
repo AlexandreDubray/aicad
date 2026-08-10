@@ -15,10 +15,31 @@ use crate::learning::consformer::{ConsFormer, ConsFormerConfig};
 use crate::modelling::Problem;
 use crate::nls::decode::{Argmax, DecodingOperator, Sampling};
 use crate::nls::destroy::{DestroyOperator, RandomDestroy, RelatedDestroy, WorstDestroy};
-use crate::nls::{load_network, Budget, NeuralLocalSearch};
+use crate::nls::{load_network, Budget, NeuralLocalSearch, Solution};
 
 use super::learn::cuda_available;
 use super::problem::PyProblem;
+
+#[pyclass(from_py_object)]
+#[derive(Clone)]
+pub struct PySolution {
+    #[pyo3(get)]
+    runtime: u64,
+    #[pyo3(get)]
+    iterations: usize,
+    #[pyo3(get)]
+    solution: Option<Vec<isize>>,
+}
+
+impl From<&Solution> for PySolution {
+    fn from(s: &Solution) -> Self {
+        PySolution {
+            runtime: s.runtime(),
+            iterations: s.iterations(),
+            solution: s.solution().clone(),
+        }
+    }
+}
 
 #[pyclass(from_py_object)]
 #[derive(Clone)]
@@ -90,7 +111,7 @@ pub fn neural_local_search(
     decode_kind: PyDecodeKind,
     temperature: f64,
     seed: Option<u64>,
-) -> PyResult<Option<Vec<isize>>> {
+) -> PyResult<Option<PySolution>> {
     let problem = problem.arc();
     let checkpoint_dir = PathBuf::from(checkpoint_dir);
     let budget = Budget {
@@ -143,7 +164,7 @@ fn run<B: Backend>(
     population_size: usize,
     budget: Budget,
     seed: u64,
-) -> Option<Vec<isize>> {
+) -> Option<PySolution> {
     let decode_op = decode_kind.build::<B>(temperature);
 
     match network_kind {
@@ -162,7 +183,11 @@ fn run<B: Backend>(
                 population_size,
                 device,
             );
-            nls.run(budget, seed)
+            let solution = nls.run(budget, seed);
+            match solution {
+                None => None,
+                Some(s) => Some((&s).into()),
+            }
         }
     }
 }
