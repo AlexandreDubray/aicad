@@ -61,12 +61,23 @@ pub struct PyConsFormerConfig {
     pub bias: bool,
     pub positional_encoding: Option<PyPositionalEncoding>,
     pub mask_fraction: f64,
+    pub tau: f64,
 }
 
 #[pymethods]
 impl PyConsFormerConfig {
     #[new]
-    #[pyo3(signature = (domain_size, embedding_size, hidden_size, num_heads, expand_size, mask_fraction, num_layers=1, drop_out=0.0, bias=true, positional_encoding=None))]
+    #[pyo3(signature = (domain_size=1,
+            embedding_size=128,
+            hidden_size=128,
+            num_heads=1,
+            expand_size=128,
+            mask_fraction=0.5,
+            tau=0.1,
+            num_layers=1,
+            drop_out=0.0,
+            bias=true,
+            positional_encoding=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         domain_size: usize,
@@ -75,6 +86,7 @@ impl PyConsFormerConfig {
         num_heads: usize,
         expand_size: usize,
         mask_fraction: f64,
+        tau: f64,
         num_layers: usize,
         drop_out: f64,
         bias: bool,
@@ -91,6 +103,7 @@ impl PyConsFormerConfig {
             bias,
             positional_encoding,
             mask_fraction,
+            tau,
         }
     }
 }
@@ -112,6 +125,7 @@ impl From<&PyConsFormerConfig> for ConsFormerConfig {
             bias: c.bias,
             positional_encoding,
             mask_fraction: c.mask_fraction,
+            tau: c.tau,
         }
     }
 }

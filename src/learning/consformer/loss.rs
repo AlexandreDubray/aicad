@@ -61,11 +61,25 @@ fn constraint_loss<B: Backend>(
     );
 }
 
+/// Soft (differentiable) Gumbel-softmax relaxation: adds Gumbel(0,1) noise
+/// to `logits` before the softmax, instead of taking a plain softmax.
+fn gumbel_softmax<B: Backend>(logits: Tensor<B, 3>) -> Tensor<B, 3> {
+    let device = logits.device();
+    let u = Tensor::<B, 3>::random(
+        logits.dims(),
+        burn::tensor::Distribution::Uniform(1e-20, 1.0),
+        &device,
+    );
+    let neg_log_u = -u.log();
+    let gumbel = -neg_log_u.log();
+    softmax(logits + gumbel, 2)
+}
+
 pub struct ConsFormerLoss;
 
 impl<B: Backend> Loss<B, ConsFormer<B>> for ConsFormerLoss {
     fn loss(&self, logits: Tensor<B, 3>, batch: &ConsFormerBatch<B>) -> Tensor<B, 1> {
-        let probs = softmax(logits, 2);
+        let probs = gumbel_softmax(logits);
         let problems = batch.problems();
         let batch_size = problems.len();
         let [_, number_vars, domain_size] = probs.dims();

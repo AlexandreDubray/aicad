@@ -451,6 +451,9 @@ pub struct ConsFormer<B: Backend> {
     /// (see `ConsFormerConfig::init`). `None` means the network gets no
     /// positional signal at all and relies purely on attention
     pub(crate) position_embedding: Option<StructuredPositionalEmbedding<B>>,
+    /// Logit scaling factor (`ConsFormerConfig::tau`).
+    #[module(skip)]
+    pub(crate) tau: f64,
 }
 
 impl<B: Backend> Network<B> for ConsFormer<B> {
@@ -477,6 +480,6 @@ impl<B: Backend> Network<B> for ConsFormer<B> {
             x = block.forward(x, batch.attention_masks.clone());
         }
 
-        self.head.forward(x)
+        self.head.forward(x).div_scalar(self.tau)
     }
 }

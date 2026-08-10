@@ -42,6 +42,8 @@ pub struct ConsFormerConfig {
     /// Fraction of free variables randomly marked eligible for update on
     /// each training step (see `ConsFormerBatcher::mask_fraction`).
     pub mask_fraction: f64,
+    /// Logit scaling factor
+    pub tau: f64,
 }
 
 impl<B: Backend> NetworkConfig<B> for ConsFormerConfig {
@@ -88,6 +90,7 @@ impl<B: Backend> NetworkConfig<B> for ConsFormerConfig {
             transformer_blocks,
             head: LinearConfig::new(self.hidden_size, self.domain_size).init(device),
             position_embedding,
+            tau: self.tau,
         }
     }
 }
