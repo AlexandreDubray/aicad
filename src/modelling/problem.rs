@@ -1,6 +1,6 @@
-use crate::constraints::Constraint;
-use super::*;
 use super::variable::Variable;
+use super::*;
+use crate::constraints::Constraint;
 
 ///This structure represent a constrained optimisation problem.
 #[derive(Default)]
@@ -8,25 +8,38 @@ pub struct Problem {
     /// Variables of the problem
     variables: Vec<Variable>,
     /// Constraints of the problem.
-    constraints: Vec< Box<dyn Constraint + Send + Sync>>,
+    constraints: Vec<Box<dyn Constraint + Send + Sync>>,
 }
 
 impl Problem {
-
     /// Adds a variable with the given domain to the problem and returns its index.
-    pub fn add_variable(&mut self, domain: Vec<isize>, probabilities: Option<Vec<f64>>) -> VariableIndex {
+    pub fn add_variable(
+        &mut self,
+        domain: Vec<isize>,
+        probabilities: Option<Vec<f64>>,
+    ) -> VariableIndex {
         let ret = VariableIndex(self.variables.len());
         self.variables.push(Variable::new(domain, probabilities));
         ret
     }
 
     /// Adds n variables, with the same domain, to the problem and return their indexes.
-    pub fn add_variables(&mut self, n: usize, domain: Vec<isize>, probabilities: Option<Vec<f64>>) -> Vec<VariableIndex> {
-        (0..n).map(|_| self.add_variable(domain.clone(), probabilities.clone())).collect()
+    pub fn add_variables(
+        &mut self,
+        n: usize,
+        domain: Vec<isize>,
+        probabilities: Option<Vec<f64>>,
+    ) -> Vec<VariableIndex> {
+        (0..n)
+            .map(|_| self.add_variable(domain.clone(), probabilities.clone()))
+            .collect()
     }
 
     /// Adds a constraint to the problem and returns its index.
-    pub fn add_constraint(&mut self, constraint: impl Constraint + 'static + Send + Sync) -> ConstraintIndex {
+    pub fn add_constraint(
+        &mut self,
+        constraint: impl Constraint + 'static + Send + Sync,
+    ) -> ConstraintIndex {
         let ret = ConstraintIndex(self.constraints.len());
         for variable in constraint.iter_scope() {
             self[variable].add_constraint(ret);
@@ -63,16 +76,31 @@ impl Problem {
     pub fn iter_variables(&self) -> impl Iterator<Item = VariableIndex> {
         (0..self.variables.len()).map(VariableIndex)
     }
+
+    pub fn is_solution(&self, assignment: &[isize]) -> bool {
+        if assignment.len() != self.number_variables() {
+            return false;
+        }
+        for (i, variable) in self.iter_variables().enumerate() {
+            if !self[variable].in_domain(assignment[i]) {
+                return false;
+            }
+        }
+        for constraint in self.iter_constraints() {
+            if !self[constraint].is_satisfied(assignment) {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 impl std::ops::Index<VariableIndex> for Problem {
-
     type Output = Variable;
 
     fn index(&self, index: VariableIndex) -> &Self::Output {
         &self.variables[index.0]
     }
-
 }
 
 impl std::ops::IndexMut<VariableIndex> for Problem {
@@ -82,7 +110,6 @@ impl std::ops::IndexMut<VariableIndex> for Problem {
 }
 
 impl std::ops::Index<ConstraintIndex> for Problem {
-
     type Output = Box<dyn Constraint + Sync + Send>;
 
     fn index(&self, index: ConstraintIndex) -> &Self::Output {

@@ -52,6 +52,10 @@ impl Variable {
         self.domain.iter().copied()
     }
 
+    pub fn in_domain(&self, value: isize) -> bool {
+        self.domain.iter().copied().find(|&v| v == value).is_some()
+    }
+
     /// Sets the domain of the variable to the given values
     pub fn set_domain(&mut self, domain: Vec<isize>) {
         let n = domain.len();
