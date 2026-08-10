@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use burn::tensor::activation::softmax;
 use burn::tensor::backend::Backend;
-use burn::tensor::{Int, Tensor};
+use burn::tensor::{Bool, Int, Tensor};
 
 use crate::constraints::{AllDifferent, Constraint, NotEquals};
 use crate::learning::{Batch, Loss};
@@ -17,16 +17,35 @@ pub trait ConstraintLoss<B: Backend> {
     fn constraint_penalty(&self, probs: Tensor<B, 2>) -> Tensor<B, 1>;
 }
 
+/// "No two variables share a value" relaxation: penalizes any pair of
+/// variables in the scope putting nonzero probability on the same value.
 fn pairwise_collision_penalty<B: Backend>(probs: Tensor<B, 2>) -> Tensor<B, 1> {
     let collisions = probs.clone().matmul(probs.transpose());
     collisions.triu(1).sum().reshape([1])
 }
 
+/// Penalty for permutation constraints (e.g., all-diff with exactly the same number of domain
+/// value as variables)
+fn permutation_penalty<B: Backend>(probs: Tensor<B, 2>) -> Tensor<B, 1> {
+    let [_, domain_size] = probs.dims();
+    let coverage: Tensor<B, 2> = probs.sum_dim(0).reshape([1, domain_size]);
+    let diff = coverage.sub_scalar(1.0);
+    (diff.clone() * diff).sum().reshape([1])
+}
+
 impl<B: Backend> ConstraintLoss<B> for AllDifferent {
-    // TODO: Handle the two cases defined in ConsFormer paper's based on the domain size and the
-    // number of variable in the scope
+    /// Uses the permutation relaxation when the scope exactly covers the
+    /// domain (e.g. Sudoku), and falls back to the pairwise collision
+    /// relaxation otherwise (scope smaller than the domain: not every value
+    /// needs to appear, so "no duplicates" is the correct -- and only
+    /// meaningful -- relaxation).
     fn constraint_penalty(&self, probs: Tensor<B, 2>) -> Tensor<B, 1> {
-        pairwise_collision_penalty(probs)
+        let [scope_len, domain_size] = probs.dims();
+        if scope_len == domain_size {
+            permutation_penalty(probs)
+        } else {
+            pairwise_collision_penalty(probs)
+        }
     }
 }
 
@@ -75,11 +94,36 @@ fn gumbel_softmax<B: Backend>(logits: Tensor<B, 3>) -> Tensor<B, 3> {
     softmax(logits + gumbel, 2)
 }
 
+fn blend_with_current<B: Backend>(
+    probs: Tensor<B, 3>,
+    assignments: Tensor<B, 2, Int>,
+    var_masks: Tensor<B, 2, Bool>,
+) -> Tensor<B, 3> {
+    let [batch_size, number_vars, domain_size] = probs.dims();
+    let device = probs.device();
+
+    let arange: Tensor<B, 3, Int> = Tensor::<B, 1, Int>::arange(0..domain_size as i64, &device)
+        .reshape([1, 1, domain_size])
+        .repeat_dim(0, batch_size)
+        .repeat_dim(1, number_vars);
+    let assign_3d: Tensor<B, 3, Int> = assignments
+        .reshape([batch_size, number_vars, 1])
+        .repeat_dim(2, domain_size);
+    let one_hot: Tensor<B, 3> = assign_3d.equal(arange).float();
+
+    let mask_3d: Tensor<B, 3, Bool> = var_masks
+        .reshape([batch_size, number_vars, 1])
+        .repeat_dim(2, domain_size);
+
+    one_hot.mask_where(mask_3d, probs)
+}
+
 pub struct ConsFormerLoss;
 
 impl<B: Backend> Loss<B, ConsFormer<B>> for ConsFormerLoss {
     fn loss(&self, logits: Tensor<B, 3>, batch: &ConsFormerBatch<B>) -> Tensor<B, 1> {
         let probs = gumbel_softmax(logits);
+        let probs = blend_with_current(probs, batch.assignments.clone(), batch.var_masks.clone());
         let problems = batch.problems();
         let batch_size = problems.len();
         let [_, number_vars, domain_size] = probs.dims();
@@ -92,10 +136,15 @@ impl<B: Backend> Loss<B, ConsFormer<B>> for ConsFormerLoss {
             .clone()
             .reshape([batch_size * number_vars, domain_size]);
 
-        // Group collision based constraints (i.e., the only constraints currently supported by
-        // ConsFormer) so their loss can be computed as a single matmul operation, leading to
-        // faster gradient computation
+        // Group constraints by which batched penalty they need, so each
+        // group can be computed as a single tensor op instead of one
+        // op-chain per instance. `NotEquals`, and `AllDifferent` whose scope
+        // is smaller than the domain, use the pairwise collision penalty
+        // (batched via matmul); `AllDifferent` whose scope exactly covers
+        // the domain (e.g. every Sudoku row/col/box) uses the permutation
+        // penalty instead (batched via a sum reduction.
         let mut collision_groups: HashMap<usize, Vec<i64>> = HashMap::new();
+        let mut permutation_groups: HashMap<usize, Vec<i64>> = HashMap::new();
         let mut total = Tensor::<B, 1>::zeros([1], &device);
 
         for (i, problem) in problems.iter().enumerate() {
@@ -103,16 +152,21 @@ impl<B: Backend> Loss<B, ConsFormer<B>> for ConsFormerLoss {
 
             for constraint in problem.iter_constraints() {
                 let c = &*problem[constraint];
-                let is_collision = c.as_any().downcast_ref::<AllDifferent>().is_some()
-                    || c.as_any().downcast_ref::<NotEquals>().is_some();
+                let scope_len = c.iter_scope().count();
+                let is_all_different = c.as_any().downcast_ref::<AllDifferent>().is_some();
+                let is_not_equals = c.as_any().downcast_ref::<NotEquals>().is_some();
 
-                if is_collision {
+                if is_all_different && scope_len == domain_size {
                     let scope: Vec<i64> =
                         c.iter_scope().map(|v| sample_offset + v.0 as i64).collect();
-                    collision_groups
-                        .entry(scope.len())
+                    permutation_groups
+                        .entry(scope_len)
                         .or_default()
                         .extend(scope);
+                } else if is_all_different || is_not_equals {
+                    let scope: Vec<i64> =
+                        c.iter_scope().map(|v| sample_offset + v.0 as i64).collect();
+                    collision_groups.entry(scope_len).or_default().extend(scope);
                 } else {
                     let sample_probs: Tensor<B, 2> = probs.clone().slice([i..i + 1]).squeeze();
                     total = total + constraint_loss(c, &sample_probs);
@@ -133,6 +187,25 @@ impl<B: Backend> Loss<B, ConsFormer<B>> for ConsFormerLoss {
 
             let collisions = group_probs.clone().matmul(group_probs.transpose());
             total = total + collisions.triu(1).sum().reshape([1]);
+        }
+
+        // One batched sum-reduction per group, instead of one op-chain per
+        // instance.
+        for (scope_len, flat_indices) in permutation_groups {
+            let num_instances = flat_indices.len() / scope_len;
+            let idx = Tensor::<B, 1, Int>::from_data(flat_indices.as_slice(), &device);
+            let group_probs: Tensor<B, 3> =
+                flat_probs
+                    .clone()
+                    .select(0, idx)
+                    .reshape([num_instances, scope_len, domain_size]);
+
+            // Sum over the scope (dim 1): per group instance, how much
+            // probability mass each value received across the whole scope.
+            let coverage: Tensor<B, 2> =
+                group_probs.sum_dim(1).reshape([num_instances, domain_size]);
+            let diff = coverage.sub_scalar(1.0);
+            total = total + (diff.clone() * diff).sum().reshape([1]);
         }
 
         total.div_scalar(batch_size as f32)
