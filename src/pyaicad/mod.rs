@@ -13,14 +13,33 @@ pub use logging::{
     set_verbosity_debug, set_verbosity_error, set_verbosity_info, set_verbosity_off,
     set_verbosity_trace, set_verbosity_warning,
 };
-pub use nls::{neural_local_search, PyDecodeKind, PyDestroyKind, PyNetworkKind, PySolution};
+pub use nls::{
+    neural_local_search, PyDecodeKind, PyDestroyKind, PyNetworkKind, PySolution, PyStatus,
+};
 pub use problem::PyProblem;
 pub use solver::Solver;
 
 #[pymodule]
 fn pyaicad(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    pyo3_log::init();
+    // Scope pyo3-log to *this* crate's own log records only. The blanket
+    // `pyo3_log::init()` forwards every crate's log records -- including
+    // internal `log::*!` calls from dependencies (burn, its rayon-backed
+    // ndarray backend, etc.) -- to Python, which means those can fire from
+    // worker threads pyo3 doesn't manage, each one calling `Python::attach`
+    // to acquire the GIL from a thread it was never meant to be acquired
+    // from. `filter(Off)` + `filter_target("aicad", Trace)` means anything
+    // not under our own "aicad"/"aicad::..." targets is dropped by the
+    // cheap Rust-side filter before it ever reaches that GIL-acquiring code
+    // path.
+    pyo3_log::Logger::new(py, pyo3_log::Caching::LoggersAndLevels)
+        .unwrap()
+        .filter(log::LevelFilter::Off)
+        .filter_target("aicad".to_owned(), log::LevelFilter::Trace)
+        .install()
+        .expect("pyo3-log logger already installed");
 
+    // Logging is opt-in: silent until a `set_verbosity_*` function below is
+    // called from Python, like a CLI tool with no `-v` passed.
     logging::disable_by_default(py)?;
 
     m.add_class::<PyProblem>()?;
@@ -35,6 +54,7 @@ fn pyaicad(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDestroyKind>()?;
     m.add_class::<PyDecodeKind>()?;
     m.add_class::<PySolution>()?;
+    m.add_class::<PyStatus>()?;
     m.add_function(wrap_pyfunction!(train_consformer, m)?)?;
     m.add_function(wrap_pyfunction!(neural_local_search, m)?)?;
     m.add_function(wrap_pyfunction!(set_verbosity_off, m)?)?;

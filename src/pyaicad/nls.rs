@@ -39,7 +39,7 @@ impl From<&Solution> for PySolution {
             runtime: s.runtime(),
             iterations: s.iterations(),
             solution: s.solution().clone(),
-            status: s.status().into(),
+            status: (&s.status()).into(),
         }
     }
 }
@@ -52,8 +52,8 @@ pub enum PyStatus {
     Unknown,
 }
 
-impl From<Status> for PyStatus {
-    fn from(s: Status) -> Self {
+impl From<&Status> for PyStatus {
+    fn from(s: &Status) -> Self {
         match s {
             Status::Satisfiable => Self::Satisfiable,
             Status::Unsatisfiable => Self::Unsatisfiable,
