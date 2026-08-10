@@ -15,7 +15,7 @@ use crate::learning::consformer::{ConsFormer, ConsFormerConfig};
 use crate::modelling::Problem;
 use crate::nls::decode::{Argmax, DecodingOperator, Sampling};
 use crate::nls::destroy::{DestroyOperator, RandomDestroy, RelatedDestroy, WorstDestroy};
-use crate::nls::{load_network, Budget, NeuralLocalSearch, Solution};
+use crate::nls::{load_network, Budget, NeuralLocalSearch, Solution, Status};
 
 use super::learn::cuda_available;
 use super::problem::PyProblem;
@@ -29,6 +29,8 @@ pub struct PySolution {
     iterations: usize,
     #[pyo3(get)]
     solution: Option<Vec<isize>>,
+    #[pyo3(get)]
+    status: PyStatus,
 }
 
 impl From<&Solution> for PySolution {
@@ -37,6 +39,25 @@ impl From<&Solution> for PySolution {
             runtime: s.runtime(),
             iterations: s.iterations(),
             solution: s.solution().clone(),
+            status: s.status().into(),
+        }
+    }
+}
+
+#[pyclass(from_py_object)]
+#[derive(Clone)]
+pub enum PyStatus {
+    Satisfiable,
+    Unsatisfiable,
+    Unknown,
+}
+
+impl From<Status> for PyStatus {
+    fn from(s: Status) -> Self {
+        match s {
+            Status::Satisfiable => Self::Satisfiable,
+            Status::Unsatisfiable => Self::Unsatisfiable,
+            Status::Unknown => Self::Unknown,
         }
     }
 }
@@ -111,7 +132,7 @@ pub fn neural_local_search(
     decode_kind: PyDecodeKind,
     temperature: f64,
     seed: Option<u64>,
-) -> PyResult<Option<PySolution>> {
+) -> PyResult<PySolution> {
     let problem = problem.arc();
     let checkpoint_dir = PathBuf::from(checkpoint_dir);
     let budget = Budget {
@@ -164,7 +185,7 @@ fn run<B: Backend>(
     population_size: usize,
     budget: Budget,
     seed: u64,
-) -> Option<PySolution> {
+) -> PySolution {
     let decode_op = decode_kind.build::<B>(temperature);
 
     match network_kind {
@@ -183,11 +204,7 @@ fn run<B: Backend>(
                 population_size,
                 device,
             );
-            let solution = nls.run(budget, seed);
-            match solution {
-                None => None,
-                Some(s) => Some((&s).into()),
-            }
+            (&nls.run(budget, seed)).into()
         }
     }
 }

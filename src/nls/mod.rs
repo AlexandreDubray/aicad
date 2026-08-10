@@ -34,6 +34,16 @@ pub struct Solution {
     iterations: usize,
     /// Solution to the problem, None if the problem is UNSAT.
     solution: Option<Vec<isize>>,
+    /// Status of the solution. Either proved SAT/UNSAT in the budget limits, or unknown if the
+    /// process reached a limit
+    status: Status,
+}
+
+#[derive(Clone, Copy)]
+pub enum Status {
+    Satisfiable,
+    Unsatisfiable,
+    Unknown,
 }
 
 impl Solution {
@@ -51,6 +61,10 @@ impl Solution {
 
     pub fn is_sat(&self) -> bool {
         self.solution.is_some()
+    }
+
+    pub fn status(&self) -> Status {
+        self.status
     }
 }
 
@@ -174,7 +188,7 @@ impl<B: Backend, N: Network<B>> NeuralLocalSearch<B, N> {
     /// Runs the search until `budget` is exhausted or a feasible solution is
     /// found. `seed` controls the destroy operator's randomness
     /// Returns a solution if found, None otherwise
-    pub fn run(&self, budget: Budget, seed: u64) -> Option<Solution> {
+    pub fn run(&self, budget: Budget, seed: u64) -> Solution {
         let mut rng = StdRng::seed_from_u64(seed);
         let mut stop = StoppingCriterion::new(budget);
 
@@ -214,18 +228,24 @@ impl<B: Backend, N: Network<B>> NeuralLocalSearch<B, N> {
                     .all(|cstr| self.problem[cstr].is_satisfied(row))
                 {
                     let sol = row.to_owned();
-                    return Some(Solution {
+                    return Solution {
                         runtime: stop.start.elapsed().as_secs(),
                         iterations: stop.iters_done + 1,
                         solution: Some(sol),
-                    });
+                        status: Status::Satisfiable,
+                    };
                 }
             }
 
             stop.tick();
             stop.log(&rows, &self.problem);
         }
-        None
+        Solution {
+            runtime: stop.start.elapsed().as_secs(),
+            iterations: stop.iters_done,
+            solution: None,
+            status: Status::Unknown,
+        }
     }
 
     fn random_init(&self) -> Tensor<B, 2, Int> {
