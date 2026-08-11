@@ -201,29 +201,37 @@ impl<B: Backend> Batch<B> for ConsFormerBatch<B> {
         &self.problems
     }
 
-    /// Batch used for inference. This is basically a batch for the same problem. We allow to have
-    /// multiple assignments for the same problem, allowing parallel execution of local search.
+    /// Batch used for inference. Builds one block of `population_size` rows per
+    /// problem, in the same order as `problems`, allowing parallel local search
+    /// across a whole set of problems (and, within each, a population of candidates)
+    /// in a single forward pass.
     fn for_assignments(
-        problem: &Arc<Problem>,
+        problems: &[Arc<Problem>],
+        population_size: usize,
         assignments: Tensor<B, 2, Int>,
         destroy_mask: Tensor<B, 2, Bool>,
         device: &B::Device,
     ) -> Self {
-        let number_assignments = assignments.dims()[0];
-        let (attention_mask, _) = consformer_masks::<B>(problem, device);
-
-        let attention_masks = attention_mask
-            .unsqueeze::<3>()
-            .repeat_dim(0, number_assignments);
-        let problems: Vec<Arc<Problem>> = std::iter::repeat_with(|| Arc::clone(problem))
-            .take(number_assignments)
+        let attention_masks = Tensor::cat(
+            problems
+                .iter()
+                .map(|problem| {
+                    let (attention_mask, _) = consformer_masks::<B>(problem, device);
+                    attention_mask.unsqueeze::<3>().repeat_dim(0, population_size)
+                })
+                .collect(),
+            0,
+        );
+        let expanded_problems: Vec<Arc<Problem>> = problems
+            .iter()
+            .flat_map(|p| std::iter::repeat_with(|| Arc::clone(p)).take(population_size))
             .collect();
 
         ConsFormerBatch {
             assignments,
             attention_masks,
             var_masks: destroy_mask,
-            problems,
+            problems: expanded_problems,
         }
     }
 }

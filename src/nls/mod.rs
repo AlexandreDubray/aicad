@@ -27,16 +27,17 @@ use crate::learning::{Batch, Network, NetworkConfig};
 use crate::modelling::Problem;
 
 /// A solution returned by the solver, with its statistics
+#[derive(Clone)]
 pub struct Solution {
     /// Number of seconds elapsed before finding the solution
-    runtime: u64,
+    pub(crate) runtime: u64,
     /// Number of local search steps before finding the solution
-    iterations: usize,
+    pub(crate) iterations: usize,
     /// Solution to the problem, None if the problem is UNSAT.
-    solution: Option<Vec<isize>>,
+    pub(crate) solution: Option<Vec<isize>>,
     /// Status of the solution. Either proved SAT/UNSAT in the budget limits, or unknown if the
     /// process reached a limit
-    status: Status,
+    pub(crate) status: Status,
 }
 
 #[derive(Clone, Copy)]
@@ -108,24 +109,26 @@ impl StoppingCriterion {
             || self.iters_done >= self.budget.iteration_limit
     }
 
-    fn log(&self, assignments: &Vec<Vec<isize>>, problem: &Arc<Problem>) {
-        if self.iters_done % 10 == 0 {
-            let n = problem.number_constraints() as f64;
-            let satisfaction_rates = assignments
+    /// Logs, per problem, the best (over its population) constraint satisfaction rate.
+    fn log(&self, rows: &[Vec<isize>], problems: &[Arc<Problem>], population_size: usize) {
+        if self.iters_done.is_multiple_of(100) {
+            let solved = problems
                 .iter()
-                .map(|assignment| {
-                    problem
-                        .iter_constraints()
-                        .filter(|&cstr| problem[cstr].is_satisfied(assignment))
-                        .count() as f64
-                        / n
-                })
-                .collect::<Vec<f64>>();
+                .enumerate()
+                .filter(|(problem_idx, problem)| {
+                    let base = problem_idx * population_size;
+                    rows[base..base + population_size]
+                        .iter()
+                        .any(|row| {
+                            problem.is_solution(row)
+                        })
+                }).count();
             log::info!(
-                "Iteration {}, elapsed: {} seconds. Satisfaction rates of candidates: {:?}",
+                "Iteration {}, elapsed: {} seconds. Number solved {}/{}",
                 self.iters_done,
                 self.start.elapsed().as_secs(),
-                satisfaction_rates,
+                solved,
+                problems.len(),
             );
         }
     }
@@ -152,23 +155,26 @@ where
 }
 
 pub struct NeuralLocalSearch<B: Backend, N: Network<B>> {
-    /// Problem being solved
-    problem: Arc<Problem>,
     /// Neural network used to guide the local search
     network: N,
     /// Heuristic for the destroy operator
     destroy_op: Box<dyn DestroyOperator>,
     /// How to decode (arg-max or sample)
     decode_op: Box<dyn DecodingOperator<B>>,
-    /// Number of assignments ran in parallel
+    /// Number of assignments ran in parallel, per problem
     population_size: usize,
     /// Devices used (cpu or gpu)
     device: B::Device,
 }
 
 impl<B: Backend, N: Network<B>> NeuralLocalSearch<B, N> {
+    /// Builds the search engine: everything that's independent of *which*
+    /// problems get solved (network weights, operators, device). Call `run`
+    /// once per batch of problems -- the engine can be reused across several
+    /// `run` calls on different problem sets without reloading the network
+    /// (e.g. a caller that needs to keep the batch within some memory bound
+    /// can call `run` once per chunk of problems).
     pub fn new(
-        problem: Arc<Problem>,
         network: N,
         destroy_op: Box<dyn DestroyOperator>,
         decode_op: Box<dyn DecodingOperator<B>>,
@@ -176,7 +182,6 @@ impl<B: Backend, N: Network<B>> NeuralLocalSearch<B, N> {
         device: B::Device,
     ) -> Self {
         Self {
-            problem,
             network,
             destroy_op,
             decode_op,
@@ -185,80 +190,108 @@ impl<B: Backend, N: Network<B>> NeuralLocalSearch<B, N> {
         }
     }
 
-    /// Runs the search until `budget` is exhausted or a feasible solution is
-    /// found. `seed` controls the destroy operator's randomness
-    /// Returns a solution if found, None otherwise
-    pub fn run(&self, budget: Budget, seed: u64) -> Solution {
+    /// Runs the search on `problems`, batching every problem's population into
+    /// a single forward pass per iteration, until `budget` is exhausted or
+    /// every problem has found a feasible solution. `seed` controls the
+    /// destroy operator's randomness. All problems must share the same
+    /// `number_variables()`.
+    ///
+    /// A problem that finds a solution before the others is frozen in place
+    /// (its rows stop being destroyed/repaired, but stay in the batch so
+    /// tensor shapes remain consistent) while the rest keep iterating.
+    ///
+    /// Returns one `Solution` per problem, in the same order as `problems`.
+    pub fn run(&self, problems: &[Arc<Problem>], budget: Budget, seed: u64) -> Vec<Solution> {
         let mut rng = StdRng::seed_from_u64(seed);
         let mut stop = StoppingCriterion::new(budget);
 
-        let n = self.problem.number_variables();
+        let num_problems = problems.len();
+        let n = problems[0].number_variables();
         let p = self.population_size;
+        let total_rows = num_problems * p;
 
         // Starts from a random assignment; note that each variable is sampled given its domain, so
         // assigned variables are taken into account
-        let mut assignments = self.random_init();
-        let mut rows = to_rows(&assignments, p, n);
+        let mut assignments = self.random_init(problems);
+        let mut rows = to_rows(&assignments, total_rows, n);
 
-        while !stop.is_exhausted() {
-            let mut destroy_mask_data = vec![false; p * n];
+        let mut solutions: Vec<Option<Solution>> = vec![None; num_problems];
+
+        while !stop.is_exhausted() && solutions.iter().any(Option::is_none) {
+            let mut destroy_mask_data = vec![false; total_rows * n];
             for (row_idx, row) in rows.iter().enumerate() {
-                for var in self.destroy_op.destroy(&self.problem, row, &mut rng) {
+                let problem_idx = row_idx / p;
+                // Frozen: this problem already has a solution, leave its rows untouched.
+                if solutions[problem_idx].is_some() {
+                    continue;
+                }
+                let problem = &problems[problem_idx];
+                for var in self.destroy_op.destroy(problem, row, &mut rng) {
                     destroy_mask_data[row_idx * n + var] = true;
                 }
             }
             let destroy_mask: Tensor<B, 2, Bool> =
                 Tensor::<B, 1, Bool>::from_data(destroy_mask_data.as_slice(), &self.device)
-                    .reshape([p, n]);
+                    .reshape([total_rows, n]);
 
             let batch = N::Batch::for_assignments(
-                &self.problem,
+                problems,
+                p,
                 assignments.clone(),
                 destroy_mask.clone(),
                 &self.device,
             );
             let logits = self.network.forward(&batch);
             assignments = self.decode_op.decode(logits, destroy_mask, assignments);
-            rows = to_rows(&assignments, p, n);
+            rows = to_rows(&assignments, total_rows, n);
 
-            for row in rows.iter() {
-                if self
-                    .problem
-                    .iter_constraints()
-                    .all(|cstr| self.problem[cstr].is_satisfied(row))
+            stop.tick();
+
+            for (problem_idx, problem) in problems.iter().enumerate() {
+                if solutions[problem_idx].is_some() {
+                    continue;
+                }
+                let base = problem_idx * p;
+                if let Some(row) = rows[base..base + p]
+                    .iter()
+                    .find(|row| problem.is_solution(row))
                 {
-                    let sol = row.to_owned();
-                    return Solution {
+                    solutions[problem_idx] = Some(Solution {
                         runtime: stop.start.elapsed().as_secs(),
-                        iterations: stop.iters_done + 1,
-                        solution: Some(sol),
+                        iterations: stop.iters_done,
+                        solution: Some(row.to_owned()),
                         status: Status::Satisfiable,
-                    };
+                    });
                 }
             }
 
-            stop.tick();
-            stop.log(&rows, &self.problem);
+            stop.log(&rows, problems, p);
         }
-        Solution {
-            runtime: stop.start.elapsed().as_secs(),
-            iterations: stop.iters_done,
-            solution: None,
-            status: Status::Unknown,
-        }
+
+        solutions
+            .into_iter()
+            .map(|s| {
+                s.unwrap_or(Solution {
+                    runtime: stop.start.elapsed().as_secs(),
+                    iterations: stop.iters_done,
+                    solution: None,
+                    status: Status::Unknown,
+                })
+            })
+            .collect()
     }
 
-    fn random_init(&self) -> Tensor<B, 2, Int> {
-        let n = self.problem.number_variables();
-        let data: Vec<i64> = (0..self.population_size)
-            .flat_map(|_| {
-                self.problem
-                    .iter_variables()
-                    .map(|v| self.problem[v].sample() as i64)
+    fn random_init(&self, problems: &[Arc<Problem>]) -> Tensor<B, 2, Int> {
+        let n = problems[0].number_variables();
+        let data: Vec<i64> = problems
+            .iter()
+            .flat_map(|problem| {
+                (0..self.population_size)
+                    .flat_map(move |_| problem.iter_variables().map(|v| problem[v].sample() as i64))
             })
             .collect();
         Tensor::<B, 1, Int>::from_data(data.as_slice(), &self.device)
-            .reshape([self.population_size, n])
+            .reshape([problems.len() * self.population_size, n])
     }
 }
 

@@ -16,11 +16,19 @@ use crate::modelling::Problem;
 pub trait Batch<B: Backend>: Clone + Send + Sync + std::fmt::Debug + 'static {
     fn problems(&self) -> &[Arc<Problem>];
 
-    /// Builds a batch for a population of `assignments.dims()[0]` parallel
-    /// candidate assignments.
-    /// `destroy_mask` flags which variables are being modified this iteration.
+    /// Builds a batch for `problems.len()` problems, each solved with
+    /// `population_size` parallel candidate assignments (`population_size ==
+    /// 1` is the plain single-candidate case). All problems must share the
+    /// same `number_variables()`.
+    ///
+    /// `assignments` and `destroy_mask` have shape `(problems.len() *
+    /// population_size, number_vars)`, with rows grouped by problem in
+    /// order: problem 0's `population_size` rows first, then problem 1's,
+    /// etc. `destroy_mask` flags which variables are being modified this
+    /// iteration.
     fn for_assignments(
-        problem: &Arc<Problem>,
+        problems: &[Arc<Problem>],
+        population_size: usize,
         assignments: Tensor<B, 2, Int>,
         destroy_mask: Tensor<B, 2, Bool>,
         device: &B::Device,
