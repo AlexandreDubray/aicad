@@ -10,8 +10,8 @@ mod solver;
 pub use heuristics::{PyMergeHeuristic, PyOrderingHeuristic, PySelectHeuristic};
 pub use learn::{train_consformer, PyConsFormerConfig, PyPositionalEncoding, PyTrainingConfig};
 pub use logging::{
-    set_verbosity_debug, set_verbosity_error, set_verbosity_info, set_verbosity_off,
-    set_verbosity_trace, set_verbosity_warning,
+    enable_console_logging, set_verbosity_debug, set_verbosity_error, set_verbosity_info,
+    set_verbosity_off, set_verbosity_trace, set_verbosity_warning,
 };
 pub use nls::{
     neural_local_search, PyDecodeKind, PyDestroyKind, PyNetworkKind, PySolution, PyStatus,
@@ -38,6 +38,7 @@ fn pyaicad(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         .install()
         .expect("pyo3-log logger already installed");
 
+    logging::enable_console_logging(py)?;
     // Logging is opt-in: silent until a `set_verbosity_*` function below is
     // called from Python, like a CLI tool with no `-v` passed.
     logging::disable_by_default(py)?;
@@ -63,5 +64,6 @@ fn pyaicad(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_verbosity_info, m)?)?;
     m.add_function(wrap_pyfunction!(set_verbosity_debug, m)?)?;
     m.add_function(wrap_pyfunction!(set_verbosity_trace, m)?)?;
+    m.add_function(wrap_pyfunction!(enable_console_logging, m)?)?;
     Ok(())
 }

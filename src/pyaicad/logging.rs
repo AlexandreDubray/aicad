@@ -9,10 +9,6 @@ const LEVEL_DEBUG: i32 = 10;
 const LEVEL_INFO: i32 = 20;
 const LEVEL_WARNING: i32 = 30;
 const LEVEL_ERROR: i32 = 40;
-/// Above `logging.CRITICAL` (50): nothing, not even critical records,
-/// passes `Logger.isEnabledFor`, which is what `pyo3-log` checks before
-/// forwarding a Rust `log::*!` call. This is how logging gets disabled --
-/// Python's `logging` module has no dedicated "off" level constant.
 const LEVEL_OFF: i32 = 60;
 
 fn set_level(py: Python<'_>, level: i32) -> PyResult<()> {
@@ -63,4 +59,10 @@ pub fn set_verbosity_debug(py: Python<'_>) -> PyResult<()> {
 #[pyfunction]
 pub fn set_verbosity_trace(py: Python<'_>) -> PyResult<()> {
     set_level(py, LEVEL_TRACE)
+}
+
+#[pyfunction]
+pub fn enable_console_logging(py: Python<'_>) -> PyResult<()> {
+    py.import("logging")?.call_method0("basicConfig")?;
+    Ok(())
 }
