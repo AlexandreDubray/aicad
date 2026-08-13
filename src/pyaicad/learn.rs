@@ -59,7 +59,7 @@ pub struct PyConsFormerConfig {
     pub num_layers: usize,
     pub drop_out: f64,
     pub bias: bool,
-    pub positional_encoding: Option<PyPositionalEncoding>,
+    pub positional_encoding_dimensions: usize,
     pub mask_fraction: f64,
     pub tau: f64,
 }
@@ -77,7 +77,7 @@ impl PyConsFormerConfig {
             num_layers=1,
             drop_out=0.0,
             bias=true,
-            positional_encoding=None))]
+            positional_encoding_dimensions=0))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         domain_size: usize,
@@ -90,7 +90,7 @@ impl PyConsFormerConfig {
         num_layers: usize,
         drop_out: f64,
         bias: bool,
-        positional_encoding: Option<PyPositionalEncoding>,
+        positional_encoding_dimensions: usize,
     ) -> Self {
         PyConsFormerConfig {
             domain_size,
@@ -101,7 +101,7 @@ impl PyConsFormerConfig {
             num_layers,
             drop_out,
             bias,
-            positional_encoding,
+            positional_encoding_dimensions,
             mask_fraction,
             tau,
         }
@@ -110,10 +110,6 @@ impl PyConsFormerConfig {
 
 impl From<&PyConsFormerConfig> for ConsFormerConfig {
     fn from(c: &PyConsFormerConfig) -> Self {
-        let positional_encoding: Option<PositionalStructure> = match &c.positional_encoding {
-            None => None,
-            Some(p) => Some(p.into()),
-        };
         ConsFormerConfig {
             domain_size: c.domain_size,
             embedding_size: c.embedding_size,
@@ -123,7 +119,7 @@ impl From<&PyConsFormerConfig> for ConsFormerConfig {
             num_layers: c.num_layers,
             drop_out: c.drop_out,
             bias: c.bias,
-            positional_encoding,
+            positional_encoding_dimensions: c.positional_encoding_dimensions,
             mask_fraction: c.mask_fraction,
             tau: c.tau,
         }
@@ -249,6 +245,7 @@ fn run_training<B: AutodiffBackend>(
     training_config: TrainingConfig,
     checkpoint_dir: &Path,
 ) -> PyResult<()> {
+    let _problems = problems.clone();
     let training_size = (problems.len() as f64 * 0.8).round() as usize;
     problems.shuffle(&mut rng());
     let validation_problems = problems.split_off(training_size);
@@ -277,6 +274,7 @@ fn run_training<B: AutodiffBackend>(
         ConsFormerSample<B::InnerBackend>,
     >(
         network_config,
+        &_problems,
         train_dataset,
         validation_dataset,
         batcher,

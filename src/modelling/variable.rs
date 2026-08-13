@@ -5,6 +5,7 @@ pub struct Variable {
     domain: Vec<isize>,
     probabilities: Vec<f64>,
     constraints: Vec<ConstraintIndex>,
+    position: Option<Vec<usize>>,
 }
 
 impl Variable {
@@ -21,6 +22,7 @@ impl Variable {
             domain,
             probabilities,
             constraints: vec![],
+            position: None,
         }
     }
 
@@ -85,5 +87,13 @@ impl Variable {
             }
         }
         *self.domain.last().unwrap()
+    }
+
+    pub fn set_position(&mut self, position: Vec<usize>) {
+        self.position = Some(position);
+    }
+
+    pub fn position(&self) -> &Option<Vec<usize>> {
+        &self.position
     }
 }

@@ -9,9 +9,12 @@ use burn::record::CompactRecorder;
 use burn::tensor::backend::AutodiffBackend;
 
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::learning::monitoring::SatisfactionReport;
 use crate::learning::{Loss, Network, NetworkConfig};
+use crate::modelling::Problem;
+
 
 /// Heuristic to select the best model during training
 #[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
@@ -60,6 +63,7 @@ pub struct TrainingConfig {
 ///         device, since `Autodiff<X>::Device == X::Device`
 pub fn train_model<B, NC, S, Ba, L, SValid>(
     network_config: NC,
+    problems: &[Arc<Problem>],
     train_dataset: impl Dataset<S> + Send + Sync + 'static,
     valid_dataset: impl Dataset<SValid> + Send + Sync + 'static,
     batcher: Ba,
@@ -87,7 +91,7 @@ where
     L: Loss<B, NC::N> + Loss<B::InnerBackend, <NC::N as AutodiffModule<B>>::InnerModule>,
 {
     // Initialise the network architecture with the given parameters
-    let mut network = network_config.init(device);
+    let mut network = network_config.init(problems, device);
 
     // Load the training and validation datasets
     let train_dataloader = DataLoaderBuilder::new(batcher.clone())

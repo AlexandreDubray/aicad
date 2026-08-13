@@ -52,7 +52,7 @@ pub trait NetworkConfig<B: Backend> {
     type N: Network<B>;
 
     /// Initialise the network with the given hyper-parameters.
-    fn init(&self, device: &B::Device) -> Self::N;
+    fn init(&self, problems: &[Arc<Problem>], device: &B::Device) -> Self::N;
 }
 
 /// Generic loss function. It receives the logits of the network as input and returns the loss of

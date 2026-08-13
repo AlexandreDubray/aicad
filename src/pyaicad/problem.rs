@@ -88,6 +88,12 @@ impl PyProblem {
         self.add_not_equals(x, y)?;
         Ok(y)
     }
+    
+    // --- Model modification --- //
+    
+    fn set_variable_position(&mut self, x: usize, position: Vec<usize>) {
+        self.mutate().unwrap()[VariableIndex(x)].set_position(position);
+    }
 
     // --- introspection: read-only, always available regardless of sharing --- //
 

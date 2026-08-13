@@ -48,16 +48,14 @@ impl<B: Backend> AssignmentEmbedding<B> {
 /// Positional embedding used for identify variables in the attention masks.
 #[derive(Module, Debug)]
 pub struct FixedPositionalEmbedding<B: Backend> {
-    /// table: pre-computed table to map variable index to position. Tensor of shape (max_len, embedding_size)
-    ///        with max_len being the maximum number of variable the model can handle for a problem
-    ///        type
+    /// table: pre-computed table to map variable index to position. Tensor of shape (16384, embedding_size)
     table: Tensor<B, 2>,
 }
 
 impl<B: Backend> FixedPositionalEmbedding<B> {
     /// Creates a new positional embedding for the variables. Pre-compute the table for each
     /// possible variable id (0, ..., max_len - 1) computes its (sin, cos) position.
-    pub fn new(embedding_size: usize, max_len: usize, device: &B::Device) -> Self {
+    pub fn new(embedding_size: usize, device: &B::Device) -> Self {
         let half = embedding_size / 2;
 
         let inv_freq: Vec<f32> = (0..half)
@@ -66,9 +64,9 @@ impl<B: Backend> FixedPositionalEmbedding<B> {
         let inv_freq: Tensor<B, 2> =
             Tensor::<B, 1>::from_floats(inv_freq.as_slice(), device).reshape([1, half]);
 
-        let t: Tensor<B, 2> = Tensor::<B, 1, Int>::arange(0..max_len as i64, device)
+        let t: Tensor<B, 2> = Tensor::<B, 1, Int>::arange(0..16384, device)
             .float()
-            .reshape([max_len, 1]);
+            .reshape([16384, 1]);
 
         let sinusoid_inp = t.matmul(inv_freq);
 
@@ -109,18 +107,11 @@ pub struct StructuredPositionalEmbedding<B: Backend> {
 
 impl<B: Backend> StructuredPositionalEmbedding<B> {
     /// Creates a new structural positional embedding
-    pub fn new(embedding_size: usize, structure: &PositionalStructure, device: &B::Device) -> Self {
-        // Number of dimensions used to position variables
-        let num_axes = structure.axis_sizes.len();
-
-        let axes = structure
-            .axis_sizes
-            .iter()
-            .map(|&axis_size| FixedPositionalEmbedding::new(embedding_size, axis_size, device))
-            .collect();
+    pub fn new(embedding_size: usize, num_axes: usize, positions: Vec<Vec<usize>>, device: &B::Device) -> Self {
+        let axes = vec![FixedPositionalEmbedding::new(embedding_size, device); num_axes];
 
         let axis_ids: Vec<Vec<usize>> = (0..num_axes)
-            .map(|a| structure.positions.iter().map(|coords| coords[a]).collect())
+            .map(|a| positions.iter().map(|coords| coords[a]).collect())
             .collect();
 
         StructuredPositionalEmbedding {

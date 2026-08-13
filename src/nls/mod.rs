@@ -136,7 +136,7 @@ impl StoppingCriterion {
 
 /// Loads a network's hyperparameters (JSON config) and trained weights from
 /// a checkpoint directory produced by `train_model`/`run_training`
-pub fn load_network<B, NC>(checkpoint_dir: &Path, device: &B::Device) -> NC::N
+pub fn load_network<B, NC>(checkpoint_dir: &Path, problems: &[Arc<Problem>], device: &B::Device) -> NC::N
 where
     B: Backend,
     NC: NetworkConfig<B> + Config,
@@ -145,7 +145,7 @@ where
     let config: NC =
         NC::load(checkpoint_dir.join("config.json")).expect("failed to load network config");
     config
-        .init(device)
+        .init(problems, device)
         .load_file(
             checkpoint_dir.join("weights"),
             &CompactRecorder::new(),

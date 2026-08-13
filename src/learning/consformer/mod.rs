@@ -7,14 +7,15 @@ pub use dataset::{
     consformer_masks, ConsFormerBatch, ConsFormerBatcher, ConsFormerDataset, ConsFormerSample,
 };
 pub use loss::{ConsFormerLoss, ConstraintLoss};
+use super::*;
+use crate::modelling::Problem;
+use architecture::*;
 
 use burn::config::Config;
 use burn::module::Param;
 use burn::nn::LinearConfig;
 
-use super::*;
-
-use architecture::*;
+use std::sync::Arc;
 
 #[derive(Config, Debug)]
 pub struct ConsFormerConfig {
@@ -37,8 +38,7 @@ pub struct ConsFormerConfig {
     /// Insert bias in feed-forward block
     #[config(default = true)]
     pub bias: bool,
-    /// Positional encodign for the network. Either none, or structured along n dimensions
-    pub positional_encoding: Option<PositionalStructure>,
+    pub positional_encoding_dimensions: usize,
     /// Fraction of free variables randomly marked eligible for update on
     /// each training step (see `ConsFormerBatcher::mask_fraction`).
     pub mask_fraction: f64,
@@ -49,7 +49,7 @@ pub struct ConsFormerConfig {
 impl<B: Backend> NetworkConfig<B> for ConsFormerConfig {
     type N = ConsFormer<B>;
 
-    fn init(&self, device: &B::Device) -> Self::N {
+    fn init(&self, problems: &[Arc<Problem>], device: &B::Device) -> Self::N {
         // Constructs the num_layers transformer blocks with the given parameters
         let transformer_blocks = (0..self.num_layers)
             .map(|_| {
@@ -66,13 +66,11 @@ impl<B: Backend> NetworkConfig<B> for ConsFormerConfig {
             })
             .collect();
 
-        let position_embedding = match &self.positional_encoding {
-            None => None,
-            Some(structure) => Some(StructuredPositionalEmbedding::new(
-                self.embedding_size,
-                structure,
-                device,
-            )),
+        let position_embedding = if self.positional_encoding_dimensions == 0 {
+            None
+        } else {
+            let positions = problems[0].iter_variables().map(|variable| problems[0][variable].position().clone().unwrap()).collect();
+            Some(StructuredPositionalEmbedding::new(self.embedding_size, self.positional_encoding_dimensions, positions, device))
         };
 
         ConsFormer {

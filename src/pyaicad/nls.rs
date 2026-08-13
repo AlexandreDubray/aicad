@@ -258,7 +258,7 @@ fn run<B: Backend>(
             let fraction = destroy_fraction.unwrap_or(config.mask_fraction);
             let destroy_op = destroy_kind.build(fraction);
 
-            let network = load_network::<B, ConsFormerConfig>(checkpoint_dir, &device);
+            let network = load_network::<B, ConsFormerConfig>(checkpoint_dir, &problems, &device);
             let nls = NeuralLocalSearch::<B, ConsFormer<B>>::new(
                 network,
                 destroy_op,
