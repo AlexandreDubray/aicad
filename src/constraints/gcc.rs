@@ -1,43 +1,29 @@
 use super::*;
-use crate::modelling::*;
 use crate::mdd::*;
-use std::hash::Hasher;
+use crate::modelling::*;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::hash::Hasher;
+use std::sync::Arc;
 
 /// Per-node counting property for the GCC. `guaranteed[v]` is the minimum number of times
 /// value `v` (identified by its slot in `val_to_bit`) occurs among all source-n (top-down)
 /// or n-sink (bottom-up) paths; `achievable[v]` is the maximum over the same paths.
 #[derive(Clone, deepsize::DeepSizeOf)]
 struct GccProperty {
-    guaranteed: Vec<usize>,
-    achievable: Vec<usize>,
-    initialized: bool,
+    map: Arc<FxHashMap<isize, usize>>,
+    min: Vec<usize>,
+    max: Vec<usize>,
 }
 
 impl GccProperty {
-
-    pub fn new(n: usize) -> Self {
+    pub fn new(n: usize, map: Arc<FxHashMap<isize, usize>>) -> Self {
         Self {
+            map,
             guaranteed: vec![0; n],
             achievable: vec![0; n],
-            initialized: false,
         }
     }
-
-    fn reset(&mut self) {
-        self.guaranteed.iter_mut().for_each(|x| *x = 0);
-        self.achievable.iter_mut().for_each(|x| *x = 0);
-        self.initialized = false;
-    }
-
 }
-
-impl PartialEq for GccProperty {
-    fn eq(&self, other: &Self) -> bool {
-        self.guaranteed == other.guaranteed && self.achievable == other.achievable
-    }
-}
-impl Eq for GccProperty {}
 
 #[derive(deepsize::DeepSizeOf)]
 pub struct Gcc {
@@ -51,7 +37,7 @@ pub struct Gcc {
     /// tracked (and can correctly drive the constraint to UNSAT if its lower bound is > 0).
     domain: FxHashSet<isize>,
     /// Map each value of `domain` to a slot in the properties' vectors
-    val_to_bit: FxHashMap<isize, usize>,
+    val_to_bit: Arc<FxHashMap<isize, usize>>,
     /// For each value (by its slot), the required lower/upper occurrence bound
     lo: Vec<usize>,
     hi: Vec<usize>,
@@ -64,16 +50,23 @@ pub struct Gcc {
 }
 
 impl Gcc {
-
     /// Creates a new GCC constraint over `variables`. `bounds` maps each cardinality
     /// constrained value to its required (lo, hi) occurrence range. Any value of the joint
     /// domain absent from `bounds` is implicitly unconstrained (range [0, |variables|]).
     pub fn new(variables: Vec<VariableIndex>, bounds: Vec<(isize, usize, usize)>) -> Self {
+        let val_to_bit = Arc::new(
+            bounds
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(bit, (value, _, _))| (value, bit))
+                .collect(),
+        );
         Self {
             variables,
             bounds,
             domain: FxHashSet::<isize>::default(),
-            val_to_bit: FxHashMap::<isize, usize>::default(),
+            val_to_bit,
             lo: vec![],
             hi: vec![],
             top_down_properties: vec![],
@@ -81,11 +74,9 @@ impl Gcc {
             layer_in_scope: vec![],
         }
     }
-
 }
 
 impl Constraint for Gcc {
-
     fn init(&mut self, vars: &[Variable]) {
         for variable in self.variables.iter().copied() {
             for value in vars[*variable].iter_domain() {
@@ -110,8 +101,12 @@ impl Constraint for Gcc {
             self.lo[bit] = lo;
             self.hi[bit] = hi;
         }
-        self.top_down_properties = (0..vars.len() + 1).map(|_| vec![GccProperty::new(self.domain.len())]).collect::<Vec<Vec<GccProperty>>>();
-        self.bottom_up_properties = (0..vars.len() + 1).map(|_| vec![GccProperty::new(self.domain.len())]).collect::<Vec<Vec<GccProperty>>>();
+        self.top_down_properties = (0..vars.len() + 1)
+            .map(|_| vec![GccProperty::new(self.domain.len())])
+            .collect::<Vec<Vec<GccProperty>>>();
+        self.bottom_up_properties = (0..vars.len() + 1)
+            .map(|_| vec![GccProperty::new(self.domain.len())])
+            .collect::<Vec<Vec<GccProperty>>>();
         self.layer_in_scope = (0..(vars.len() / 64 + 1)).map(|_| 0).collect::<Vec<u64>>();
     }
 
@@ -127,7 +122,12 @@ impl Constraint for Gcc {
         self.top_down_properties[layer][index].reset();
     }
 
-    fn update_property_top_down(&mut self, source: NodeIndex, target: NodeIndex, assignment: isize) {
+    fn update_property_top_down(
+        &mut self,
+        source: NodeIndex,
+        target: NodeIndex,
+        assignment: isize,
+    ) {
         let assignment_bit = *self.val_to_bit.get(&assignment).unwrap();
         let NodeIndex(source_layer, source_index) = source;
         let NodeIndex(target_layer, target_index) = target;
@@ -142,8 +142,10 @@ impl Constraint for Gcc {
         let target_property = &mut self.top_down_properties[target_layer][target_index];
         if target_property.initialized {
             for v in 0..candidate.guaranteed.len() {
-                target_property.guaranteed[v] = target_property.guaranteed[v].min(candidate.guaranteed[v]);
-                target_property.achievable[v] = target_property.achievable[v].max(candidate.achievable[v]);
+                target_property.guaranteed[v] =
+                    target_property.guaranteed[v].min(candidate.guaranteed[v]);
+                target_property.achievable[v] =
+                    target_property.achievable[v].max(candidate.achievable[v]);
             }
         } else {
             *target_property = candidate;
@@ -156,7 +158,12 @@ impl Constraint for Gcc {
         self.bottom_up_properties[layer][index].reset();
     }
 
-    fn update_property_bottom_up(&mut self, source: NodeIndex, target: NodeIndex, assignment: isize) {
+    fn update_property_bottom_up(
+        &mut self,
+        source: NodeIndex,
+        target: NodeIndex,
+        assignment: isize,
+    ) {
         let assignment_bit = *self.val_to_bit.get(&assignment).unwrap();
         let NodeIndex(source_layer, source_index) = source;
         let NodeIndex(target_layer, target_index) = target;
@@ -171,8 +178,10 @@ impl Constraint for Gcc {
         let target_property = &mut self.bottom_up_properties[target_layer][target_index];
         if target_property.initialized {
             for v in 0..candidate.guaranteed.len() {
-                target_property.guaranteed[v] = target_property.guaranteed[v].min(candidate.guaranteed[v]);
-                target_property.achievable[v] = target_property.achievable[v].max(candidate.achievable[v]);
+                target_property.guaranteed[v] =
+                    target_property.guaranteed[v].min(candidate.guaranteed[v]);
+                target_property.achievable[v] =
+                    target_property.achievable[v].max(candidate.achievable[v]);
             }
         } else {
             *target_property = candidate;
@@ -184,7 +193,13 @@ impl Constraint for Gcc {
         self.layer_in_scope[layer / 64] & (1 << (layer % 64)) != 0
     }
 
-    fn is_assignment_invalid(&self, source: NodeIndex, target: NodeIndex, _decision: VariableIndex, assignment: isize) -> bool {
+    fn is_assignment_invalid(
+        &self,
+        source: NodeIndex,
+        target: NodeIndex,
+        _decision: VariableIndex,
+        assignment: isize,
+    ) -> bool {
         let NodeIndex(source_layer, source_index) = source;
         let NodeIndex(target_layer, target_index) = target;
         let assignment_bit = *self.val_to_bit.get(&assignment).unwrap();
@@ -194,13 +209,15 @@ impl Constraint for Gcc {
 
         for v in 0..self.domain.len() {
             let delta = if v == assignment_bit { 1 } else { 0 };
-            let total_guaranteed = source_property.guaranteed[v] + target_property.guaranteed[v] + delta;
+            let total_guaranteed =
+                source_property.guaranteed[v] + target_property.guaranteed[v] + delta;
             // Every path through this edge is forced to use value v strictly more often
             // than allowed: the edge can never lead to a solution.
             if total_guaranteed > self.hi[v] {
                 return true;
             }
-            let total_achievable = source_property.achievable[v] + target_property.achievable[v] + delta;
+            let total_achievable =
+                source_property.achievable[v] + target_property.achievable[v] + delta;
             // Even in the best case (every remaining opportunity to use v is taken), v
             // cannot reach its required lower bound: the edge can never lead to a solution.
             if total_achievable < self.lo[v] {
@@ -236,16 +253,32 @@ impl Constraint for Gcc {
 
     fn hash_node_state(&self, node: NodeIndex, state: &mut dyn Hasher) {
         let NodeIndex(layer, index) = node;
-        for count in self.top_down_properties[layer][index].guaranteed.iter().copied() {
+        for count in self.top_down_properties[layer][index]
+            .guaranteed
+            .iter()
+            .copied()
+        {
             state.write_usize(count);
         }
-        for count in self.top_down_properties[layer][index].achievable.iter().copied() {
+        for count in self.top_down_properties[layer][index]
+            .achievable
+            .iter()
+            .copied()
+        {
             state.write_usize(count);
         }
-        for count in self.bottom_up_properties[layer][index].guaranteed.iter().copied() {
+        for count in self.bottom_up_properties[layer][index]
+            .guaranteed
+            .iter()
+            .copied()
+        {
             state.write_usize(count);
         }
-        for count in self.bottom_up_properties[layer][index].achievable.iter().copied() {
+        for count in self.bottom_up_properties[layer][index]
+            .achievable
+            .iter()
+            .copied()
+        {
             state.write_usize(count);
         }
     }
@@ -253,8 +286,8 @@ impl Constraint for Gcc {
     fn eq_node_state(&self, node: NodeIndex, other: NodeIndex) -> bool {
         let NodeIndex(layer, index) = node;
         let NodeIndex(olayer, oindex) = other;
-        self.top_down_properties[layer][index] == self.top_down_properties[olayer][oindex] &&
-        self.bottom_up_properties[layer][index] == self.bottom_up_properties[olayer][oindex]
+        self.top_down_properties[layer][index] == self.top_down_properties[olayer][oindex]
+            && self.bottom_up_properties[layer][index] == self.bottom_up_properties[olayer][oindex]
     }
 
     fn name(&self) -> &'static str {
@@ -276,11 +309,16 @@ impl Constraint for Gcc {
         let mut scores = vec![0.0; nodes.len()];
         let n = self.bounds.len();
         for i in 0..n {
-            let mut sorted_nodes = (0..nodes.len()).map(|j| {
-                let NodeIndex(layer, index) = nodes[j];
-                let node_score = (self.top_down_properties[layer][index].guaranteed[i], self.top_down_properties[layer][index].achievable[i]);
-                (node_score, j)
-            }).collect::<Vec<((usize, usize), usize)>>();
+            let mut sorted_nodes = (0..nodes.len())
+                .map(|j| {
+                    let NodeIndex(layer, index) = nodes[j];
+                    let node_score = (
+                        self.top_down_properties[layer][index].guaranteed[i],
+                        self.top_down_properties[layer][index].achievable[i],
+                    );
+                    (node_score, j)
+                })
+                .collect::<Vec<((usize, usize), usize)>>();
             sorted_nodes.sort_unstable();
             let k = nodes.len() as f64;
             for (rank, (_, l)) in sorted_nodes.iter().copied().enumerate() {
@@ -294,14 +332,75 @@ impl Constraint for Gcc {
     }
 }
 
+impl ConstraintProperty for GccProperty {
+    fn update(&mut self, other: &dyn ConstraintProperty, assignment: isize, in_scope: bool) {
+        let other = other
+            .as_any()
+            .downcast_ref::<GccProperty>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "Calling update on property {} with other property of type {}",
+                    self.name(),
+                    other.name()
+                );
+            });
+        let target_bit = match self.map.get(&assignment) {
+            None => self.min.len(),
+            Some(bit) => bit,
+        };
+
+        // Then, we integrate the min-max values for each bounded value from the other property
+        for bit in 0..self.min.len() {
+            if bit == target_bit {
+                self.min[bit] = self.min[bit].min(other.min[bit] + 1);
+                self.max[bit] = self.max[bit].max(other.max[bit] + 1);
+            } else {
+                self.min[bit] = self.min[bit].min(other.min[bit]);
+                self.max[bit] = self.max[bit].max(other.max[bit]);
+            }
+        }
+    }
+
+    fn hash(&self, hasher: &mut dyn Hasher) {
+        for bound in self.min.iter() {
+            hasher.write_usize(bound);
+        }
+        for bound in self.max.iter() {
+            hasher.write_usize(bound);
+        }
+    }
+
+    fn eq(&self, other: &dyn ConstraintProperty) -> bool {
+        let other = other
+            .as_any()
+            .downcast_ref::<GccProperty>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "Calling eq on property {} with other property of type {}",
+                    self.name(),
+                    other.name()
+                );
+            });
+        self.min == other.min && self.max == other.max
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> &'static str {
+        "GccProperty"
+    }
+}
+
 #[cfg(test)]
 mod test_gcc {
 
-    use crate::modelling::*;
-    use crate::constraints::{Gcc, Constraint};
-    use crate::mdd::*;
+    use crate::constraints::{Constraint, Gcc};
     use crate::mdd::heuristics::*;
     use crate::mdd::mdd::test_mdd::*;
+    use crate::mdd::*;
+    use crate::modelling::*;
 
     #[test]
     pub fn test_is_satisfied_within_bounds() {
@@ -351,7 +450,13 @@ mod test_gcc {
         let vars = problem.add_variables(3, vec![0, 1, 2], None);
         gcc(&mut problem, vars, vec![(0, 0, 1), (1, 0, 1), (2, 0, 1)]);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let mut mdd = Mdd::new(
+            problem,
+            usize::MAX,
+            OrderingHeuristic::Custom(vec![0, 1, 2]),
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+        );
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 6);
@@ -369,7 +474,13 @@ mod test_gcc {
         let vars = problem.add_variables(4, vec![0, 1], None);
         gcc(&mut problem, vars, vec![(1, 2, 2)]);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1, 2, 3]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let mut mdd = Mdd::new(
+            problem,
+            usize::MAX,
+            OrderingHeuristic::Custom(vec![0, 1, 2, 3]),
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+        );
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
 
@@ -400,7 +511,13 @@ mod test_gcc {
         let vars = problem.add_variables(3, vec![0, 1, 2], None);
         gcc(&mut problem, vars, vec![(0, 1, 2), (2, 0, 1)]);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let mut mdd = Mdd::new(
+            problem,
+            usize::MAX,
+            OrderingHeuristic::Custom(vec![0, 1, 2]),
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+        );
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
 
@@ -429,7 +546,13 @@ mod test_gcc {
         let vars = problem.add_variables(2, vec![0], None);
         gcc(&mut problem, vars, vec![(1, 1, 2)]);
 
-        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let mdd = Mdd::new(
+            problem,
+            usize::MAX,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+        );
         assert!(mdd.is_unsat());
         assert_eq!(mdd.get_solution(), None);
     }
@@ -441,7 +564,13 @@ mod test_gcc {
         let vars = problem.add_variables(2, vec![1], None);
         gcc(&mut problem, vars, vec![(1, 0, 1)]);
 
-        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let mdd = Mdd::new(
+            problem,
+            usize::MAX,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+        );
         assert!(mdd.is_unsat());
         assert_eq!(mdd.get_solution(), None);
     }
@@ -454,7 +583,13 @@ mod test_gcc {
         let vars = problem.add_variables(2, vec![0, 1], None);
         gcc(&mut problem, vars, vec![(1, 1, 1)]);
 
-        let mdd = Mdd::new(problem, 1, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let mdd = Mdd::new(
+            problem,
+            1,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+        );
         let solutions = get_all_solutions(&mdd);
         assert!(is_solution(vec![0, 1], &solutions));
         assert!(is_solution(vec![1, 0], &solutions));
@@ -467,7 +602,13 @@ mod test_gcc {
         let vars = problem.add_variables(2, vec![0, 1], None);
         gcc(&mut problem, vars, vec![]);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let mut mdd = Mdd::new(
+            problem,
+            usize::MAX,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+        );
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 4);
@@ -486,7 +627,13 @@ mod test_gcc {
         not_equals(&mut problem, x, y);
         gcc(&mut problem, vec![x, y, z], vec![(2, 1, 1)]);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let mut mdd = Mdd::new(
+            problem,
+            usize::MAX,
+            OrderingHeuristic::Custom(vec![0, 1, 2]),
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+        );
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
 

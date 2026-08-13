@@ -20,7 +20,7 @@ thread_local! {
 /// and each layer contains the necessary information to propagate the constraint and generate
 /// solutions.
 pub struct Mdd {
-    problem: Problem,
+    problem: Arc<Problem>,
     /// Nodes of the MDD.
     nodes: Vec<Vec<Node>>,
     /// Edges of the MDD.
@@ -39,6 +39,10 @@ pub struct Mdd {
     root: NodeIndex,
     /// Sink of the mdd
     sink: NodeIndex,
+    /// Top down properties of the MDD's constraints
+    top_down_properties: Vec<Vec<Box<dyn ConstraintProperty>>>,
+    /// Bottom up properties of the MDD's constraints
+    bottom_up_properties: Vec<Vec<Box<dyn ConstraintProperty>>>,
 }
 
 impl Mdd {

@@ -1,27 +1,42 @@
 use super::*;
-use crate::modelling::*;
 use crate::mdd::*;
-use std::hash::Hasher;
+use crate::modelling::*;
 use rustc_hash::FxHashSet;
+use std::hash::Hasher;
+use std::sync::Arc;
+
+pub struct AmongProperty {
+    values: Arc<FxHashSet<isize>>,
+    min: usize,
+    max: usize,
+}
+
+impl AmongProperty {
+    fn new(values: Arc<FxHashSet<isize>>, min: usize, max: usize) -> Self {
+        Self { values, min, max }
+    }
+}
 
 #[derive(deepsize::DeepSizeOf)]
 pub struct Among {
     variables: Vec<VariableIndex>,
-    values: FxHashSet<isize>,
+    values: Arc<FxHashSet<isize>>,
     lb: usize,
     ub: usize,
-    top_down_properties: Vec<Vec<(usize, usize, bool)>>,
-    bottom_up_properties: Vec<Vec<(usize, usize, bool)>>,
     /// Bitvector to indicate if a layer is in the scope of the constraint or not
     layer_in_scope: Vec<u64>,
 }
 
 impl Among {
-
-    pub fn new(variables: Vec<VariableIndex>, values: FxHashSet<isize>, lb: usize, ub: usize) -> Self {
+    pub fn new(
+        variables: Vec<VariableIndex>,
+        values: FxHashSet<isize>,
+        lb: usize,
+        ub: usize,
+    ) -> Self {
         Self {
             variables,
-            values,
+            values: Arc::new(values),
             lb,
             ub,
             top_down_properties: vec![],
@@ -29,21 +44,9 @@ impl Among {
             layer_in_scope: vec![],
         }
     }
-
 }
 
 impl Constraint for Among {
-
-    fn init(&mut self, vars: &[Variable]) {
-        self.top_down_properties = (0..vars.len() + 1).map(|_| {
-            vec![(0, 0, false)]
-        }).collect::<Vec<Vec<(usize, usize, bool)>>>();
-        self.bottom_up_properties = (0..vars.len() + 1).map(|_| {
-            vec![(0, 0, false)]
-        }).collect::<Vec<Vec<(usize, usize, bool)>>>();
-        self.layer_in_scope = (0..(vars.len() / 64 + 1)).map(|_| 0).collect::<Vec<u64>>();
-    }
-
     fn update_variable_ordering(&mut self, ordering: &[usize]) {
         // The layers in the scope of the variable are indicated using a bitvector of 64-bit words.
         // For each layer l its word index is given by l / 64 and the bit index by l % 64
@@ -54,84 +57,38 @@ impl Constraint for Among {
         }
     }
 
-    fn reset_property_top_down(&mut self, node: NodeIndex) {
-        let NodeIndex(layer, index) = node;
-        self.top_down_properties[layer][index] = (0, 0, false);
-    }
-
-    fn update_property_top_down(&mut self, source: NodeIndex, target: NodeIndex, assignment: isize)  {
-        let NodeIndex(source_layer, source_index) = source;
-        let NodeIndex(target_layer, target_index) = target;
-        // The edge (source -> target) belongs to the layer of `source` (the parent): layers
-        // are decided top-down, source sits at layer L-1, target at layer L, and the variable
-        // branched on for this edge is the one assigned to layer L-1.
-        let delta = if self.is_layer_in_scope(source_layer) && self.values.contains(&assignment) { 1 } else { 0 };
-        let source_property = self.top_down_properties[source_layer][source_index];
-        let candidate_lb = source_property.0 + delta;
-        let candidate_ub = source_property.1 + delta;
-        let target_property = &mut self.top_down_properties[target_layer][target_index];
-        if target_property.2 {
-            // Several parents (or several parallel edges from the same parent) can reach the
-            // same node: the guaranteed count is the min over all of them, the achievable
-            // count is the max - mirroring the all_path/some_path (intersection/union)
-            // aggregation used by AllDifferent.
-            target_property.0 = target_property.0.min(candidate_lb);
-            target_property.1 = target_property.1.max(candidate_ub);
-        } else {
-            target_property.0 = candidate_lb;
-            target_property.1 = candidate_ub;
-            target_property.2 = true;
-        }
-    }
-
-    fn reset_property_bottom_up(&mut self, node: NodeIndex) {
-        let NodeIndex(layer, index) = node;
-        self.bottom_up_properties[layer][index] = (0, 0, false);
-    }
-
-    fn update_property_bottom_up(&mut self, source: NodeIndex, target: NodeIndex, assignment: isize) {
-        let NodeIndex(source_layer, source_index) = source;
-        let NodeIndex(target_layer, target_index) = target;
-        // Here `target` is the node being computed (layer L) and `source` is its child (layer
-        // L+1, already computed since layers are processed bottom-up). The edge belongs to
-        // layer L, i.e. `target`'s layer, since that's where this edge's branching variable
-        // lives.
-        let delta = if self.is_layer_in_scope(target_layer) && self.values.contains(&assignment) { 1 } else { 0 };
-        let source_property = self.bottom_up_properties[source_layer][source_index];
-        let candidate_lb = source_property.0 + delta;
-        let candidate_ub = source_property.1 + delta;
-        let target_property = &mut self.bottom_up_properties[target_layer][target_index];
-        if target_property.2 {
-            target_property.0 = target_property.0.min(candidate_lb);
-            target_property.1 = target_property.1.max(candidate_ub);
-        } else {
-            target_property.0 = candidate_lb;
-            target_property.1 = candidate_ub;
-            target_property.2 = true;
-        }
-    }
-
     fn is_layer_in_scope(&self, layer: usize) -> bool {
         self.layer_in_scope[layer / 64] & (1 << (layer % 64)) != 0
     }
 
-    fn is_assignment_invalid(&self, source: NodeIndex, target: NodeIndex, _decision: VariableIndex, assignment: isize) -> bool {
-        let NodeIndex(source_layer, source_index) = source;
-        let NodeIndex(target_layer, target_index) = target;
-        let mut local_lb = self.top_down_properties[source_layer][source_index].0 + self.bottom_up_properties[target_layer][target_index].0;
+    fn is_assignment_invalid(
+        &self,
+        parent: &dyn ConstraintProperty,
+        child: &dyn ConstraintProperty,
+        assignment: isize,
+    ) -> bool {
+        let parent = parent.as_any().downcast_ref::<AmongProperty>().unwrap_or_else(|| {
+                panic!(
+                    "Calling is_assignment_invalid on parent property of type {} instead of AmongProperty",
+                    parent.name()
+                );
+        });
+        let child = child.as_any().downcast_ref::<AmongProperty>().unwrap_or_else(|| {
+                panic!(
+                    "Calling is_assignment_invalid on child property of type {} instead of AmongProperty",
+                    child.name()
+                );
+        });
+
+        let mut local_lb = parent.min + child.min;
         if self.values.contains(&assignment) {
             local_lb += 1;
         }
-        let mut local_ub = self.top_down_properties[source_layer][source_index].1 + self.bottom_up_properties[target_layer][target_index].1;
+        let mut local_ub = parent.max + child.max;
         if self.values.contains(&assignment) {
             local_ub += 1;
         }
         local_lb > self.ub || local_ub < self.lb
-    }
-
-    fn add_node_in_layer(&mut self, layer: usize) {
-        self.top_down_properties[layer].push((0, 0, false));
-        self.bottom_up_properties[layer].push((0, 0, false));
     }
 
     fn iter_scope(&self) -> Box<dyn Iterator<Item = VariableIndex> + '_> {
@@ -140,30 +97,13 @@ impl Constraint for Among {
 
     fn is_satisfied(&self, assignment: &[isize]) -> bool {
         let mut count = 0;
-        for variable in self.variables.iter().copied(){
+        for variable in self.variables.iter().copied() {
             let value = assignment[variable.0];
             if self.values.contains(&value) {
                 count += 1;
             }
         }
         self.lb <= count && count <= self.ub
-    }
-
-    fn hash_node_state(&self, node: NodeIndex, state: &mut dyn Hasher) {
-        let NodeIndex(layer, index) = node;
-        state.write_usize(self.top_down_properties[layer][index].0);
-        state.write_usize(self.top_down_properties[layer][index].1);
-        state.write_usize(self.bottom_up_properties[layer][index].0);
-        state.write_usize(self.bottom_up_properties[layer][index].1);
-    }
-
-    fn eq_node_state(&self, node: NodeIndex, other: NodeIndex) -> bool {
-        let NodeIndex(layer, index) = node;
-        let NodeIndex(olayer, oindex) = other;
-        self.top_down_properties[layer][index].0 == self.top_down_properties[olayer][oindex].0 &&
-        self.top_down_properties[layer][index].1 == self.top_down_properties[olayer][oindex].1 &&
-        self.bottom_up_properties[layer][index].0 == self.bottom_up_properties[olayer][oindex].0 &&
-        self.bottom_up_properties[layer][index].1 == self.bottom_up_properties[olayer][oindex].1
     }
 
     fn name(&self) -> &'static str {
@@ -174,37 +114,80 @@ impl Constraint for Among {
         self
     }
 
-    fn shrink_layers(&mut self, layers_size: &[usize]) {
-        for layer in 0..self.top_down_properties.len() {
-            self.top_down_properties[layer].truncate(layers_size[layer]);
-            self.bottom_up_properties[layer].truncate(layers_size[layer]);
+    fn rank_nodes(&self, nodes: &[NodeIndex]) -> Vec<f64> {
+        vec![]
+    }
+
+    fn identity_property(&self) -> Box<dyn ConstraintProperty> {
+        AmongProperty::new(self.values.clone(), usize::MAX, 0);
+    }
+}
+
+impl ConstraintProperty for AmongProperty {
+    fn update(&mut self, other: &dyn ConstraintProperty, assignment: isize, in_scope: bool) {
+        let other = other
+            .as_any()
+            .downcast_ref::<AmongProperty>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "Calling update on property {} with other property of type {}",
+                    self.name(),
+                    other.name()
+                );
+            });
+
+        let delta = if in_scope && self.values.contains(&assignment) {
+            1
+        } else {
+            0
+        };
+        let candidate_lb = other.min + delta;
+        let candidate_ub = other.max + delta;
+
+        self.min = self.min.min(other.min + delta);
+        self.max = self.max.max(other.max + delta);
+    }
+
+    fn hash(&self, hasher: &mut dyn Hasher) {
+        for word in self.value_all_path.iter() {
+            hasher.write_u64(word);
+        }
+        for word in self.value_some_path.iter() {
+            hasher.write_u64(word);
         }
     }
 
-    fn rank_nodes(&self, nodes: &[NodeIndex]) -> Vec<f64> {
-        let mut scores = vec![0.0; nodes.len()];
-        let mut sorted_nodes = (0..nodes.len()).map(|i| {
-            let NodeIndex(layer, index) = nodes[i];
-            let node_score = (self.top_down_properties[layer][index].0, self.top_down_properties[layer][index].1);
-            (node_score, i)
-        }).collect::<Vec<((usize, usize), usize)>>();
-        sorted_nodes.sort_unstable();
-        let n = nodes.len() as f64;
-        for (rank, (_, i)) in sorted_nodes.iter().copied().enumerate() {
-            scores[i] = (rank as f64) / n;
-        }
-        scores
+    fn eq(&self, other: &dyn ConstraintProperty) -> bool {
+        let other = other
+            .as_any()
+            .downcast_ref::<AmongProperty>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "Calling eq on property {} with other property of type {}",
+                    self.name(),
+                    other.name()
+                );
+            });
+        self.min == other.min && self.max == other.max
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> &'static str {
+        "AmongProperty"
     }
 }
 
 #[cfg(test)]
 mod test_among {
 
-    use crate::modelling::*;
     use crate::constraints::{Among, Constraint};
-    use crate::mdd::*;
     use crate::mdd::heuristics::*;
     use crate::mdd::mdd::test_mdd::*;
+    use crate::mdd::*;
+    use crate::modelling::*;
     use rustc_hash::FxHashSet;
 
     fn values(vals: &[isize]) -> FxHashSet<isize> {
@@ -261,7 +244,13 @@ mod test_among {
         let y = problem.add_variable(vec![0, 1], None);
         among(&mut problem, vec![x, y], vec![1], 1, 1);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let mut mdd = Mdd::new(
+            problem,
+            usize::MAX,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+        );
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 2);
@@ -277,7 +266,13 @@ mod test_among {
         let z = problem.add_variable(vec![0, 1, 2], None);
         among(&mut problem, vec![x, y, z], vec![0, 1], 1, 2);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let mut mdd = Mdd::new(
+            problem,
+            usize::MAX,
+            OrderingHeuristic::Custom(vec![0, 1, 2]),
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+        );
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
 
@@ -309,7 +304,13 @@ mod test_among {
         // Neither variable can ever take value 1, so the count is always 0 < lb = 1.
         among(&mut problem, vec![x, y], vec![1], 1, 2);
 
-        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let mdd = Mdd::new(
+            problem,
+            usize::MAX,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+        );
         assert!(mdd.is_unsat());
         assert_eq!(mdd.get_solution(), None);
     }
@@ -322,7 +323,13 @@ mod test_among {
         // Both variables are forced to 1, so the count is always 2 > ub = 0.
         among(&mut problem, vec![x, y], vec![1], 0, 0);
 
-        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let mdd = Mdd::new(
+            problem,
+            usize::MAX,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+        );
         assert!(mdd.is_unsat());
         assert_eq!(mdd.get_solution(), None);
     }
@@ -336,8 +343,13 @@ mod test_among {
         let y = problem.add_variable(vec![0, 1], None);
         among(&mut problem, vec![x, y], vec![1], 1, 1);
 
-        
-        let mdd = Mdd::new(problem, 1, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let mdd = Mdd::new(
+            problem,
+            1,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+        );
         let solutions = get_all_solutions(&mdd);
         assert!(is_solution(vec![0, 1], &solutions));
         assert!(is_solution(vec![1, 0], &solutions));
@@ -352,7 +364,13 @@ mod test_among {
         let z = problem.add_variable(vec![0, 1], None);
         among(&mut problem, vec![x, y, z], vec![1], 3, 3);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let mut mdd = Mdd::new(
+            problem,
+            usize::MAX,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+        );
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 1);
@@ -368,7 +386,13 @@ mod test_among {
         let y = problem.add_variable(vec![0, 1], None);
         among(&mut problem, vec![x, y], vec![1], 0, 2);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let mut mdd = Mdd::new(
+            problem,
+            usize::MAX,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+        );
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 4);
@@ -387,7 +411,13 @@ mod test_among {
         not_equals(&mut problem, x, y);
         among(&mut problem, vec![x, y, z], vec![2], 1, 1);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let mut mdd = Mdd::new(
+            problem,
+            usize::MAX,
+            OrderingHeuristic::Custom(vec![0, 1, 2]),
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+        );
         mdd.refine();
         let solutions = get_all_solutions(&mdd);
 
