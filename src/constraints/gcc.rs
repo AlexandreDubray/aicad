@@ -19,8 +19,8 @@ impl GccProperty {
     pub fn new(n: usize, map: Arc<FxHashMap<isize, usize>>) -> Self {
         Self {
             map,
-            guaranteed: vec![0; n],
-            achievable: vec![0; n],
+            min: vec![0; n],
+            max: vec![0; n],
         }
     }
 }
@@ -32,19 +32,11 @@ pub struct Gcc {
     /// Required [lo, hi] occurrence range for each explicitly-bounded value. Values of the
     /// joint domain that are not keys of this map are unconstrained.
     bounds: Vec<(isize, usize, usize)>,
-    /// Union of the domain of the variables in the scope, plus the (explicitly bounded)
-    /// keys of `bounds` so that a value which is bounded but never assignable is still
-    /// tracked (and can correctly drive the constraint to UNSAT if its lower bound is > 0).
-    domain: FxHashSet<isize>,
     /// Map each value of `domain` to a slot in the properties' vectors
     val_to_bit: Arc<FxHashMap<isize, usize>>,
     /// For each value (by its slot), the required lower/upper occurrence bound
     lo: Vec<usize>,
     hi: Vec<usize>,
-    /// Top-down properties for each node in the MDD
-    top_down_properties: Vec<Vec<GccProperty>>,
-    /// Bottom-up properties for each node in the MDD
-    bottom_up_properties: Vec<Vec<GccProperty>>,
     /// Bitvector to indicate if a layer is in the scope of the constraint or not
     layer_in_scope: Vec<u64>,
 }
@@ -62,130 +54,25 @@ impl Gcc {
                 .map(|(bit, (value, _, _))| (value, bit))
                 .collect(),
         );
+        let n = variables.len();
+        let layer_in_scope = (0..(vars.len() / 64 + 1)).map(|_| 0).collect::<Vec<u64>>();
         Self {
             variables,
             bounds,
-            domain: FxHashSet::<isize>::default(),
             val_to_bit,
-            lo: vec![],
-            hi: vec![],
-            top_down_properties: vec![],
-            bottom_up_properties: vec![],
-            layer_in_scope: vec![],
+            lo: bounds.iter().copied().map(|(_, lo, _)| lo).collect(),
+            hi: bounds.iter().copied().map(|(_, _, hi)| hi).collect(),
+            layer_in_scope,
         }
     }
 }
 
 impl Constraint for Gcc {
-    fn init(&mut self, vars: &[Variable]) {
-        for variable in self.variables.iter().copied() {
-            for value in vars[*variable].iter_domain() {
-                self.domain.insert(value);
-            }
-        }
-        // Values that are explicitly bounded must be tracked even if they never appear in
-        // any of the scope's domains (an unreachable value with a strictly positive lower
-        // bound must make the constraint UNSAT).
-        for value in self.bounds.iter().copied().map(|v| v.0) {
-            self.domain.insert(value);
-        }
-        for value in self.domain.iter().copied() {
-            let bit = self.val_to_bit.len();
-            self.val_to_bit.insert(value, bit);
-        }
-        let n = self.variables.len();
-        self.lo = vec![0; self.domain.len()];
-        self.hi = vec![n; self.domain.len()];
-        for (value, lo, hi) in self.bounds.iter().copied() {
-            let bit = *self.val_to_bit.get(&value).unwrap();
-            self.lo[bit] = lo;
-            self.hi[bit] = hi;
-        }
-        self.top_down_properties = (0..vars.len() + 1)
-            .map(|_| vec![GccProperty::new(self.domain.len())])
-            .collect::<Vec<Vec<GccProperty>>>();
-        self.bottom_up_properties = (0..vars.len() + 1)
-            .map(|_| vec![GccProperty::new(self.domain.len())])
-            .collect::<Vec<Vec<GccProperty>>>();
-        self.layer_in_scope = (0..(vars.len() / 64 + 1)).map(|_| 0).collect::<Vec<u64>>();
-    }
 
     fn update_variable_ordering(&mut self, ordering: &[usize]) {
         for variable in self.variables.iter() {
             let layer = ordering[variable.0];
             self.layer_in_scope[layer / 64] |= 1 << (layer % 64);
-        }
-    }
-
-    fn reset_property_top_down(&mut self, node: NodeIndex) {
-        let NodeIndex(layer, index) = node;
-        self.top_down_properties[layer][index].reset();
-    }
-
-    fn update_property_top_down(
-        &mut self,
-        source: NodeIndex,
-        target: NodeIndex,
-        assignment: isize,
-    ) {
-        let assignment_bit = *self.val_to_bit.get(&assignment).unwrap();
-        let NodeIndex(source_layer, source_index) = source;
-        let NodeIndex(target_layer, target_index) = target;
-        let layer_in_scope = self.is_layer_in_scope(source_layer);
-
-        let mut candidate = self.top_down_properties[source_layer][source_index].clone();
-        if layer_in_scope {
-            candidate.guaranteed[assignment_bit] += 1;
-            candidate.achievable[assignment_bit] += 1;
-        }
-
-        let target_property = &mut self.top_down_properties[target_layer][target_index];
-        if target_property.initialized {
-            for v in 0..candidate.guaranteed.len() {
-                target_property.guaranteed[v] =
-                    target_property.guaranteed[v].min(candidate.guaranteed[v]);
-                target_property.achievable[v] =
-                    target_property.achievable[v].max(candidate.achievable[v]);
-            }
-        } else {
-            *target_property = candidate;
-            target_property.initialized = true;
-        }
-    }
-
-    fn reset_property_bottom_up(&mut self, node: NodeIndex) {
-        let NodeIndex(layer, index) = node;
-        self.bottom_up_properties[layer][index].reset();
-    }
-
-    fn update_property_bottom_up(
-        &mut self,
-        source: NodeIndex,
-        target: NodeIndex,
-        assignment: isize,
-    ) {
-        let assignment_bit = *self.val_to_bit.get(&assignment).unwrap();
-        let NodeIndex(source_layer, source_index) = source;
-        let NodeIndex(target_layer, target_index) = target;
-        let layer_in_scope = self.is_layer_in_scope(target_layer);
-
-        let mut candidate = self.bottom_up_properties[source_layer][source_index].clone();
-        if layer_in_scope {
-            candidate.guaranteed[assignment_bit] += 1;
-            candidate.achievable[assignment_bit] += 1;
-        }
-
-        let target_property = &mut self.bottom_up_properties[target_layer][target_index];
-        if target_property.initialized {
-            for v in 0..candidate.guaranteed.len() {
-                target_property.guaranteed[v] =
-                    target_property.guaranteed[v].min(candidate.guaranteed[v]);
-                target_property.achievable[v] =
-                    target_property.achievable[v].max(candidate.achievable[v]);
-            }
-        } else {
-            *target_property = candidate;
-            target_property.initialized = true;
         }
     }
 
@@ -195,41 +82,39 @@ impl Constraint for Gcc {
 
     fn is_assignment_invalid(
         &self,
-        source: NodeIndex,
-        target: NodeIndex,
-        _decision: VariableIndex,
+        parent: &dyn ConstraintProperty,
+        child: &dyn ConstraintProperty,
         assignment: isize,
     ) -> bool {
-        let NodeIndex(source_layer, source_index) = source;
-        let NodeIndex(target_layer, target_index) = target;
-        let assignment_bit = *self.val_to_bit.get(&assignment).unwrap();
+        let parent = parent.as_any().downcast_ref::<GccProperty>().unwrap_or_else(|| {
+                panic!(
+                    "Calling is_assignment_invalid on parent property of type {} instead of GccProperty",
+                    parent.name()
+                );
+        });
+        let child = child.as_any().downcast_ref::<GccProperty>().unwrap_or_else(|| {
+                panic!(
+                    "Calling is_assignment_invalid on child property of type {} instead of GccProperty",
+                    child.name()
+                );
+        });
 
-        let source_property = &self.top_down_properties[source_layer][source_index];
-        let target_property = &self.bottom_up_properties[target_layer][target_index];
+        let bit = *self.value_to_bit(&assignment).unwrap();
 
-        for v in 0..self.domain.len() {
-            let delta = if v == assignment_bit { 1 } else { 0 };
-            let total_guaranteed =
-                source_property.guaranteed[v] + target_property.guaranteed[v] + delta;
-            // Every path through this edge is forced to use value v strictly more often
-            // than allowed: the edge can never lead to a solution.
-            if total_guaranteed > self.hi[v] {
+        for (v, lb, ub) in self.bounds.iter().copied() {
+            let v_bit = *self.value_to_bit(&v).unwrap();
+            let delta = if v_bit == bit { 1 } else { 0 };
+            let min = parent.min[v_bit] + child.min[v_bit] + delta;
+
+            if min > ub {
                 return true;
             }
-            let total_achievable =
-                source_property.achievable[v] + target_property.achievable[v] + delta;
-            // Even in the best case (every remaining opportunity to use v is taken), v
-            // cannot reach its required lower bound: the edge can never lead to a solution.
-            if total_achievable < self.lo[v] {
+            let max = parent.max[v_bit] + child.max[v_bit] + delta;
+            if max < lb {
                 return true;
             }
         }
         false
-    }
-
-    fn add_node_in_layer(&mut self, layer: usize) {
-        self.top_down_properties[layer].push(GccProperty::new(self.domain.len()));
-        self.bottom_up_properties[layer].push(GccProperty::new(self.domain.len()));
     }
 
     fn iter_scope(&self) -> Box<dyn Iterator<Item = VariableIndex> + '_> {
@@ -251,45 +136,6 @@ impl Constraint for Gcc {
         true
     }
 
-    fn hash_node_state(&self, node: NodeIndex, state: &mut dyn Hasher) {
-        let NodeIndex(layer, index) = node;
-        for count in self.top_down_properties[layer][index]
-            .guaranteed
-            .iter()
-            .copied()
-        {
-            state.write_usize(count);
-        }
-        for count in self.top_down_properties[layer][index]
-            .achievable
-            .iter()
-            .copied()
-        {
-            state.write_usize(count);
-        }
-        for count in self.bottom_up_properties[layer][index]
-            .guaranteed
-            .iter()
-            .copied()
-        {
-            state.write_usize(count);
-        }
-        for count in self.bottom_up_properties[layer][index]
-            .achievable
-            .iter()
-            .copied()
-        {
-            state.write_usize(count);
-        }
-    }
-
-    fn eq_node_state(&self, node: NodeIndex, other: NodeIndex) -> bool {
-        let NodeIndex(layer, index) = node;
-        let NodeIndex(olayer, oindex) = other;
-        self.top_down_properties[layer][index] == self.top_down_properties[olayer][oindex]
-            && self.bottom_up_properties[layer][index] == self.bottom_up_properties[olayer][oindex]
-    }
-
     fn name(&self) -> &'static str {
         "GCC"
     }
@@ -298,37 +144,8 @@ impl Constraint for Gcc {
         self
     }
 
-    fn shrink_layers(&mut self, layers_size: &[usize]) {
-        for layer in 0..self.top_down_properties.len() {
-            self.top_down_properties[layer].truncate(layers_size[layer]);
-            self.bottom_up_properties[layer].truncate(layers_size[layer]);
-        }
-    }
-
     fn rank_nodes(&self, nodes: &[NodeIndex]) -> Vec<f64> {
-        let mut scores = vec![0.0; nodes.len()];
-        let n = self.bounds.len();
-        for i in 0..n {
-            let mut sorted_nodes = (0..nodes.len())
-                .map(|j| {
-                    let NodeIndex(layer, index) = nodes[j];
-                    let node_score = (
-                        self.top_down_properties[layer][index].guaranteed[i],
-                        self.top_down_properties[layer][index].achievable[i],
-                    );
-                    (node_score, j)
-                })
-                .collect::<Vec<((usize, usize), usize)>>();
-            sorted_nodes.sort_unstable();
-            let k = nodes.len() as f64;
-            for (rank, (_, l)) in sorted_nodes.iter().copied().enumerate() {
-                scores[l] += (rank as f64) / k;
-            }
-        }
-        for score in scores.iter_mut() {
-            *score /= n as f64;
-        }
-        scores
+        vec![]
     }
 }
 
@@ -346,7 +163,7 @@ impl ConstraintProperty for GccProperty {
             });
         let target_bit = match self.map.get(&assignment) {
             None => self.min.len(),
-            Some(bit) => bit,
+            Some(&bit) => bit,
         };
 
         // Then, we integrate the min-max values for each bounded value from the other property
@@ -362,10 +179,10 @@ impl ConstraintProperty for GccProperty {
     }
 
     fn hash(&self, hasher: &mut dyn Hasher) {
-        for bound in self.min.iter() {
+        for &bound in self.min.iter() {
             hasher.write_usize(bound);
         }
-        for bound in self.max.iter() {
+        for &bound in self.max.iter() {
             hasher.write_usize(bound);
         }
     }

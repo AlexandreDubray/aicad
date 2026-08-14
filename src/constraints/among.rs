@@ -39,8 +39,6 @@ impl Among {
             values: Arc::new(values),
             lb,
             ub,
-            top_down_properties: vec![],
-            bottom_up_properties: vec![],
             layer_in_scope: vec![],
         }
     }

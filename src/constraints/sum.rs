@@ -3,14 +3,17 @@ use crate::modelling::*;
 use crate::mdd::*;
 use std::hash::Hasher;
 
+pub struct SumProperty {
+    min: isize,
+    max: isize,
+}
+
 #[derive(deepsize::DeepSizeOf)]
 pub struct Sum {
     /// Scope of the constraint
     variables: Vec<VariableIndex>,
     /// Target value the sum of the scope's variables must equal
     target: isize,
-    top_down_properties: Vec<Vec<(isize, isize, bool)>>,
-    bottom_up_properties: Vec<Vec<(isize, isize, bool)>>,
     /// Bitvector to indicate if a layer is in the scope of the constraint or not
     layer_in_scope: Vec<u64>,
 }
@@ -19,28 +22,17 @@ impl Sum {
 
     /// Creates a new Sum constraint: the sum of the given variables must equal `target`.
     pub fn new(variables: Vec<VariableIndex>, target: isize) -> Self {
+        let layer_in_scope = (0..(variables.len() / 64 + 1)).map(|_| 0).collect::<Vec<u64>>();
         Self {
             variables,
             target,
-            top_down_properties: vec![],
-            bottom_up_properties: vec![],
-            layer_in_scope: vec![],
+            layer_in_scope,
         }
     }
 
 }
 
 impl Constraint for Sum {
-
-    fn init(&mut self, vars: &[Variable]) {
-        self.top_down_properties = (0..vars.len() + 1).map(|_| {
-            vec![(0, 0, false)]
-        }).collect::<Vec<Vec<(isize, isize, bool)>>>();
-        self.bottom_up_properties = (0..vars.len() + 1).map(|_| {
-            vec![(0, 0, false)]
-        }).collect::<Vec<Vec<(isize, isize, bool)>>>();
-        self.layer_in_scope = (0..(vars.len() / 64 + 1)).map(|_| 0).collect::<Vec<u64>>();
-    }
 
     fn update_variable_ordering(&mut self, ordering: &[usize]) {
         // The layers in the scope of the variable are indicated using a bitvector of 64-bit words.
@@ -52,74 +44,33 @@ impl Constraint for Sum {
         }
     }
 
-    fn reset_property_top_down(&mut self, node: NodeIndex) {
-        let NodeIndex(layer, index) = node;
-        self.top_down_properties[layer][index] = (0, 0, false);
-    }
-
-    fn update_property_top_down(&mut self, source: NodeIndex, target: NodeIndex, assignment: isize) {
-        let NodeIndex(source_layer, source_index) = source;
-        let NodeIndex(target_layer, target_index) = target;
-        // The edge (source -> target) belongs to the layer of `source` (the parent): source
-        // sits at layer L-1, target at layer L, and the variable branched on for this edge is
-        // the one assigned to layer L-1.
-        let delta = if self.is_layer_in_scope(source_layer) { assignment } else { 0 };
-        let source_property = self.top_down_properties[source_layer][source_index];
-        let candidate_min = source_property.0 + delta;
-        let candidate_max = source_property.1 + delta;
-        let target_property = &mut self.top_down_properties[target_layer][target_index];
-        if target_property.2 {
-            target_property.0 = target_property.0.min(candidate_min);
-            target_property.1 = target_property.1.max(candidate_max);
-        } else {
-            target_property.0 = candidate_min;
-            target_property.1 = candidate_max;
-            target_property.2 = true;
-        }
-    }
-
-    fn reset_property_bottom_up(&mut self, node: NodeIndex) {
-        let NodeIndex(layer, index) = node;
-        self.bottom_up_properties[layer][index] = (0, 0, false);
-    }
-
-    fn update_property_bottom_up(&mut self, source: NodeIndex, target: NodeIndex, assignment: isize) {
-        let NodeIndex(source_layer, source_index) = source;
-        let NodeIndex(target_layer, target_index) = target;
-        // `target` is the node being computed (layer L) and `source` is its child (layer L+1,
-        // already computed since layers are processed bottom-up). The edge belongs to layer
-        // L, i.e. `target`'s layer, since that's where this edge's branching variable lives.
-        let delta = if self.is_layer_in_scope(target_layer) { assignment } else { 0 };
-        let source_property = self.bottom_up_properties[source_layer][source_index];
-        let candidate_min = source_property.0 + delta;
-        let candidate_max = source_property.1 + delta;
-        let target_property = &mut self.bottom_up_properties[target_layer][target_index];
-        if target_property.2 {
-            target_property.0 = target_property.0.min(candidate_min);
-            target_property.1 = target_property.1.max(candidate_max);
-        } else {
-            target_property.0 = candidate_min;
-            target_property.1 = candidate_max;
-            target_property.2 = true;
-        }
-    }
-
     fn is_layer_in_scope(&self, layer: usize) -> bool {
         self.layer_in_scope[layer / 64] & (1 << (layer % 64)) != 0
     }
 
-    fn is_assignment_invalid(&self, source: NodeIndex, target: NodeIndex, _decision: VariableIndex, assignment: isize) -> bool {
-        let NodeIndex(source_layer, source_index) = source;
-        let NodeIndex(target_layer, target_index) = target;
+    fn is_assignment_invalid(
+        &self,
+        parent: &dyn ConstraintProperty,
+        child: &dyn ConstraintProperty,
+        assignment: isize,
+    ) -> bool {
+        let parent = parent.as_any().downcast_ref::<SumProperty>().unwrap_or_else(|| {
+                panic!(
+                    "Calling is_assignment_invalid on parent property of type {} instead of SumProperty",
+                    parent.name()
+                );
+        });
+        let child = child.as_any().downcast_ref::<SumProperty>().unwrap_or_else(|| {
+                panic!(
+                    "Calling is_assignment_invalid on child property of type {} instead of SumProperty",
+                    child.name()
+                );
+        });
 
-        let local_min = self.top_down_properties[source_layer][source_index].0 + self.bottom_up_properties[target_layer][target_index].0 + assignment;
-        let local_max = self.top_down_properties[source_layer][source_index].1 + self.bottom_up_properties[target_layer][target_index].1 + assignment;
+        let local_min = parent.min + child.min + assignment;
+        let local_max = parent.max + child.max + assignment;
+        // TODO: check if this work with negative values
         local_min > self.target || local_max < self.target
-    }
-
-    fn add_node_in_layer(&mut self, layer: usize) {
-        self.top_down_properties[layer].push((0, 0, false));
-        self.bottom_up_properties[layer].push((0, 0, false));
     }
 
     fn iter_scope(&self) -> Box<dyn Iterator<Item = VariableIndex> + '_> {
@@ -134,26 +85,6 @@ impl Constraint for Sum {
         total == self.target
     }
 
-    fn hash_node_state(&self, node: NodeIndex, state: &mut dyn Hasher) {
-        let NodeIndex(layer, index) = node;
-        state.write_isize(self.top_down_properties[layer][index].0);
-        state.write_isize(self.top_down_properties[layer][index].1);
-        state.write_isize(self.bottom_up_properties[layer][index].0);
-        state.write_isize(self.bottom_up_properties[layer][index].1);
-    }
-
-    fn eq_node_state(&self, node: NodeIndex, other: NodeIndex) -> bool {
-        let NodeIndex(layer, index) = node;
-        let NodeIndex(olayer, oindex) = other;
-        // Compare only the substantive min/max bounds - `accumulated`/`ever_computed`
-        // are propagation bookkeeping, not part of the node's logical state, and
-        // comparing them here could keep otherwise-identical nodes from merging.
-        self.top_down_properties[layer][index].0 == self.top_down_properties[olayer][oindex].0 &&
-        self.top_down_properties[layer][index].1 == self.top_down_properties[olayer][oindex].1 &&
-        self.bottom_up_properties[layer][index].0 == self.bottom_up_properties[olayer][oindex].0 &&
-        self.bottom_up_properties[layer][index].1 == self.bottom_up_properties[olayer][oindex].1
-    }
-
     fn name(&self) -> &'static str {
         "Sum"
     }
@@ -162,28 +93,67 @@ impl Constraint for Sum {
         self
     }
 
-    fn shrink_layers(&mut self, layers_size: &[usize]) {
-        for layer in 0..self.top_down_properties.len() {
-            self.top_down_properties[layer].truncate(layers_size[layer]);
-            self.bottom_up_properties[layer].truncate(layers_size[layer]);
-        }
+    fn rank_nodes(&self, nodes: &[NodeIndex]) -> Vec<f64> {
+        vec![]
     }
 
-    fn rank_nodes(&self, nodes: &[NodeIndex]) -> Vec<f64> {
-        let mut scores = vec![0.0; nodes.len()];
-        let mut sorted_nodes = (0..nodes.len()).map(|i| {
-            let NodeIndex(layer, index) = nodes[i];
-            let node_score = (self.top_down_properties[layer][index].0,
-                self.top_down_properties[layer][index].1);
-            (node_score, i)
-        }).collect::<Vec<((isize, isize), usize)>>();
-        sorted_nodes.sort_unstable();
-        let n = nodes.len() as f64;
-        for (rank, (_, i)) in sorted_nodes.iter().copied().enumerate() {
-            scores[i] = (rank as f64) / n;
-        }
-        scores
+    fn identity_property(&self) -> SumProperty {
+        SumProperty { min: 0, max: 0 }
     }
+}
+
+impl ConstraintProperty for SumProperty {
+    fn update(&mut self, other: &dyn ConstraintProperty, assignment: isize, in_scope: bool) {
+        let other = other
+            .as_any()
+            .downcast_ref::<SumProperty>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "Calling update on property {} with other property of type {}",
+                    self.name(),
+                    other.name()
+                );
+            });
+
+        let delta = if in_scope && self.values.contains(&assignment) {
+            assignment
+        } else {
+            0
+        };
+        let candidate_lb = other.min + delta;
+        let candidate_ub = other.max + delta;
+
+        self.min = self.min.min(other.min + delta);
+        self.max = self.max.max(other.max + delta);
+    }
+
+    fn hash(&self, hasher: &mut dyn Hasher) {
+        hasher.write_isize(self.min);
+        hasher.write_isize(self.max);
+    }
+
+    fn eq(&self, other: &dyn ConstraintProperty) -> bool {
+        let other = other
+            .as_any()
+            .downcast_ref::<SumProperty>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "Calling eq on property {} with other property of type {}",
+                    self.name(),
+                    other.name()
+                );
+            });
+        self.min == other.min && self.max == other.max
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> &'static str {
+        "SumProperty"
+    }
+
 }
 
 #[cfg(test)]

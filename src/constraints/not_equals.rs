@@ -3,30 +3,42 @@ use crate::utils::Bitset;
 use crate::modelling::*;
 use crate::mdd::*;
 use std::hash::Hasher;
+use std::sync::Arc;
 use rustc_hash::{FxHashSet, FxHashMap};
+
+pub struct NotEqualsProperty {
+    set: Bitset,
+    map: Arc<FxHashMap<isize, usize>>,
+}
+
+impl NotEqualsProperty {
+    fn new(map: Arc<FxHashMap<isize, usize>>) -> Self {
+        Self { set: Bitset::new(map.len()), map }
+    }
+}
 
 #[derive(deepsize::DeepSizeOf)]
 pub struct NotEquals {
     x: VariableIndex,
     y: VariableIndex,
     domains: FxHashSet<isize>,
-    val_to_bit: FxHashMap<isize, usize>,
-    top_down_properties: Vec<Vec<Bitset>>,
-    bottom_up_properties: Vec<Vec<Bitset>>,
+    val_to_bit: Arc<FxHashMap<isize, usize>>,
     layer_x: usize,
     layer_y: usize,
 }
 
 impl NotEquals {
 
-    pub fn new(x: VariableIndex, y: VariableIndex) -> Self {
+    pub fn new(x: VariableIndex, y: VariableIndex, problem: Arc<Problem>) -> Self {
+        let mut domains = FxHashSet::<isize>::default();
+        domains.extend(problem[x].iter_domain());
+        domains.extend(problem[y].iter_domain());
+        let val_to_bit = Arc::new(domain.iter().copied().enumerate().map(|(bit, value)| (value, bit)).collect());
         Self {
             x,
             y,
-            domains: FxHashSet::<isize>::default(),
-            val_to_bit: FxHashMap::<isize, usize>::default(),
-            top_down_properties: vec![],
-            bottom_up_properties: vec![],
+            domains,
+            val_to_bit,
             layer_x: 0,
             layer_y: 0,
         }
@@ -36,88 +48,39 @@ impl NotEquals {
 
 impl Constraint for NotEquals {
 
-    fn init(&mut self, vars: &[Variable]) {
-        for value in vars[*self.x].iter_domain() {
-            self.domains.insert(value);
-        }
-        for value in vars[*self.y].iter_domain() {
-            self.domains.insert(value);
-        }
-        for value in self.domains.iter().copied() {
-            let bit = self.val_to_bit.len();
-            self.val_to_bit.insert(value, bit);
-        }
-        self.top_down_properties = (0..vars.len() + 1).map(|_| {
-            vec![Bitset::new(self.domains.len())]
-        }).collect::<Vec<Vec<Bitset>>>();
-        self.bottom_up_properties = (0..vars.len() + 1).map(|_| {
-            vec![Bitset::new(self.domains.len())]
-        }).collect::<Vec<Vec<Bitset>>>();
-    }
-
     fn update_variable_ordering(&mut self, ordering: &[usize]) {
         self.layer_x = ordering[self.x.0];
         self.layer_y = ordering[self.y.0];
-    }
-
-    fn reset_property_top_down(&mut self, node: NodeIndex) {
-        let NodeIndex(layer, index) = node;
-        self.top_down_properties[layer][index].reset(0);
-    }
-
-    fn update_property_top_down(&mut self, source: NodeIndex, target: NodeIndex, assignment: isize)  {
-        let assignment = *self.val_to_bit.get(&assignment).unwrap();
-        let NodeIndex(source_layer, source_index) = source;
-        let NodeIndex(target_layer, target_index) = target;
-        if self.is_layer_in_scope(source_layer) {
-            self.top_down_properties[target_layer][target_index].insert(assignment);
-        }
-        let (td_properties_above, td_properties_below) = self.top_down_properties.split_at_mut(target_layer);
-        td_properties_below[0][target_index].union(&td_properties_above[source_layer][source_index]);
-    }
-
-    fn reset_property_bottom_up(&mut self, node: NodeIndex) {
-        let NodeIndex(layer, index) = node;
-        self.bottom_up_properties[layer][index].reset(0);
-    }
-
-    fn update_property_bottom_up(&mut self, source: NodeIndex, target: NodeIndex, assignment: isize) {
-        let assignment = *self.val_to_bit.get(&assignment).unwrap();
-        let NodeIndex(source_layer, source_index) = source;
-        let NodeIndex(target_layer, target_index) = target;
-        if self.is_layer_in_scope(target_layer) {
-            self.bottom_up_properties[target_layer][target_index].insert(assignment);
-        }
-        let (bu_properties_above, bu_properties_below) = self.bottom_up_properties.split_at_mut(source_layer);
-        bu_properties_above[target_layer][target_index].union(&bu_properties_below[0][source_index]);
     }
 
     fn is_layer_in_scope(&self, layer: usize) -> bool {
         layer == self.layer_x || layer == self.layer_y
     }
 
-    fn is_assignment_invalid(&self, source: NodeIndex, _target: NodeIndex, decision: VariableIndex, assignment: isize) -> bool {
-        let assignment = *self.val_to_bit.get(&assignment).unwrap();
-        let NodeIndex(source_layer, source_index) = source;
+    fn is_assignment_invalid(&self, parent: &dyn ConstraintProperty, child: &dyn ConstraintProperty, assignment: isize) -> bool {
+        let parent = parent.as_any().downcast_ref::<NotEqualsProperty>().unwrap_or_else(|| {
+                panic!(
+                    "Calling is_assignment_invalid on parent property of type {} instead of NotEqualsProperty",
+                    parent.name()
+                );
+        });
+        let child = child.as_any().downcast_ref::<NotEqualsProperty>().unwrap_or_else(|| {
+                panic!(
+                    "Calling is_assignment_invalid on child property of type {} instead of NotEqualsProperty",
+                    child.name()
+                );
+        });
 
-        if decision == self.x {
-            if self.layer_x < self.layer_y {
-                self.bottom_up_properties[source_layer][source_index].contains(assignment) && self.bottom_up_properties[source_layer][source_index].size() == 1
-            } else {
-                self.top_down_properties[source_layer][source_index].contains(assignment) && self.top_down_properties[source_layer][source_index].size() == 1
-            }
-        } else if self.layer_x > self.layer_y {
-            self.bottom_up_properties[source_layer][source_index].contains(assignment) && self.bottom_up_properties[source_layer][source_index].size() == 1
-        } else {
-            self.top_down_properties[source_layer][source_index].contains(assignment) && self.top_down_properties[source_layer][source_index].size() == 1
-        }
-    }
-
-    fn add_node_in_layer(&mut self, layer: usize) {
-        let top_down_property = Bitset::new(self.domains.len());
-        let bottom_up_property = Bitset::new(self.domains.len());
-        self.top_down_properties[layer].push(top_down_property);
-        self.bottom_up_properties[layer].push(bottom_up_property);
+        let bit = *self.val_to_bit.get(&assignment).unwrap();
+        // Filtering an edge only appears on a layer that is in the constraint's scope (either
+        // layer of x or layer of y). Without loss of generality, let us assume that x appears
+        // before y in the MDD. Hence, when filtering an edge associated with x, the top-down
+        // property will be empty (first condition is false) and we fall back on the second
+        // condition: does all path leaving by this edge result in the same assignment for y.
+        // Similarly, when filtering an edge associated with y, the bottom-up property is false,
+        // and we fall back on the first condition: does every path leading to the parent nodes
+        // result in the same assignment for x.
+        (parent.set.contains(&bit) && parent.set.size() == 1) || (child.set.contains(&bit) && child.set.size() == 1)
     }
 
     fn iter_scope(&self) -> Box<dyn Iterator<Item = VariableIndex> + '_> {
@@ -128,23 +91,6 @@ impl Constraint for NotEquals {
         assignment[*self.x] != assignment[*self.y]
     }
 
-    fn hash_node_state(&self, node: NodeIndex, state: &mut dyn Hasher) {
-        let NodeIndex(layer, index) = node;
-        for word in self.top_down_properties[layer][index].iter() {
-            state.write_u64(word);
-        }
-        for word in self.bottom_up_properties[layer][index].iter() {
-            state.write_u64(word);
-        }
-    }
-
-    fn eq_node_state(&self, node: NodeIndex, other: NodeIndex) -> bool {
-        let NodeIndex(layer, index) = node;
-        let NodeIndex(olayer, oindex) = other;
-        self.top_down_properties[layer][index] == self.top_down_properties[olayer][oindex] &&
-        self.bottom_up_properties[layer][index] == self.bottom_up_properties[olayer][oindex]
-    }
-
     fn name(&self) -> &'static str {
         "Not Equals"
     }
@@ -153,27 +99,62 @@ impl Constraint for NotEquals {
         self
     }
 
-    fn shrink_layers(&mut self, layers_size: &[usize]) {
-        for layer in 0..self.top_down_properties.len() {
-            self.top_down_properties[layer].truncate(layers_size[layer]);
-            self.bottom_up_properties[layer].truncate(layers_size[layer]);
+    fn rank_nodes(&self, nodes: &[NodeIndex]) -> Vec<f64> {
+        vec![]
+    }
+
+    fn identity_property(&self) -> NotEqualsProperty {
+        NotEqualsProperty::new(self.val_to_bit.clone())
+    }
+}
+
+impl ConstraintProperty for NotEqualsProperty {
+    fn update(&mut self, other: &dyn ConstraintProperty, assignment: isize, in_scope: bool) {
+        let other = other
+            .as_any()
+            .downcast_ref::<NotEqualsProperty>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "Calling update on property {} with other property of type {}",
+                    self.name(),
+                    other.name()
+                );
+            });
+        let bit = *self.map(&assignment).unwrap();
+        if in_scope {
+            self.set.insert(bit);
+        }
+        self.set.union(&other.set);
+    }
+
+    fn hash(&self, hasher: &mut dyn Hasher) {
+        for word in self.set.iter() {
+            hasher.write_u64(word);
         }
     }
 
-    fn rank_nodes(&self, nodes: &[NodeIndex]) -> Vec<f64> {
-        let mut scores = vec![0.0; nodes.len()];
-        let mut sorted_nodes = (0..nodes.len()).map(|i| {
-            let NodeIndex(layer, index) = nodes[i];
-            let node_score = self.top_down_properties[layer][index].size();
-            (node_score, i)
-        }).collect::<Vec<(usize, usize)>>();
-        sorted_nodes.sort_unstable();
-        let n = nodes.len() as f64;
-        for (rank, (_, i)) in sorted_nodes.iter().copied().enumerate() {
-            scores[i] = (rank as f64) / n;
-        }
-        scores
+    fn eq(&self, other: &dyn ConstraintProperty) -> bool {
+        let other = other
+            .as_any()
+            .downcast_ref::<NotEqualsProperty>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "Calling eq on property {} with other property of type {}",
+                    self.name(),
+                    other.name()
+                );
+            });
+        self.set == other.set
     }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> &'static str {
+        "NotEqualsProperty"
+    }
+
 }
 
 #[cfg(test)]

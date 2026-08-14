@@ -48,12 +48,6 @@ impl Problem {
         ret
     }
 
-    pub fn init_constraints(&mut self) {
-        for constraint in 0..self.constraints.len() {
-            self.constraints[constraint].init(&self.variables);
-        }
-    }
-
     /// Returns the number of variables in the problem
     pub fn number_variables(&self) -> usize {
         self.variables.len()

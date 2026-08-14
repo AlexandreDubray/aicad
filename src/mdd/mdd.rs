@@ -2,6 +2,7 @@ use super::heuristics::*;
 use super::*;
 use crate::modelling::*;
 use crate::utils::MemoryReport;
+use crate::constraints::*;
 
 use rand;
 use rand::prelude::*;
@@ -11,6 +12,7 @@ use std::cell::RefCell;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::fs;
+use std::sync::Arc;
 
 thread_local! {
     static RNG: RefCell<Xoshiro256Plus> = RefCell::new(Xoshiro256Plus::from_rng(&mut rand::rng()));
@@ -20,6 +22,8 @@ thread_local! {
 /// and each layer contains the necessary information to propagate the constraint and generate
 /// solutions.
 pub struct Mdd {
+    scope: Vec<VariableIndex>,
+    constraints: Vec<Box<dyn Constraint>>,
     problem: Arc<Problem>,
     /// Nodes of the MDD.
     nodes: Vec<Vec<Node>>,
@@ -49,16 +53,32 @@ impl Mdd {
     /// Creates a new MDD for the given problem and variable ordering. The ordering array gives,
     /// for each variable, the layer at which it is branched on.
     pub fn new(
-        problem: Problem,
+        problem: Arc<Problem>,
         max_width: usize,
         order: OrderingHeuristic,
         merge_heuristic: MergeHeuristic,
         select_heuristic: SelectHeuristic,
+        constraints: &[ConstraintIndex],
     ) -> Self {
-        let number_layers = problem.number_variables() + 1;
+        let mdd_scope = problem.iter_variables().filter(|&variable| {
+            for constraint in constraints.iter().copied() {
+                let mut in_scope = false;
+                for v in problem[constraint].iter_scope() {
+                    if v == variable {
+                        in_scope = true;
+                        break;
+                    }
+                }
+                if !in_scope {
+                    return false;
+                }
+            }
+            true
+        }).collect::<Vec<VariableIndex>>();
+        let number_layers = mdd_scope.len() + 1;
         let mut mdd = Self {
-            nodes: vec![vec![]; problem.number_variables() + 1],
-            edges: vec![vec![]; problem.number_variables()],
+            nodes: vec![vec![]; number_layers + 1],
+            edges: vec![vec![]; number_layers],
             order: vec![],
             max_width,
             merge_heuristic,
@@ -67,8 +87,9 @@ impl Mdd {
             unsat: false,
             root: NodeIndex(0, 0),
             sink: NodeIndex(number_layers - 1, 0),
+            top_down_properties: vec![],
+            bottom_up_properties: vec![],
         };
-        mdd.problem.init_constraints();
 
         // First, we create each layer. There is n + 1 layers, with n the number of variables. The
         // last layer is the sink node. Each layer has one node at creation.
@@ -78,7 +99,7 @@ impl Mdd {
 
         // Set the variable order in the MDD given the heuristics
         // We get for each layer its decision variable
-        let var_order = order.get_order(&mdd.problem);
+        let var_order = order.get_order(&mdd.problem, &mdd_scope);
         // Reverse mapping order: for each variable, give its layer
         let mut var_order_inv = vec![0; var_order.len()];
         for (layer, variable) in var_order.iter().copied().enumerate() {
