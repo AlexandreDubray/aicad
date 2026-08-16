@@ -1,5 +1,6 @@
 use crate::modelling::{Problem, VariableIndex};
 
+#[derive(Clone, Debug)]
 pub enum OrderingHeuristic {
     MinDomMaxLinked,
     Custom(Vec<usize>),

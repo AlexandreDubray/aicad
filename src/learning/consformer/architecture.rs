@@ -8,7 +8,7 @@ use burn::nn::{
 };
 use burn::tensor::{backend::Backend, Bool, Int, Tensor};
 
-use super::dataset::ConsFormerBatch;
+use super::ConsFormerInputs;
 use crate::learning::*;
 
 // --- Embedding --- //
@@ -451,28 +451,27 @@ pub struct ConsFormer<B: Backend> {
     pub(crate) tau: f64,
 }
 
-impl<B: Backend> Network<B> for ConsFormer<B> {
-    type Batch = ConsFormerBatch<B>;
-
-    fn forward(&self, batch: &ConsFormerBatch<B>) -> Tensor<B, 3> {
-        let [batch_size, _seq_len] = batch.assignments.dims();
-        let device = batch.assignments.device();
+impl<B: Backend, Ba: ConsFormerInputs<B>> Network<B, Ba> for ConsFormer<B> {
+    fn forward(&self, batch: &Ba) -> Tensor<B, 3> {
+        let assignments = batch.assignments();
+        let [batch_size, _seq_len] = assignments.dims();
+        let device = assignments.device();
 
         let position_embeds = self
             .position_embedding
             .as_ref()
             .map(|pe| pe.forward(batch_size, &device));
 
-        let x = self.assignment_embedding.forward(batch.assignments.clone());
+        let x = self.assignment_embedding.forward(assignments);
         let mut x = self.embedding_mixer.forward(
             x,
             self.mask_embedding.val(),
             position_embeds,
-            batch.var_masks.clone(),
+            batch.var_masks(),
         );
 
         for block in &self.transformer_blocks {
-            x = block.forward(x, batch.attention_masks.clone());
+            x = block.forward(x, batch.attention_masks());
         }
 
         self.head.forward(x).div_scalar(self.tau)

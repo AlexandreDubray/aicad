@@ -1,6 +1,7 @@
 pub mod architecture;
 pub mod dataset;
 pub mod loss;
+pub mod mdd_dataset;
 
 use super::*;
 use crate::modelling::Problem;
@@ -9,13 +10,32 @@ use architecture::*;
 pub use dataset::{
     consformer_masks, ConsFormerBatch, ConsFormerBatcher, ConsFormerDataset, ConsFormerSample,
 };
-pub use loss::{ConsFormerLoss, ConstraintLoss};
+pub use loss::{ConsFormerLoss, ConsFormerMddLoss, ConstraintLoss};
+pub use mdd_dataset::{
+    ConsFormerMddBatch, ConsFormerMddBatcher, ConsFormerMddDataset, ConsFormerMddSample,
+    MddBucketBatch, MddBucketKey, MddCompilationConfig, MddInstance,
+};
 
 use burn::config::Config;
 use burn::module::Param;
 use burn::nn::LinearConfig;
 
 use std::sync::Arc;
+
+/// Shared inputs every ConsFormer-compatible batch must provide for a
+/// forward pass. Kept separate from `BatchProblems`/`Batch` (see
+/// `learning::mod`) so `ConsFormer` can be driven by several different batch
+/// structs -- e.g. `ConsFormerBatch` for the classical per-constraint-penalty
+/// loss, and a future dedicated batch for the MDD-WMC loss -- without
+/// merging their data into one shared batch type.
+pub trait ConsFormerInputs<B: Backend> {
+    /// (batch_size, number_vars, number_vars)
+    fn attention_masks(&self) -> Tensor<B, 3, Bool>;
+    /// (batch_size, number_vars)
+    fn var_masks(&self) -> Tensor<B, 2, Bool>;
+    /// (batch_size, number_vars)
+    fn assignments(&self) -> Tensor<B, 2, Int>;
+}
 
 #[derive(Config, Debug)]
 pub struct ConsFormerConfig {

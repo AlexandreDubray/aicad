@@ -13,7 +13,7 @@ use burn::tensor::backend::Backend;
 
 use rand::RngExt;
 
-use crate::learning::consformer::{ConsFormer, ConsFormerConfig};
+use crate::learning::consformer::{ConsFormer, ConsFormerBatch, ConsFormerConfig};
 use crate::learning::Network;
 use crate::modelling::Problem;
 use crate::nls::decode::{Argmax, DecodingOperator, Sampling};
@@ -259,7 +259,7 @@ fn run<B: Backend>(
             let destroy_op = destroy_kind.build(fraction);
 
             let network = load_network::<B, ConsFormerConfig>(checkpoint_dir, &problems, &device);
-            let nls = NeuralLocalSearch::<B, ConsFormer<B>>::new(
+            let nls = NeuralLocalSearch::<B, ConsFormer<B>, ConsFormerBatch<B>>::new(
                 network,
                 destroy_op,
                 decode_op,
@@ -271,8 +271,8 @@ fn run<B: Backend>(
     }
 }
 
-fn chunked_run<B: Backend, N: Network<B>>(
-    nls: &NeuralLocalSearch<B, N>,
+fn chunked_run<B: Backend, N: Network<B, Ba>, Ba: crate::learning::Batch<B>>(
+    nls: &NeuralLocalSearch<B, N, Ba>,
     problems: &[Arc<Problem>],
     max_batch_size: Option<usize>,
     budget: Budget,

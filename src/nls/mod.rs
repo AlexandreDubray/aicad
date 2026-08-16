@@ -154,7 +154,7 @@ where
         .expect("failed to load network weights")
 }
 
-pub struct NeuralLocalSearch<B: Backend, N: Network<B>> {
+pub struct NeuralLocalSearch<B: Backend, N, Ba> {
     /// Neural network used to guide the local search
     network: N,
     /// Heuristic for the destroy operator
@@ -165,9 +165,18 @@ pub struct NeuralLocalSearch<B: Backend, N: Network<B>> {
     population_size: usize,
     /// Devices used (cpu or gpu)
     device: B::Device,
+    /// Which batch type `N` is driven by at inference time. `NeuralLocalSearch` only ever needs
+    /// `Ba::for_assignments`, so it's carried as a type parameter (rather than picked implicitly)
+    /// so the same network type can still be paired with different batch types elsewhere (e.g. a
+    /// training-only batch that doesn't support `for_assignments` at all).
+    _batch: std::marker::PhantomData<Ba>,
 }
 
-impl<B: Backend, N: Network<B>> NeuralLocalSearch<B, N> {
+impl<B: Backend, N, Ba> NeuralLocalSearch<B, N, Ba>
+where
+    Ba: Batch<B>,
+    N: Network<B, Ba>,
+{
     /// Builds the search engine: everything that's independent of *which*
     /// problems get solved (network weights, operators, device). Call `run`
     /// once per batch of problems -- the engine can be reused across several
@@ -187,6 +196,7 @@ impl<B: Backend, N: Network<B>> NeuralLocalSearch<B, N> {
             decode_op,
             population_size,
             device,
+            _batch: std::marker::PhantomData,
         }
     }
 
@@ -234,7 +244,7 @@ impl<B: Backend, N: Network<B>> NeuralLocalSearch<B, N> {
                 Tensor::<B, 1, Bool>::from_data(destroy_mask_data.as_slice(), &self.device)
                     .reshape([total_rows, n]);
 
-            let batch = N::Batch::for_assignments(
+            let batch = Ba::for_assignments(
                 problems,
                 p,
                 assignments.clone(),

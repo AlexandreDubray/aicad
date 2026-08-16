@@ -4,7 +4,7 @@ use burn::prelude::ElementConversion;
 use burn::tensor::backend::Backend;
 use burn::tensor::{Int, Tensor};
 
-use crate::learning::Batch;
+use crate::learning::BatchProblems;
 
 struct ConstraintStats {
     count: usize,
@@ -60,7 +60,7 @@ pub struct SatisfactionReport {
 
 impl SatisfactionReport {
     /// Builds a report for the current batch.
-    pub fn build<B: Backend, Ba: Batch<B>>(logits: Tensor<B, 3>, batch: &Ba) -> Self {
+    pub fn build<B: Backend, Ba: BatchProblems<B>>(logits: Tensor<B, 3>, batch: &Ba) -> Self {
         let problems = batch.problems();
         let batch_size = problems.len();
 

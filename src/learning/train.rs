@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::learning::monitoring::SatisfactionReport;
-use crate::learning::{Loss, Network, NetworkConfig};
+use crate::learning::{BatchProblems, Loss, Network, NetworkConfig};
 use crate::modelling::Problem;
 
 
@@ -46,10 +46,12 @@ pub struct TrainingConfig {
 }
 
 /// Trains a model. Generic over the backend (B), the network configuration (NC), the training
-/// sample type (S), the validation sample type (SValid), the Batcher (Ba) and the loss function
-/// (L). This is designed so each neural network can be learned with this method. For example, to
-/// pass from ConsFormer to ConsFormer-MDD, the only thing that needs to change is the sample
-/// type, to include MDDs.
+/// sample type (S), the training batch type (TBatch), the Batcher (Ba), the loss function (L),
+/// the validation sample type (SValid) and the validation batch type (VBatch). This is designed
+/// so each neural network can be learned with this method against several different training
+/// recipes sharing the same architecture -- e.g. the classical per-constraint-penalty ConsFormer
+/// loss and the MDD-WMC ConsFormer loss both drive the same `ConsFormer` network, just by
+/// instantiating this function with a different `(S, TBatch, L, SValid, VBatch)` tuple.
 ///
 /// network_config: Neural network configuration (type and hyper-parameters)
 /// train_dataset: training dataset, used for gradient updates
@@ -61,7 +63,7 @@ pub struct TrainingConfig {
 /// training: Configuration of the training loop
 /// device: Device to launch the training on (cpu or gpu) -- also valid as `B::InnerBackend`'s
 ///         device, since `Autodiff<X>::Device == X::Device`
-pub fn train_model<B, NC, S, Ba, L, SValid>(
+pub fn train_model<B, NC, S, TBatch, Ba, L, SValid, VBatch>(
     network_config: NC,
     problems: &[Arc<Problem>],
     train_dataset: impl Dataset<S> + Send + Sync + 'static,
@@ -75,20 +77,19 @@ pub fn train_model<B, NC, S, Ba, L, SValid>(
 where
     B: AutodiffBackend,
     NC: NetworkConfig<B>,
-    NC::N: AutodiffModule<B> + Clone,
-    <NC::N as AutodiffModule<B>>::InnerModule: Network<B::InnerBackend>,
+    NC::N: AutodiffModule<B> + Clone + Network<B, TBatch>,
+    <NC::N as AutodiffModule<B>>::InnerModule: Network<B::InnerBackend, VBatch>,
     S: Send + Sync + Clone + std::fmt::Debug + 'static,
     SValid: Send + Sync + Clone + std::fmt::Debug + 'static,
-    Ba: Batcher<B, S, <NC::N as Network<B>>::Batch>
-        + Batcher<
-            B::InnerBackend,
-            SValid,
-            <<NC::N as AutodiffModule<B>>::InnerModule as Network<B::InnerBackend>>::Batch,
-        > + Clone
+    TBatch: BatchProblems<B> + Clone + Send + Sync + std::fmt::Debug + 'static,
+    VBatch: BatchProblems<B::InnerBackend> + Clone + Send + Sync + std::fmt::Debug + 'static,
+    Ba: Batcher<B, S, TBatch>
+        + Batcher<B::InnerBackend, SValid, VBatch>
+        + Clone
         + Send
         + Sync
         + 'static,
-    L: Loss<B, NC::N> + Loss<B::InnerBackend, <NC::N as AutodiffModule<B>>::InnerModule>,
+    L: Loss<B, TBatch> + Loss<B::InnerBackend, VBatch>,
 {
     // Initialise the network architecture with the given parameters
     let mut network = network_config.init(problems, device);

@@ -1,5 +1,6 @@
 use crate::mdd::*;
 
+#[derive(Clone, Copy, Debug)]
 pub enum SelectHeuristic {
     Greedy,
 }
