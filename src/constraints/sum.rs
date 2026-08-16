@@ -1,17 +1,23 @@
 use super::*;
-use crate::modelling::*;
 use crate::mdd::*;
+use crate::modelling::*;
+use rustc_hash::FxHashSet;
 use std::hash::Hasher;
+use std::sync::Arc;
 
+#[derive(Clone, deepsize::DeepSizeOf)]
 pub struct SumProperty {
     min: isize,
     max: isize,
+    values: Arc<FxHashSet<isize>>,
 }
 
-#[derive(deepsize::DeepSizeOf)]
+#[derive(Clone, deepsize::DeepSizeOf)]
 pub struct Sum {
     /// Scope of the constraint
     variables: Vec<VariableIndex>,
+    /// Union of the domains of the variables
+    values: Arc<FxHashSet<isize>>,
     /// Target value the sum of the scope's variables must equal
     target: isize,
     /// Bitvector to indicate if a layer is in the scope of the constraint or not
@@ -19,28 +25,30 @@ pub struct Sum {
 }
 
 impl Sum {
-
     /// Creates a new Sum constraint: the sum of the given variables must equal `target`.
-    pub fn new(variables: Vec<VariableIndex>, target: isize) -> Self {
-        let layer_in_scope = (0..(variables.len() / 64 + 1)).map(|_| 0).collect::<Vec<u64>>();
+    pub fn new(variables: Vec<VariableIndex>, target: isize, problem: &Problem) -> Self {
+        let mut values = FxHashSet::<isize>::default();
+        for variable in variables.iter().copied() {
+            values.extend(problem[variable].iter_domain());
+        }
         Self {
             variables,
+            values: Arc::new(values),
             target,
-            layer_in_scope,
+            layer_in_scope: vec![],
         }
     }
-
 }
 
 impl Constraint for Sum {
-
-    fn update_variable_ordering(&mut self, ordering: &[usize]) {
-        // The layers in the scope of the variable are indicated using a bitvector of 64-bit words.
-        // For each layer l its word index is given by l / 64 and the bit index by l % 64
-        for variable in self.variables.iter() {
-            let layer = ordering[variable.0];
-            // Sets the bit of the layer to 1
-            self.layer_in_scope[layer / 64] |= 1 << (layer % 64);
+    fn update_variable_ordering(&mut self, order: &[VariableIndex]) {
+        let scope: FxHashSet<VariableIndex> = self.variables.iter().copied().collect();
+        self.layer_in_scope = (0..(order.len() / 64 + 1)).map(|_| 0).collect::<Vec<u64>>();
+        for (layer, variable) in order.iter().enumerate() {
+            if scope.contains(variable) {
+                // Sets the bit of the layer to 1
+                self.layer_in_scope[layer / 64] |= 1 << (layer % 64);
+            }
         }
     }
 
@@ -52,6 +60,7 @@ impl Constraint for Sum {
         &self,
         parent: &dyn ConstraintProperty,
         child: &dyn ConstraintProperty,
+        _layer: usize,
         assignment: isize,
     ) -> bool {
         let parent = parent.as_any().downcast_ref::<SumProperty>().unwrap_or_else(|| {
@@ -93,12 +102,24 @@ impl Constraint for Sum {
         self
     }
 
-    fn rank_nodes(&self, nodes: &[NodeIndex]) -> Vec<f64> {
+    fn rank_nodes(&self, _nodes: &[NodeIndex]) -> Vec<f64> {
         vec![]
     }
 
-    fn identity_property(&self) -> SumProperty {
-        SumProperty { min: 0, max: 0 }
+    fn identity_property(&self) -> Box<dyn ConstraintProperty> {
+        Box::new(SumProperty {
+            min: isize::MAX,
+            max: isize::MIN,
+            values: Arc::clone(&self.values),
+        })
+    }
+
+    fn empty_property(&self) -> Box<dyn ConstraintProperty> {
+        Box::new(SumProperty {
+            min: 0,
+            max: 0,
+            values: Arc::clone(&self.values),
+        })
     }
 }
 
@@ -120,9 +141,6 @@ impl ConstraintProperty for SumProperty {
         } else {
             0
         };
-        let candidate_lb = other.min + delta;
-        let candidate_ub = other.max + delta;
-
         self.min = self.min.min(other.min + delta);
         self.max = self.max.max(other.max + delta);
     }
@@ -153,50 +171,55 @@ impl ConstraintProperty for SumProperty {
     fn name(&self) -> &'static str {
         "SumProperty"
     }
-
 }
 
 #[cfg(test)]
 mod test_sum {
 
-    use crate::modelling::*;
-    use crate::constraints::{Sum, Constraint};
-    use crate::mdd::*;
+    use crate::constraints::{Constraint, Sum};
     use crate::mdd::heuristics::*;
     use crate::mdd::mdd::test_mdd::*;
+    use crate::mdd::*;
+    use crate::modelling::*;
+    use std::sync::Arc;
 
     // --- is_satisfied: pure logic, no MDD involved --- //
 
     #[test]
     pub fn test_is_satisfied_matches_target() {
-        let vars = vec![VariableIndex(0), VariableIndex(1), VariableIndex(2)];
-        let sum = Sum::new(vars, 6);
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(3, vec![0, 1, 2, 3], None);
+        let sum = Sum::new(vars, 6, &problem);
         assert!(sum.is_satisfied(&[1, 2, 3]));
     }
 
     #[test]
     pub fn test_is_satisfied_does_not_match_target() {
-        let vars = vec![VariableIndex(0), VariableIndex(1), VariableIndex(2)];
-        let sum = Sum::new(vars, 6);
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(3, vec![0, 1, 2, 3], None);
+        let sum = Sum::new(vars, 6, &problem);
         assert!(!sum.is_satisfied(&[1, 2, 2]));
     }
 
     #[test]
     pub fn test_is_satisfied_empty_scope_zero_target() {
-        let sum = Sum::new(vec![], 0);
+        let problem = Problem::default();
+        let sum = Sum::new(vec![], 0, &problem);
         assert!(sum.is_satisfied(&[]));
     }
 
     #[test]
     pub fn test_is_satisfied_empty_scope_nonzero_target() {
-        let sum = Sum::new(vec![], 1);
+        let problem = Problem::default();
+        let sum = Sum::new(vec![], 1, &problem);
         assert!(!sum.is_satisfied(&[]));
     }
 
     #[test]
     pub fn test_is_satisfied_negative_values() {
-        let vars = vec![VariableIndex(0), VariableIndex(1)];
-        let sum = Sum::new(vars, -3);
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(2, vec![-5, -2, 2, 5], None);
+        let sum = Sum::new(vars, -3, &problem);
         assert!(sum.is_satisfied(&[-5, 2]));
         assert!(!sum.is_satisfied(&[5, -2]));
     }
@@ -210,8 +233,16 @@ mod test_sum {
         let y = problem.add_variable(vec![0, 1, 2], None);
         sum(&mut problem, vec![x, y], 3);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
-        mdd.refine();
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mut mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
+        mdd.refine(usize::MAX);
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 2);
         assert!(is_solution(vec![1, 2], &solutions));
@@ -226,8 +257,16 @@ mod test_sum {
         let z = problem.add_variable(vec![0, 1, 2, 3], None);
         sum(&mut problem, vec![x, y, z], 5);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
-        mdd.refine();
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mut mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::Custom(vec![0, 1, 2]),
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
+        mdd.refine(usize::MAX);
         let solutions = get_all_solutions(&mdd);
 
         let mut expected: Vec<Vec<isize>> = vec![];
@@ -255,7 +294,15 @@ mod test_sum {
         // Both variables are forced to 0, so the sum is always 0, never 5.
         sum(&mut problem, vec![x, y], 5);
 
-        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
         assert!(mdd.is_unsat());
         assert_eq!(mdd.get_solution(), None);
     }
@@ -268,7 +315,15 @@ mod test_sum {
         // The maximum reachable sum is 2, so a target of 10 is unreachable.
         sum(&mut problem, vec![x, y], 10);
 
-        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
         assert!(mdd.is_unsat());
         assert_eq!(mdd.get_solution(), None);
     }
@@ -281,21 +336,37 @@ mod test_sum {
         // The minimum reachable sum is 0, so a target of -10 is unreachable.
         sum(&mut problem, vec![x, y], -10);
 
-        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
         assert!(mdd.is_unsat());
         assert_eq!(mdd.get_solution(), None);
     }
 
     #[test]
     pub fn test_relaxed_width_is_superset() {
-        // With a max width of 1 and no refine step, the MDD is a relaxation: it must not
-        // exclude any valid solution (though it may also keep invalid ones).
+        // With no refine step, the freshly-built MDD is already the width-1 relaxation: it
+        // must not exclude any valid solution (though it may also keep invalid ones).
         let mut problem = Problem::default();
         let x = problem.add_variable(vec![0, 1, 2], None);
         let y = problem.add_variable(vec![0, 1, 2], None);
         sum(&mut problem, vec![x, y], 3);
 
-        let mdd = Mdd::new(problem, 1, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
         let solutions = get_all_solutions(&mdd);
         assert!(is_solution(vec![1, 2], &solutions));
         assert!(is_solution(vec![2, 1], &solutions));
@@ -308,8 +379,16 @@ mod test_sum {
         let y = problem.add_variable(vec![-1, 0, 1], None);
         sum(&mut problem, vec![x, y], 0);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
-        mdd.refine();
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mut mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
+        mdd.refine(usize::MAX);
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 3);
         assert!(is_solution(vec![-1, 1], &solutions));
@@ -326,8 +405,16 @@ mod test_sum {
         all_different(&mut problem, vec![x, y, z]);
         sum(&mut problem, vec![x, y, z], 6);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
-        mdd.refine();
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mut mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::Custom(vec![0, 1, 2]),
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
+        mdd.refine(usize::MAX);
         let solutions = get_all_solutions(&mdd);
 
         let mut expected: Vec<Vec<isize>> = vec![];

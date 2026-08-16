@@ -27,7 +27,7 @@ impl Bitset {
         self.words[word] |= 1 << shift;
     }
 
-    pub fn remove(&mut self, element: usize) {
+    pub fn _remove(&mut self, element: usize) {
         let word = element / 64;
         let shift = element % 64;
         self.words[word] &= !(1 << shift);

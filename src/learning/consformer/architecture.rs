@@ -9,7 +9,6 @@ use burn::nn::{
 use burn::tensor::{backend::Backend, Bool, Int, Tensor};
 
 use super::dataset::ConsFormerBatch;
-use super::PositionalStructure;
 use crate::learning::*;
 
 // --- Embedding --- //
@@ -107,7 +106,12 @@ pub struct StructuredPositionalEmbedding<B: Backend> {
 
 impl<B: Backend> StructuredPositionalEmbedding<B> {
     /// Creates a new structural positional embedding
-    pub fn new(embedding_size: usize, num_axes: usize, positions: Vec<Vec<usize>>, device: &B::Device) -> Self {
+    pub fn new(
+        embedding_size: usize,
+        num_axes: usize,
+        positions: Vec<Vec<usize>>,
+        device: &B::Device,
+    ) -> Self {
         let axes = vec![FixedPositionalEmbedding::new(embedding_size, device); num_axes];
 
         let axis_ids: Vec<Vec<usize>> = (0..num_axes)

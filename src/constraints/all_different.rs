@@ -32,9 +32,13 @@ struct AllDifferentProperty {
 }
 
 impl AllDifferentProperty {
-    /// Creates a new property with bitsiets of nb_words 64-bit unsigned integers
-    pub fn new(n: usize, map: Arc<FxHashMap<isize, usize>>) -> Self {
-        let value_all_path = Bitset::new(n);
+    /// Creates a new property with bitsets of nb_words 64-bit unsigned integers. `all_path_reset`
+    /// picks the starting value of `value_all_path`: `!0` (all-ones, the intersection identity)
+    /// for the fold-accumulator seed, `0` (empty) for the empty-path/boundary value. See
+    /// `Constraint::identity_property`/`Constraint::empty_property`.
+    fn new(n: usize, map: Arc<FxHashMap<isize, usize>>, all_path_reset: u64) -> Self {
+        let mut value_all_path = Bitset::new(n);
+        value_all_path.reset(all_path_reset);
         let value_some_path = Bitset::new(n);
         Self {
             map,
@@ -44,7 +48,7 @@ impl AllDifferentProperty {
     }
 }
 
-#[derive(deepsize::DeepSizeOf)]
+#[derive(Clone, deepsize::DeepSizeOf)]
 pub struct AllDifferent {
     /// Scope of the constraint
     variables: Vec<VariableIndex>,
@@ -52,9 +56,7 @@ pub struct AllDifferent {
     domain: FxHashSet<isize>,
     /// Map each value of the joint domains to a bit in the properties' bitvectors
     val_to_bit: Arc<FxHashMap<isize, usize>>,
-    /// For each variable in the scope, indicates how many variables are above and below it in the
-    /// MDD.
-    map_hall_set: FxHashMap<VariableIndex, (usize, usize)>,
+    hall_set_bounds: Vec<(usize, usize)>,
     /// Bitvector to indicate if a layer is in the scope of the constraint or not
     layer_in_scope: Vec<u64>,
 }
@@ -74,44 +76,33 @@ impl AllDifferent {
                 .map(|(bit, val)| (val, bit))
                 .collect(),
         );
-        let layer_in_scope = (0..(variables.len() / 64 + 1))
-            .map(|_| 0)
-            .collect::<Vec<u64>>();
         Self {
             variables,
             domain,
             val_to_bit,
-            map_hall_set: FxHashMap::<VariableIndex, (usize, usize)>::default(),
-            layer_in_scope,
+            hall_set_bounds: vec![],
+            layer_in_scope: vec![],
         }
     }
 }
 
 impl Constraint for AllDifferent {
-    fn update_variable_ordering(&mut self, ordering: &[usize]) {
-        // The layers in the scope of the variable are indicated using a bitvector of 64-bit words.
-        // For each layer l its word index is given by l / 64 and the bit index by l % 64
-        for variable in self.variables.iter() {
-            let layer = ordering[variable.0];
-            // Sets the bit of the layer to 1
-            self.layer_in_scope[layer / 64] |= 1 << (layer % 64);
+    fn update_variable_ordering(&mut self, order: &[VariableIndex]) {
+        let scope: FxHashSet<VariableIndex> = self.variables.iter().copied().collect();
+        let mut scope_layers = Vec::with_capacity(self.variables.len());
+        self.layer_in_scope = (0..(order.len() / 64 + 1)).map(|_| 0).collect::<Vec<u64>>();
+        for (layer, &variable) in order.iter().enumerate() {
+            if scope.contains(&variable) {
+                // Sets the bit of the layer to 1
+                self.layer_in_scope[layer / 64] |= 1 << (layer % 64);
+                scope_layers.push(layer);
+            }
         }
-        // Compute the hall set sizes up and down the mdd. For a given layer l in the scope of the
-        // constraint its hall set size up (resp. down) is the number of layer k such that k < l (k
-        // > l) and k is in the constraint's scope
 
-        // We sort each variable in the constraint's scope by its position in the ordering
-        let mut scope_variable_order = self
-            .variables
-            .iter()
-            .copied()
-            .map(|v| (ordering[v.0], v))
-            .collect::<Vec<(usize, VariableIndex)>>();
-        scope_variable_order.sort_unstable();
-        // The hall set sizes are stored as a tuple (size up, size down) and is given, for node i, by (i, n-i)
-        let n = self.variables.len();
-        for (pos, (_, variable)) in scope_variable_order.iter().copied().enumerate() {
-            self.map_hall_set.insert(variable, (pos, n - 1 - pos));
+        self.hall_set_bounds = vec![(0, 0); order.len()];
+        let n = scope_layers.len();
+        for (pos, layer) in scope_layers.into_iter().enumerate() {
+            self.hall_set_bounds[layer] = (pos, n - 1 - pos);
         }
     }
 
@@ -144,7 +135,7 @@ impl Constraint for AllDifferent {
         self
     }
 
-    fn rank_nodes(&self, nodes: &[NodeIndex]) -> Vec<f64> {
+    fn rank_nodes(&self, _nodes: &[NodeIndex]) -> Vec<f64> {
         vec![]
     }
 
@@ -152,6 +143,7 @@ impl Constraint for AllDifferent {
         &self,
         parent: &dyn ConstraintProperty,
         child: &dyn ConstraintProperty,
+        layer: usize,
         assignment: isize,
     ) -> bool {
         let parent = parent.as_any().downcast_ref::<AllDifferentProperty>().unwrap_or_else(|| {
@@ -167,17 +159,33 @@ impl Constraint for AllDifferent {
                 );
         });
         let bit = *self.val_to_bit.get(&assignment).unwrap();
-        if parent.value_all_path_td.contains(bit) || child.value_all_path_bu.contains(bit) {
+
+        // The value is already forced on every path up to the parent, or forced on every path
+        // from the child down to the sink; can not use this value for the variable
+        if parent.value_all_path.contains(bit) || child.value_all_path.contains(bit) {
             return true;
         }
-        // TODO: Hall-set conditions
-        false
+
+        let (hall_set_size_up, hall_set_size_down) = self.hall_set_bounds[layer];
+        let combined_capacity = hall_set_size_up + hall_set_size_down;
+        let combined_size = parent.value_some_path.size_union(&child.value_some_path);
+        combined_size == combined_capacity
+            && (parent.value_some_path.contains(bit) || child.value_some_path.contains(bit))
     }
 
     fn identity_property(&self) -> Box<dyn ConstraintProperty> {
         Box::new(AllDifferentProperty::new(
             self.domain.len(),
             self.val_to_bit.clone(),
+            !0,
+        ))
+    }
+
+    fn empty_property(&self) -> Box<dyn ConstraintProperty> {
+        Box::new(AllDifferentProperty::new(
+            self.domain.len(),
+            self.val_to_bit.clone(),
+            0,
         ))
     }
 }
@@ -241,39 +249,21 @@ impl ConstraintProperty for AllDifferentProperty {
 
 impl std::fmt::Display for AllDifferentProperty {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let tda = self
+        let all_path = self
             .map
             .iter()
-            .filter(|&(_, bit)| self.value_all_path_td.contains(*bit))
+            .filter(|&(_, bit)| self.value_all_path.contains(*bit))
             .map(|(value, _)| format!("{}", value))
             .collect::<Vec<String>>()
             .join(", ");
-        let tds = self
+        let some_path = self
             .map
             .iter()
-            .filter(|&(_, bit)| self.value_some_path_td.contains(*bit))
+            .filter(|&(_, bit)| self.value_some_path.contains(*bit))
             .map(|(value, _)| format!("{}", value))
             .collect::<Vec<String>>()
             .join(", ");
-        let bua = self
-            .map
-            .iter()
-            .filter(|&(_, bit)| self.value_all_path_bu.contains(*bit))
-            .map(|(value, _)| format!("{}", value))
-            .collect::<Vec<String>>()
-            .join(", ");
-        let bus = self
-            .map
-            .iter()
-            .filter(|&(_, bit)| self.value_some_path_bu.contains(*bit))
-            .map(|(value, _)| format!("{}", value))
-            .collect::<Vec<String>>()
-            .join(", ");
-        write!(
-            f,
-            "TD: all {} - some {}\nBU: all {} - some {}",
-            tda, tds, bua, bus,
-        )
+        write!(f, "all {} - some {}", all_path, some_path,)
     }
 }
 
@@ -284,8 +274,8 @@ mod test_all_diff {
     use crate::mdd::heuristics::*;
     use crate::mdd::mdd::test_mdd::*;
     use crate::mdd::*;
-    use crate::modelling::variable::Variable;
     use crate::modelling::*;
+    use std::sync::Arc;
 
     #[test]
     pub fn test_basic_propagation() {
@@ -295,14 +285,16 @@ mod test_all_diff {
 
         all_different(&mut problem, vec![x, y]);
 
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
         let mut mdd = Mdd::new(
             problem,
-            usize::MAX,
             OrderingHeuristic::MinDomMaxLinked,
             MergeHeuristic::LessRelaxed,
             SelectHeuristic::Greedy,
+            &constraints,
         );
-        mdd.refine();
+        mdd.refine(usize::MAX);
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 1);
         assert!(is_solution(vec![0, 1], &solutions));
@@ -316,12 +308,14 @@ mod test_all_diff {
 
         all_different(&mut problem, vec![x, y]);
 
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
         let mdd = Mdd::new(
             problem,
-            1,
             OrderingHeuristic::MinDomMaxLinked,
             MergeHeuristic::LessRelaxed,
             SelectHeuristic::Greedy,
+            &constraints,
         );
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 4);
@@ -339,12 +333,14 @@ mod test_all_diff {
         let z = problem.add_variable(vec![0, 1, 2], None);
         all_different(&mut problem, vec![x, y, z]);
 
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
         let mdd = Mdd::new(
             problem,
-            1,
             OrderingHeuristic::Custom(vec![0, 1, 2]),
             MergeHeuristic::LessRelaxed,
             SelectHeuristic::Greedy,
+            &constraints,
         );
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 4);
@@ -362,12 +358,14 @@ mod test_all_diff {
         let z = problem.add_variable(vec![0, 1], None);
         all_different(&mut problem, vec![x, y, z]);
 
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
         let mdd = Mdd::new(
             problem,
-            1,
             OrderingHeuristic::Custom(vec![0, 1, 2]),
             MergeHeuristic::LessRelaxed,
             SelectHeuristic::Greedy,
+            &constraints,
         );
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 4);
@@ -385,12 +383,14 @@ mod test_all_diff {
         let z = problem.add_variable(vec![0, 1], None);
         all_different(&mut problem, vec![x, y, z]);
 
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
         let mdd = Mdd::new(
             problem,
-            1,
             OrderingHeuristic::Custom(vec![0, 1, 2]),
             MergeHeuristic::LessRelaxed,
             SelectHeuristic::Greedy,
+            &constraints,
         );
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 4);
@@ -406,15 +406,16 @@ mod test_all_diff {
         let vars = problem.add_variables(2, vec![0, 1], None);
         all_different(&mut problem, vars.clone());
 
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
         let mut mdd = Mdd::new(
             problem,
-            usize::MAX,
             OrderingHeuristic::Custom(vec![0, 1]),
             MergeHeuristic::LessRelaxed,
             SelectHeuristic::Greedy,
+            &constraints,
         );
-        mdd.refine();
-        mdd.to_file("mdd.txt");
+        mdd.refine(usize::MAX);
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 2);
         assert!(is_solution(vec![0, 1], &solutions));
@@ -429,14 +430,16 @@ mod test_all_diff {
         equal(&mut problem, vars[1], 2);
         equal(&mut problem, vars[2], 0);
 
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
         let mut mdd = Mdd::new(
             problem,
-            usize::MAX,
             OrderingHeuristic::MinDomMaxLinked,
             MergeHeuristic::LessRelaxed,
             SelectHeuristic::Greedy,
+            &constraints,
         );
-        mdd.refine();
+        mdd.refine(usize::MAX);
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 2);
         assert!(is_solution(vec![1, 2, 0, 3], &solutions));
@@ -447,28 +450,33 @@ mod test_all_diff {
 
     #[test]
     pub fn test_is_satisfied_true() {
-        let all_diff =
-            AllDifferent::new(vec![VariableIndex(0), VariableIndex(1), VariableIndex(2)]);
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(3, vec![0, 1, 2], None);
+        let all_diff = AllDifferent::new(vars, &problem);
         assert!(all_diff.is_satisfied(&[0, 1, 2]));
     }
 
     #[test]
     pub fn test_is_satisfied_false() {
-        let all_diff =
-            AllDifferent::new(vec![VariableIndex(0), VariableIndex(1), VariableIndex(2)]);
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(3, vec![0, 1, 2], None);
+        let all_diff = AllDifferent::new(vars, &problem);
         assert!(!all_diff.is_satisfied(&[0, 1, 0]));
     }
 
     #[test]
     pub fn test_is_satisfied_ignores_out_of_scope_variables() {
         // Only variables 0 and 2 are in scope; variable 1 can duplicate freely.
-        let all_diff = AllDifferent::new(vec![VariableIndex(0), VariableIndex(2)]);
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(3, vec![0, 1], None);
+        let all_diff = AllDifferent::new(vec![vars[0], vars[2]], &problem);
         assert!(all_diff.is_satisfied(&[0, 0, 1]));
     }
 
     #[test]
     pub fn test_is_satisfied_empty_scope() {
-        let all_diff = AllDifferent::new(vec![]);
+        let problem = Problem::default();
+        let all_diff = AllDifferent::new(vec![], &problem);
         assert!(all_diff.is_satisfied(&[]));
     }
 
@@ -481,12 +489,14 @@ mod test_all_diff {
         let vars = problem.add_variables(3, vec![0, 1], None);
         all_different(&mut problem, vars);
 
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
         let mdd = Mdd::new(
             problem,
-            usize::MAX,
             OrderingHeuristic::MinDomMaxLinked,
             MergeHeuristic::LessRelaxed,
             SelectHeuristic::Greedy,
+            &constraints,
         );
         assert!(mdd.is_unsat());
         assert_eq!(mdd.get_solution(), None);
@@ -499,14 +509,16 @@ mod test_all_diff {
         let x = problem.add_variable(vec![0, 1, 2], None);
         all_different(&mut problem, vec![x]);
 
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
         let mut mdd = Mdd::new(
             problem,
-            usize::MAX,
             OrderingHeuristic::MinDomMaxLinked,
             MergeHeuristic::LessRelaxed,
             SelectHeuristic::Greedy,
+            &constraints,
         );
-        mdd.refine();
+        mdd.refine(usize::MAX);
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 3);
         assert!(is_solution(vec![0], &solutions));
@@ -514,76 +526,31 @@ mod test_all_diff {
         assert!(is_solution(vec![2], &solutions));
     }
 
-    // --- Regression test for the combined (up + down) Hall-set branch of
-    // `is_assignment_invalid`. That branch requires the candidate value to appear on
-    // BOTH the top-down and the bottom-up "some" path (`is_on_bu_path &&
-    // is_on_td_path`), but the necessary condition it implements only needs the
-    // value to be a member of the *union* of the two Hall sets, i.e. it should be an
-    // OR. As written it silently misses assignments it should reject whenever the
-    // value only shows up on one side. This only matters once a node aggregates
-    // several top-down/bottom-up histories (as happens once the compiler is forced
-    // to merge nodes to respect a width bound); for a fully exact node the leading
-    // `value_all_path` check already subsumes it. --- //
-
     #[test]
     pub fn test_combined_hall_condition_should_use_or_not_and() {
         // Scope v0..v3, decided in that order. We probe the decision for v2
         // (hall_set_size_up = 2, hall_set_size_down = 1).
-        let vars = vec![
-            Variable::new(vec![0, 1, 2], None),
-            Variable::new(vec![0, 1, 2], None),
-            Variable::new(vec![0, 1, 2], None),
-            Variable::new(vec![0, 1, 2], None),
-        ];
-
-        let mut all_diff = AllDifferent::new(vec![
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(4, vec![0, 1, 2], None);
+        let mut all_diff = AllDifferent::new(vars, &problem);
+        all_diff.update_variable_ordering(&[
             VariableIndex(0),
             VariableIndex(1),
             VariableIndex(2),
             VariableIndex(3),
         ]);
-        all_diff.init(&vars);
-        all_diff.update_variable_ordering(&[0, 1, 2, 3]);
+        let root_td = all_diff.empty_property();
+        let mut td1 = all_diff.identity_property();
+        td1.update(root_td.as_ref(), 0, all_diff.is_layer_in_scope(0)); // v0 = 0
 
-        // Top-down side: merge two constituent histories into the node at v2's
-        // layer. Both agree on v0 = 0 but disagree on v1:
-        //   - constituent A: v0 = 0, v1 = 1  (still feasible at this point)
-        //   - constituent B: v0 = 0, v1 = 2  (will collide with v3 = 2 below, so it
-        //     is a dead/spurious prefix -- exactly the kind of state a width-bounded
-        //     merge can produce)
-        // After merging: top_down some = {0, 1, 2}, all = {0}.
-        //
-        // Note: we deliberately do NOT call reset_property_top_down on the root
-        // (layer 0) or reset_property_bottom_up on the sink (last layer): the real
-        // propagate_constraints() never resets those (its passes run over
-        // `1..number_layers` and `(0..number_layers-1).rev()` respectively), so they
-        // must be left at the all-zero state `init()` gives them. Resetting them here
-        // would set their value_all_path to all-ones (the reset's identity value),
-        // which turns every downstream intersection into a no-op and corrupts the
-        // whole chain -- that was an earlier bug in this test, not in the compiler.
-        all_diff.reset_property_top_down(NodeIndex(1, 0));
-        all_diff.update_property_top_down(NodeIndex(0, 0), NodeIndex(1, 0), 0);
+        let mut td2 = all_diff.identity_property();
+        td2.update(td1.as_ref(), 1, all_diff.is_layer_in_scope(1)); // constituent A: v1 = 1
+        td2.update(td1.as_ref(), 2, all_diff.is_layer_in_scope(1)); // constituent B: v1 = 2
 
-        all_diff.reset_property_top_down(NodeIndex(2, 0));
-        all_diff.update_property_top_down(NodeIndex(1, 0), NodeIndex(2, 0), 1); // constituent A
-        all_diff.update_property_top_down(NodeIndex(1, 0), NodeIndex(2, 0), 2); // constituent B
+        let sink_bu = all_diff.empty_property();
+        let mut bu3 = all_diff.identity_property();
+        bu3.update(sink_bu.as_ref(), 2, all_diff.is_layer_in_scope(3)); // v3 = 2
 
-        // Bottom-up side: a single, exact history with v3 = 2.
-        all_diff.reset_property_bottom_up(NodeIndex(3, 0));
-        all_diff.update_property_bottom_up(NodeIndex(4, 0), NodeIndex(3, 0), 2);
-
-        // For the real constituent (v0=0, v1=1, v3=2), the other 3 variables
-        // already use exactly 3 distinct values {0, 1, 2} -- a saturated Hall set
-        // over every variable except v2. Assigning v2 = 1 collides with v1 and must
-        // be rejected, even though 1 only appears on the top-down side.
-        //
-        // This currently fails: `is_on_bu_path` is false (1 isn't in {2}), so the
-        // buggy `&&` short-circuits and the assignment is wrongly accepted.
-        assert!(all_diff.is_assignment_invalid(
-            NodeIndex(2, 0),
-            NodeIndex(3, 0),
-            VariableIndex(2),
-            1
-        ));
+        assert!(all_diff.is_assignment_invalid(td2.as_ref(), bu3.as_ref(), 2, 1));
     }
 }

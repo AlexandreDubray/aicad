@@ -1,8 +1,8 @@
 use super::heuristics::*;
 use super::*;
+use crate::constraints::*;
 use crate::modelling::*;
 use crate::utils::MemoryReport;
-use crate::constraints::*;
 
 use rand;
 use rand::prelude::*;
@@ -22,8 +22,13 @@ thread_local! {
 /// and each layer contains the necessary information to propagate the constraint and generate
 /// solutions.
 pub struct Mdd {
+    /// Variables in the MDD scope. A variable is in the scope of the MDD if it is in the scope of
+    /// one of the compiled constraint
     scope: Vec<VariableIndex>,
+    /// Constraint being compiled in this MDD. Each MDD can compile any subset of the problem's
+    /// constraints.
     constraints: Vec<Box<dyn Constraint>>,
+    /// Problem being compiled
     problem: Arc<Problem>,
     /// Nodes of the MDD.
     nodes: Vec<Vec<Node>>,
@@ -31,8 +36,6 @@ pub struct Mdd {
     edges: Vec<Vec<Edge>>,
     /// Branching order
     order: Vec<VariableIndex>,
-    /// Max width allows during compilation
-    max_width: usize,
     /// Heuristic used to score nodes during merging operation
     merge_heuristic: MergeHeuristic,
     /// Heuristic to select nodes to split
@@ -44,9 +47,9 @@ pub struct Mdd {
     /// Sink of the mdd
     sink: NodeIndex,
     /// Top down properties of the MDD's constraints
-    top_down_properties: Vec<Vec<Box<dyn ConstraintProperty>>>,
+    top_down_properties: Vec<Vec<Vec<Box<dyn ConstraintProperty>>>>,
     /// Bottom up properties of the MDD's constraints
-    bottom_up_properties: Vec<Vec<Box<dyn ConstraintProperty>>>,
+    bottom_up_properties: Vec<Vec<Vec<Box<dyn ConstraintProperty>>>>,
 }
 
 impl Mdd {
@@ -54,41 +57,40 @@ impl Mdd {
     /// for each variable, the layer at which it is branched on.
     pub fn new(
         problem: Arc<Problem>,
-        max_width: usize,
         order: OrderingHeuristic,
         merge_heuristic: MergeHeuristic,
         select_heuristic: SelectHeuristic,
         constraints: &[ConstraintIndex],
     ) -> Self {
-        let mdd_scope = problem.iter_variables().filter(|&variable| {
-            for constraint in constraints.iter().copied() {
-                let mut in_scope = false;
-                for v in problem[constraint].iter_scope() {
-                    if v == variable {
-                        in_scope = true;
-                        break;
-                    }
-                }
-                if !in_scope {
-                    return false;
+        let mut in_scope = vec![false; problem.number_variables()];
+        let mut mdd_scope = vec![];
+        for constraint in constraints.iter().copied() {
+            for variable in problem[constraint].iter_scope() {
+                if !in_scope[*variable] {
+                    mdd_scope.push(variable);
+                    in_scope[*variable] = true;
                 }
             }
-            true
-        }).collect::<Vec<VariableIndex>>();
-        let number_layers = mdd_scope.len() + 1;
+        }
+        let number_layers = mdd_scope.len();
+        let constraints = constraints
+            .iter()
+            .map(|&constraint| problem[constraint].clone() as Box<dyn Constraint>)
+            .collect::<Vec<Box<dyn Constraint>>>();
         let mut mdd = Self {
+            scope: mdd_scope,
+            constraints: constraints,
             nodes: vec![vec![]; number_layers + 1],
             edges: vec![vec![]; number_layers],
             order: vec![],
-            max_width,
             merge_heuristic,
             select_heuristic,
             problem,
             unsat: false,
             root: NodeIndex(0, 0),
-            sink: NodeIndex(number_layers - 1, 0),
-            top_down_properties: vec![],
-            bottom_up_properties: vec![],
+            sink: NodeIndex(number_layers, 0),
+            top_down_properties: vec![vec![]; number_layers + 1],
+            bottom_up_properties: vec![vec![]; number_layers + 1],
         };
 
         // First, we create each layer. There is n + 1 layers, with n the number of variables. The
@@ -99,23 +101,11 @@ impl Mdd {
 
         // Set the variable order in the MDD given the heuristics
         // We get for each layer its decision variable
-        let var_order = order.get_order(&mdd.problem, &mdd_scope);
-        // Reverse mapping order: for each variable, give its layer
-        let mut var_order_inv = vec![0; var_order.len()];
-        for (layer, variable) in var_order.iter().copied().enumerate() {
-            var_order_inv[variable.0] = layer;
+        let var_order = order.get_order(&mdd.problem, &mdd.scope);
+        for i in 0..mdd.constraints.len() {
+            mdd.constraints[i].update_variable_ordering(&var_order);
         }
         mdd.order = var_order;
-
-        // For each constraint, update its variable order if necessary. For example, it is used in
-        // the allDifferent constraint to compute hall sets
-        for constraint in mdd
-            .problem
-            .iter_constraints()
-            .collect::<Vec<ConstraintIndex>>()
-        {
-            mdd.problem[constraint].update_variable_ordering(&var_order_inv);
-        }
 
         // Next, we add the edges between the layers. There is edges only from one layer to the
         // next.
@@ -149,9 +139,32 @@ impl Mdd {
         let node = Node::new(layer, index_in_layer, relaxed);
         let index = NodeIndex(layer, index_in_layer);
         self.nodes[layer].push(node);
-        for constraint in (0..self.problem.number_constraints()).map(ConstraintIndex) {
-            self.problem[constraint].add_node_in_layer(layer);
-        }
+
+        let is_root = layer == 0;
+        let is_sink = layer == self.sink.0;
+
+        self.top_down_properties[layer].push(
+            (0..self.constraints.len())
+                .map(|i| {
+                    if is_root {
+                        self.constraints[i].empty_property()
+                    } else {
+                        self.constraints[i].identity_property()
+                    }
+                })
+                .collect(),
+        );
+        self.bottom_up_properties[layer].push(
+            (0..self.constraints.len())
+                .map(|i| {
+                    if is_sink {
+                        self.constraints[i].empty_property()
+                    } else {
+                        self.constraints[i].identity_property()
+                    }
+                })
+                .collect(),
+        );
         index
     }
 
@@ -171,14 +184,23 @@ impl Mdd {
         &self.problem
     }
 
+    pub fn number_constraints(&self) -> usize {
+        self.constraints.len()
+    }
+
+    pub fn iter_constraints(&self) -> impl Iterator<Item = &Box<dyn Constraint>> {
+        self.constraints.iter()
+    }
+
     // --- split and refine strategy ---- //
 
-    pub fn refine(&mut self) {
+    /// Refines the MDD allowing max_width nodes in each layer
+    pub fn refine(&mut self, max_width: usize) {
         if self.unsat {
             return;
         }
         for layer in 1..self.nodes.len() - 1 {
-            if self.number_nodes_in_layer(layer) == self.max_width {
+            if self.number_nodes_in_layer(layer) == max_width {
                 continue;
             }
             if let Some(node) = self.select_heuristic.select_node(self, layer) {
@@ -189,7 +211,7 @@ impl Mdd {
                     return;
                 }
                 self.collapse();
-                self.merge_layer(layer);
+                self.merge_layer(layer, max_width);
                 self.clean();
             }
         }
@@ -221,69 +243,138 @@ impl Mdd {
         nodes
     }
 
+    /// Recomputes every node's top-down and bottom-up constraint properties, then removes any
+    /// edge that `is_assignment_invalid` rules out given the freshly recomputed properties on
+    /// both of its endpoints.
+    ///
+    /// The two passes must run in this order: bottom-up filtering compares a node's *already
+    /// up to date* top-down property against its child's freshly-computed bottom-up property,
+    /// so the top-down pass has to be complete first.
     pub fn propagate_constraints(&mut self) {
-        let number_layers = self.nodes.len();
+        self.update_top_down_properties();
+        self.update_bottom_up_properties_and_filter_edges();
+    }
 
-        // Top-down pass.
-        for layer in 1..number_layers {
+    /// Recomputes `top_down_properties` for every layer but the root (layer 0), whose top-down
+    /// property is permanently `empty_property()` - see `add_node`.
+    fn update_top_down_properties(&mut self) {
+        for layer in 1..self.nodes.len() {
             let variable = self.order[layer - 1];
-            let nodes_in_layer = self.nodes[layer].len();
-            for i in 0..nodes_in_layer {
+            for i in 0..self.nodes[layer].len() {
                 let target = NodeIndex(layer, i);
-                for constraint in (0..self.problem.number_constraints()).map(ConstraintIndex) {
-                    self.problem[constraint].reset_property_top_down(target);
-                    for j in 0..self[target].number_parents() {
-                        let edge = self[target].parent_edge_at(j);
-                        let source = self[edge].from();
-                        let assignment = self.problem[variable].value(self[edge].assignment());
-                        self.problem[constraint]
-                            .update_property_top_down(source, target, assignment);
-                    }
+                for constraint_index in 0..self.constraints.len() {
+                    self.top_down_properties[layer][i][constraint_index] =
+                        self.fold_property_over_parents(target, variable, constraint_index);
                 }
             }
         }
+    }
 
-        // We start by the bottom-up pass. We filter edges in this pass
-        for layer in (0..number_layers - 1).rev() {
-            let decision = self.order[layer];
-            let nodes_in_layer = self.nodes[layer].len();
-            for node_index in 0..nodes_in_layer {
+    /// Folds `target`'s parent edges through `identity_property()`, using each parent's own
+    /// (already up to date) top-down property.
+    fn fold_property_over_parents(
+        &self,
+        target: NodeIndex,
+        variable: VariableIndex,
+        constraint_index: usize,
+    ) -> Box<dyn ConstraintProperty> {
+        let mut property = self.constraints[constraint_index].identity_property();
+        for j in 0..self[target].number_parents() {
+            let edge = self[target].parent_edge_at(j);
+            let NodeIndex(source_layer, source_index) = self[edge].from();
+            let in_scope = self.constraints[constraint_index].is_layer_in_scope(source_layer);
+            let assignment = self.problem[variable].value(self[edge].assignment());
+            let parent_property =
+                self.top_down_properties[source_layer][source_index][constraint_index].as_ref();
+            property.update(parent_property, assignment, in_scope);
+        }
+        property
+    }
+
+    /// Recomputes `bottom_up_properties` for every layer but the sink, whose bottom-up property
+    /// is permanently `empty_property()`. Once a node's bottom-up property (and its children's,
+    /// since the pass runs layer by layer from the sink up) is up to date, edges out of it are
+    /// filtered against the constraints in scope at that layer.
+    fn update_bottom_up_properties_and_filter_edges(&mut self) {
+        for layer in (0..self.nodes.len() - 1).rev() {
+            let variable = self.order[layer];
+            for node_index in 0..self.nodes[layer].len() {
                 let target = NodeIndex(layer, node_index);
                 if !self[target].is_active() {
                     continue;
                 }
-                for constraint in (0..self.problem.number_constraints()).map(ConstraintIndex) {
-                    for edge_index in 0..self[target].number_children() {
-                        if edge_index == 0 {
-                            self.problem[constraint].reset_property_bottom_up(target);
-                        }
-                        let edge = self.nodes[layer][node_index].child_edge_at(edge_index);
-                        let source = self[edge].to();
-                        let assignment = self.problem[decision].value(self[edge].assignment());
-                        self.problem[constraint]
-                            .update_property_bottom_up(source, target, assignment);
-                    }
-                    for edge_index in (0..self[target].number_children()).rev() {
-                        let edge = self.nodes[layer][node_index].child_edge_at(edge_index);
-                        let source = self[edge].to();
-                        let assignment = self.problem[decision].value(self[edge].assignment());
-                        if self.problem[constraint].is_layer_in_scope(layer)
-                            && self.problem[constraint]
-                                .is_assignment_invalid(target, source, decision, assignment)
-                        {
-                            self[target].swap_remove_child_edge(edge_index);
-                            if self[target].number_children() == 0 {
-                                self.remove_node(target);
-                            }
-                            self[source].remove_parent_edge(edge);
-                            if self[source].number_parents() == 0 {
-                                self.remove_node(source);
-                            }
-                            self[edge].deactivate();
-                        }
+                for constraint_index in 0..self.constraints.len() {
+                    self.bottom_up_properties[layer][node_index][constraint_index] =
+                        self.fold_property_over_children(target, variable, constraint_index);
+                    if self.constraints[constraint_index].is_layer_in_scope(layer) {
+                        self.filter_invalid_edges(target, variable, constraint_index);
                     }
                 }
             }
+        }
+    }
+
+    /// Folds `target`'s child edges through `identity_property()`, using each child's own
+    /// (already up to date) bottom-up property. This is exactly what `target`'s bottom-up
+    /// property should become.
+    fn fold_property_over_children(
+        &self,
+        target: NodeIndex,
+        variable: VariableIndex,
+        constraint_index: usize,
+    ) -> Box<dyn ConstraintProperty> {
+        let NodeIndex(layer, _) = target;
+        let in_scope = self.constraints[constraint_index].is_layer_in_scope(layer);
+        let mut property = self.constraints[constraint_index].identity_property();
+        for edge_index in 0..self[target].number_children() {
+            let edge = self[target].child_edge_at(edge_index);
+            let NodeIndex(child_layer, child_index) = self[edge].to();
+            let assignment = self.problem[variable].value(self[edge].assignment());
+            let child_property =
+                self.bottom_up_properties[child_layer][child_index][constraint_index].as_ref();
+            property.update(child_property, assignment, in_scope);
+        }
+        property
+    }
+
+    /// Removes every child edge of `target` that `constraint_index` rules out, given `target`'s
+    /// top-down property and the child's bottom-up property (both assumed up to date). Removing
+    /// an edge can empty a node's remaining parents/children, in which case that node is removed
+    /// too (cascading through `remove_node`).
+    fn filter_invalid_edges(
+        &mut self,
+        target: NodeIndex,
+        variable: VariableIndex,
+        constraint_index: usize,
+    ) {
+        let NodeIndex(layer, node_index) = target;
+        for edge_index in (0..self[target].number_children()).rev() {
+            let edge = self[target].child_edge_at(edge_index);
+            let child = self[edge].to();
+            let NodeIndex(child_layer, child_index) = child;
+            let assignment = self.problem[variable].value(self[edge].assignment());
+            let parent_property =
+                self.top_down_properties[layer][node_index][constraint_index].as_ref();
+            let child_property =
+                self.bottom_up_properties[child_layer][child_index][constraint_index].as_ref();
+            let invalid = self.constraints[constraint_index].is_assignment_invalid(
+                parent_property,
+                child_property,
+                layer,
+                assignment,
+            );
+            if !invalid {
+                continue;
+            }
+            self[target].swap_remove_child_edge(edge_index);
+            if self[target].number_children() == 0 {
+                self.remove_node(target);
+            }
+            self[child].remove_parent_edge(edge);
+            if self[child].number_parents() == 0 {
+                self.remove_node(child);
+            }
+            self[edge].deactivate();
         }
     }
 
@@ -321,8 +412,8 @@ impl Mdd {
                     continue;
                 }
                 let key = MergeKey {
-                    node,
-                    constraints: self.problem.constraints(),
+                    td_properties: &self.top_down_properties[layer][index],
+                    bu_properties: &self.bottom_up_properties[layer][index],
                 };
                 if let Some(&primary_node) = map.get(&key) {
                     let NodeIndex(primary_layer, primary_index) = primary_node;
@@ -360,31 +451,31 @@ impl Mdd {
         }
     }
 
-    fn merge_layer(&mut self, layer: usize) {
+    fn merge_layer(&mut self, layer: usize, max_width: usize) {
         let number_nodes = self.nodes[layer].len();
-        if number_nodes <= self.max_width {
+        if number_nodes <= max_width {
             return;
         }
         let node_ranks = self.merge_heuristic.rank_nodes(self, layer);
         let active_nodes = node_ranks.len();
-        if active_nodes <= self.max_width {
+        if active_nodes <= max_width {
             return;
         }
         if !self.merge_heuristic.bucket_merge() {
-            let into = node_ranks[active_nodes - self.max_width].1;
+            let into = node_ranks[active_nodes - max_width].1;
             self[into].set_relaxed(true);
-            for i in 0..active_nodes - self.max_width {
+            for i in 0..active_nodes - max_width {
                 let from = node_ranks[i].1;
                 self.merge_nodes(from, into);
                 self[from].deactivate();
             }
         } else {
-            let q = node_ranks.len() / self.max_width;
-            let r = node_ranks.len() % self.max_width;
-            let mut bucket_sizes = vec![q; self.max_width - r];
+            let q = node_ranks.len() / max_width;
+            let r = node_ranks.len() % max_width;
+            let mut bucket_sizes = vec![q; max_width - r];
             bucket_sizes.extend(vec![q + 1; r]);
             let mut i = 0;
-            for _ in 0..self.max_width - r {
+            for _ in 0..max_width - r {
                 let into = node_ranks[i].1;
                 for j in (i + 1)..(i + q) {
                     let from = node_ranks[j].1;
@@ -446,6 +537,8 @@ impl Mdd {
                 }
             }
             self.nodes[layer].truncate(new_index);
+            self.top_down_properties[layer].truncate(new_index);
+            self.bottom_up_properties[layer].truncate(new_index);
         }
         let mut map_edge_index = FxHashMap::<EdgeIndex, EdgeIndex>::default();
         for layer in 0..self.edges.len() {
@@ -473,15 +566,6 @@ impl Mdd {
                     self.edges[layer - 1][index].update_node_indices(&map_node_index);
                 }
             }
-        }
-
-        let layers_size = self
-            .nodes
-            .iter()
-            .map(|layer| layer.len())
-            .collect::<Vec<usize>>();
-        for constraint in (0..self.problem.number_constraints()).map(ConstraintIndex) {
-            self.problem[constraint].shrink_layers(&layers_size);
         }
     }
 
@@ -532,10 +616,8 @@ impl Mdd {
         self.unsat
     }
 
-    pub fn set_probabilities(&mut self, probabilities: &[Vec<f64>]) {
-        for variable in (0..self.number_layers() - 1).map(VariableIndex) {
-            self.problem[variable].set_probabilities(&probabilities[variable.0]);
-        }
+    pub fn set_probabilities(&mut self, _probabilities: &[Vec<f64>]) {
+        panic!("TODO");
     }
 
     pub fn get_edge_probability(&self, edge: EdgeIndex) -> f64 {
@@ -749,6 +831,7 @@ pub mod test_mdd {
     use crate::mdd::heuristics::*;
     use crate::mdd::*;
     use crate::modelling::*;
+    use std::sync::Arc;
 
     pub fn get_all_solutions(mdd: &Mdd) -> Vec<Vec<isize>> {
         let mut solutions: Vec<Vec<isize>> = vec![];
@@ -799,16 +882,24 @@ pub mod test_mdd {
     #[test]
     pub fn mdd_creation() {
         let mut problem = Problem::default();
-        problem.add_variable(vec![0, 1], None);
-        problem.add_variable(vec![0, 1], None);
-        problem.add_variable(vec![0, 1, 2], None);
+        let x = problem.add_variable(vec![0, 1], None);
+        let y = problem.add_variable(vec![0, 1], None);
+        let z = problem.add_variable(vec![0, 1, 2], None);
+        // Mdd::new's scope is the union of the *given* constraints' scopes, so an MDD covering
+        // all 3 (otherwise free) variables needs a constraint that pulls them into scope. An
+        // unbounded gcc (no value bounds at all) imposes no actual restriction - see
+        // `test_no_bound_restriction` in gcc.rs for the same pattern - so it's a stand-in for
+        // "no real constraint" that still lets every variable enumerate its full domain.
+        gcc(&mut problem, vec![x, y, z], vec![]);
 
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
         let mdd = Mdd::new(
             problem,
-            usize::MAX,
             OrderingHeuristic::MinDomMaxLinked,
             MergeHeuristic::LessRelaxed,
             SelectHeuristic::Greedy,
+            &constraints,
         );
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 2 * 2 * 3);
@@ -837,14 +928,16 @@ pub mod test_mdd {
         not_equals(&mut problem, y, z);
         not_equals(&mut problem, x, z);
 
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
         let mut mdd = Mdd::new(
             problem,
-            usize::MAX,
             OrderingHeuristic::MinDomMaxLinked,
             MergeHeuristic::LessRelaxed,
             SelectHeuristic::Greedy,
+            &constraints,
         );
-        mdd.refine();
+        mdd.refine(usize::MAX);
         // TODO assert?
     }
 }

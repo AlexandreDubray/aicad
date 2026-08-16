@@ -18,7 +18,7 @@ impl PyProblem {
     fn mutate(&mut self) -> PyResult<&mut Problem> {
         Arc::get_mut(&mut self.inner).ok_or_else(|| {
             PyRuntimeError::new_err(
-                "cannot modify a Problem that has already been shared with a Solver/Trainer",
+                "cannot modify a Problem that has already been shared with a Compiler/Trainer",
             )
         })
     }
@@ -88,9 +88,9 @@ impl PyProblem {
         self.add_not_equals(x, y)?;
         Ok(y)
     }
-    
+
     // --- Model modification --- //
-    
+
     fn set_variable_position(&mut self, x: usize, position: Vec<usize>) {
         self.mutate().unwrap()[VariableIndex(x)].set_position(position);
     }

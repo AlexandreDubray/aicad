@@ -1,14 +1,15 @@
 use pyo3::prelude::*;
 
+mod compiler;
 mod heuristics;
 mod learn;
 mod logging;
 mod nls;
 mod problem;
-mod solver;
 
+pub use compiler::{Compiler, PyMdd};
 pub use heuristics::{PyMergeHeuristic, PyOrderingHeuristic, PySelectHeuristic};
-pub use learn::{train_consformer, PyConsFormerConfig, PyPositionalEncoding, PyTrainingConfig};
+pub use learn::{train_consformer, PyConsFormerConfig, PyTrainingConfig};
 pub use logging::{
     enable_console_logging, set_verbosity_debug, set_verbosity_error, set_verbosity_info,
     set_verbosity_off, set_verbosity_trace, set_verbosity_warning,
@@ -17,7 +18,6 @@ pub use nls::{
     neural_local_search, PyDecodeKind, PyDestroyKind, PyNetworkKind, PySolution, PyStatus,
 };
 pub use problem::PyProblem;
-pub use solver::Solver;
 
 #[pymodule]
 fn pyaicad(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -44,12 +44,12 @@ fn pyaicad(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     logging::disable_by_default(py)?;
 
     m.add_class::<PyProblem>()?;
-    m.add_class::<Solver>()?;
+    m.add_class::<Compiler>()?;
+    m.add_class::<PyMdd>()?;
     m.add_class::<PyOrderingHeuristic>()?;
     m.add_class::<PyMergeHeuristic>()?;
     m.add_class::<PySelectHeuristic>()?;
     m.add_class::<PyConsFormerConfig>()?;
-    m.add_class::<PyPositionalEncoding>()?;
     m.add_class::<PyTrainingConfig>()?;
     m.add_class::<PyNetworkKind>()?;
     m.add_class::<PyDestroyKind>()?;

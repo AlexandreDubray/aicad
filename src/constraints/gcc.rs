@@ -5,9 +5,6 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::hash::Hasher;
 use std::sync::Arc;
 
-/// Per-node counting property for the GCC. `guaranteed[v]` is the minimum number of times
-/// value `v` (identified by its slot in `val_to_bit`) occurs among all source-n (top-down)
-/// or n-sink (bottom-up) paths; `achievable[v]` is the maximum over the same paths.
 #[derive(Clone, deepsize::DeepSizeOf)]
 struct GccProperty {
     map: Arc<FxHashMap<isize, usize>>,
@@ -16,16 +13,16 @@ struct GccProperty {
 }
 
 impl GccProperty {
-    pub fn new(n: usize, map: Arc<FxHashMap<isize, usize>>) -> Self {
+    pub fn new(n: usize, map: Arc<FxHashMap<isize, usize>>, min_seed: usize) -> Self {
         Self {
             map,
-            min: vec![0; n],
+            min: vec![min_seed; n],
             max: vec![0; n],
         }
     }
 }
 
-#[derive(deepsize::DeepSizeOf)]
+#[derive(Clone, deepsize::DeepSizeOf)]
 pub struct Gcc {
     /// Scope of the constraint
     variables: Vec<VariableIndex>,
@@ -54,25 +51,27 @@ impl Gcc {
                 .map(|(bit, (value, _, _))| (value, bit))
                 .collect(),
         );
-        let n = variables.len();
-        let layer_in_scope = (0..(vars.len() / 64 + 1)).map(|_| 0).collect::<Vec<u64>>();
+        let lo = bounds.iter().copied().map(|(_, lo, _)| lo).collect();
+        let hi = bounds.iter().copied().map(|(_, _, hi)| hi).collect();
         Self {
             variables,
             bounds,
             val_to_bit,
-            lo: bounds.iter().copied().map(|(_, lo, _)| lo).collect(),
-            hi: bounds.iter().copied().map(|(_, _, hi)| hi).collect(),
-            layer_in_scope,
+            lo,
+            hi,
+            layer_in_scope: vec![],
         }
     }
 }
 
 impl Constraint for Gcc {
-
-    fn update_variable_ordering(&mut self, ordering: &[usize]) {
-        for variable in self.variables.iter() {
-            let layer = ordering[variable.0];
-            self.layer_in_scope[layer / 64] |= 1 << (layer % 64);
+    fn update_variable_ordering(&mut self, order: &[VariableIndex]) {
+        let scope: FxHashSet<VariableIndex> = self.variables.iter().copied().collect();
+        self.layer_in_scope = (0..(order.len() / 64 + 1)).map(|_| 0).collect::<Vec<u64>>();
+        for (layer, variable) in order.iter().enumerate() {
+            if scope.contains(variable) {
+                self.layer_in_scope[layer / 64] |= 1 << (layer % 64);
+            }
         }
     }
 
@@ -84,6 +83,7 @@ impl Constraint for Gcc {
         &self,
         parent: &dyn ConstraintProperty,
         child: &dyn ConstraintProperty,
+        _layer: usize,
         assignment: isize,
     ) -> bool {
         let parent = parent.as_any().downcast_ref::<GccProperty>().unwrap_or_else(|| {
@@ -99,11 +99,15 @@ impl Constraint for Gcc {
                 );
         });
 
-        let bit = *self.value_to_bit(&assignment).unwrap();
-
+        // `bit` is `None` when `assignment` isn't itself one of the bounded values - in that
+        // case this edge contributes `delta = 0` to every bounded value's count, but the bound
+        // check below must still run: an edge to an *unbounded* value can still be the one that
+        // makes some other bounded value's count infeasible to complete (not enough variables
+        // left to reach its lower bound, or already past its upper bound).
+        let bit = self.val_to_bit.get(&assignment).copied();
         for (v, lb, ub) in self.bounds.iter().copied() {
-            let v_bit = *self.value_to_bit(&v).unwrap();
-            let delta = if v_bit == bit { 1 } else { 0 };
+            let v_bit = *self.val_to_bit.get(&v).unwrap();
+            let delta = if bit == Some(v_bit) { 1 } else { 0 };
             let min = parent.min[v_bit] + child.min[v_bit] + delta;
 
             if min > ub {
@@ -144,8 +148,24 @@ impl Constraint for Gcc {
         self
     }
 
-    fn rank_nodes(&self, nodes: &[NodeIndex]) -> Vec<f64> {
+    fn rank_nodes(&self, _nodes: &[NodeIndex]) -> Vec<f64> {
         vec![]
+    }
+
+    fn identity_property(&self) -> Box<dyn ConstraintProperty> {
+        Box::new(GccProperty::new(
+            self.bounds.len(),
+            self.val_to_bit.clone(),
+            usize::MAX,
+        ))
+    }
+
+    fn empty_property(&self) -> Box<dyn ConstraintProperty> {
+        Box::new(GccProperty::new(
+            self.bounds.len(),
+            self.val_to_bit.clone(),
+            0,
+        ))
     }
 }
 
@@ -161,9 +181,13 @@ impl ConstraintProperty for GccProperty {
                     other.name()
                 );
             });
-        let target_bit = match self.map.get(&assignment) {
-            None => self.min.len(),
-            Some(&bit) => bit,
+        let target_bit = if in_scope {
+            match self.map.get(&assignment) {
+                None => self.min.len(),
+                Some(&bit) => bit,
+            }
+        } else {
+            self.min.len()
         };
 
         // Then, we integrate the min-max values for each bounded value from the other property
@@ -218,6 +242,7 @@ mod test_gcc {
     use crate::mdd::mdd::test_mdd::*;
     use crate::mdd::*;
     use crate::modelling::*;
+    use std::sync::Arc;
 
     #[test]
     pub fn test_is_satisfied_within_bounds() {
@@ -267,14 +292,16 @@ mod test_gcc {
         let vars = problem.add_variables(3, vec![0, 1, 2], None);
         gcc(&mut problem, vars, vec![(0, 0, 1), (1, 0, 1), (2, 0, 1)]);
 
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
         let mut mdd = Mdd::new(
             problem,
-            usize::MAX,
             OrderingHeuristic::Custom(vec![0, 1, 2]),
             MergeHeuristic::LessRelaxed,
             SelectHeuristic::Greedy,
+            &constraints,
         );
-        mdd.refine();
+        mdd.refine(usize::MAX);
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 6);
         for sol in solutions.iter() {
@@ -291,14 +318,16 @@ mod test_gcc {
         let vars = problem.add_variables(4, vec![0, 1], None);
         gcc(&mut problem, vars, vec![(1, 2, 2)]);
 
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
         let mut mdd = Mdd::new(
             problem,
-            usize::MAX,
             OrderingHeuristic::Custom(vec![0, 1, 2, 3]),
             MergeHeuristic::LessRelaxed,
             SelectHeuristic::Greedy,
+            &constraints,
         );
-        mdd.refine();
+        mdd.refine(usize::MAX);
         let solutions = get_all_solutions(&mdd);
 
         let mut expected: Vec<Vec<isize>> = vec![];
@@ -328,14 +357,16 @@ mod test_gcc {
         let vars = problem.add_variables(3, vec![0, 1, 2], None);
         gcc(&mut problem, vars, vec![(0, 1, 2), (2, 0, 1)]);
 
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
         let mut mdd = Mdd::new(
             problem,
-            usize::MAX,
             OrderingHeuristic::Custom(vec![0, 1, 2]),
             MergeHeuristic::LessRelaxed,
             SelectHeuristic::Greedy,
+            &constraints,
         );
-        mdd.refine();
+        mdd.refine(usize::MAX);
         let solutions = get_all_solutions(&mdd);
 
         let mut expected: Vec<Vec<isize>> = vec![];
@@ -363,12 +394,14 @@ mod test_gcc {
         let vars = problem.add_variables(2, vec![0], None);
         gcc(&mut problem, vars, vec![(1, 1, 2)]);
 
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
         let mdd = Mdd::new(
             problem,
-            usize::MAX,
             OrderingHeuristic::MinDomMaxLinked,
             MergeHeuristic::LessRelaxed,
             SelectHeuristic::Greedy,
+            &constraints,
         );
         assert!(mdd.is_unsat());
         assert_eq!(mdd.get_solution(), None);
@@ -381,12 +414,14 @@ mod test_gcc {
         let vars = problem.add_variables(2, vec![1], None);
         gcc(&mut problem, vars, vec![(1, 0, 1)]);
 
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
         let mdd = Mdd::new(
             problem,
-            usize::MAX,
             OrderingHeuristic::MinDomMaxLinked,
             MergeHeuristic::LessRelaxed,
             SelectHeuristic::Greedy,
+            &constraints,
         );
         assert!(mdd.is_unsat());
         assert_eq!(mdd.get_solution(), None);
@@ -394,18 +429,20 @@ mod test_gcc {
 
     #[test]
     pub fn test_relaxed_width_is_superset() {
-        // With a max width of 1 and no refine step, the MDD is a relaxation: it must not
-        // exclude any valid solution (though it may also keep invalid ones).
+        // With no refine step, the freshly-built MDD is already the width-1 relaxation: it
+        // must not exclude any valid solution (though it may also keep invalid ones).
         let mut problem = Problem::default();
         let vars = problem.add_variables(2, vec![0, 1], None);
         gcc(&mut problem, vars, vec![(1, 1, 1)]);
 
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
         let mdd = Mdd::new(
             problem,
-            1,
             OrderingHeuristic::MinDomMaxLinked,
             MergeHeuristic::LessRelaxed,
             SelectHeuristic::Greedy,
+            &constraints,
         );
         let solutions = get_all_solutions(&mdd);
         assert!(is_solution(vec![0, 1], &solutions));
@@ -419,14 +456,16 @@ mod test_gcc {
         let vars = problem.add_variables(2, vec![0, 1], None);
         gcc(&mut problem, vars, vec![]);
 
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
         let mut mdd = Mdd::new(
             problem,
-            usize::MAX,
             OrderingHeuristic::MinDomMaxLinked,
             MergeHeuristic::LessRelaxed,
             SelectHeuristic::Greedy,
+            &constraints,
         );
-        mdd.refine();
+        mdd.refine(usize::MAX);
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 4);
         assert!(is_solution(vec![0, 0], &solutions));
@@ -444,14 +483,16 @@ mod test_gcc {
         not_equals(&mut problem, x, y);
         gcc(&mut problem, vec![x, y, z], vec![(2, 1, 1)]);
 
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
         let mut mdd = Mdd::new(
             problem,
-            usize::MAX,
             OrderingHeuristic::Custom(vec![0, 1, 2]),
             MergeHeuristic::LessRelaxed,
             SelectHeuristic::Greedy,
+            &constraints,
         );
-        mdd.refine();
+        mdd.refine(usize::MAX);
         let solutions = get_all_solutions(&mdd);
 
         let mut expected: Vec<Vec<isize>> = vec![];

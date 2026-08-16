@@ -1,11 +1,12 @@
 use super::*;
-use crate::utils::Bitset;
-use crate::modelling::*;
 use crate::mdd::*;
+use crate::modelling::*;
+use crate::utils::Bitset;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::hash::Hasher;
 use std::sync::Arc;
-use rustc_hash::{FxHashSet, FxHashMap};
 
+#[derive(Clone, deepsize::DeepSizeOf)]
 pub struct NotEqualsProperty {
     set: Bitset,
     map: Arc<FxHashMap<isize, usize>>,
@@ -13,11 +14,14 @@ pub struct NotEqualsProperty {
 
 impl NotEqualsProperty {
     fn new(map: Arc<FxHashMap<isize, usize>>) -> Self {
-        Self { set: Bitset::new(map.len()), map }
+        Self {
+            set: Bitset::new(map.len()),
+            map,
+        }
     }
 }
 
-#[derive(deepsize::DeepSizeOf)]
+#[derive(Clone, deepsize::DeepSizeOf)]
 pub struct NotEquals {
     x: VariableIndex,
     y: VariableIndex,
@@ -28,12 +32,18 @@ pub struct NotEquals {
 }
 
 impl NotEquals {
-
-    pub fn new(x: VariableIndex, y: VariableIndex, problem: Arc<Problem>) -> Self {
+    pub fn new(x: VariableIndex, y: VariableIndex, problem: &Problem) -> Self {
         let mut domains = FxHashSet::<isize>::default();
         domains.extend(problem[x].iter_domain());
         domains.extend(problem[y].iter_domain());
-        let val_to_bit = Arc::new(domain.iter().copied().enumerate().map(|(bit, value)| (value, bit)).collect());
+        let val_to_bit = Arc::new(
+            domains
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(bit, value)| (value, bit))
+                .collect(),
+        );
         Self {
             x,
             y,
@@ -43,21 +53,30 @@ impl NotEquals {
             layer_y: 0,
         }
     }
-
 }
 
 impl Constraint for NotEquals {
-
-    fn update_variable_ordering(&mut self, ordering: &[usize]) {
-        self.layer_x = ordering[self.x.0];
-        self.layer_y = ordering[self.y.0];
+    fn update_variable_ordering(&mut self, order: &[VariableIndex]) {
+        for (layer, &variable) in order.iter().enumerate() {
+            if variable == self.x {
+                self.layer_x = layer;
+            } else if variable == self.y {
+                self.layer_y = layer;
+            }
+        }
     }
 
     fn is_layer_in_scope(&self, layer: usize) -> bool {
         layer == self.layer_x || layer == self.layer_y
     }
 
-    fn is_assignment_invalid(&self, parent: &dyn ConstraintProperty, child: &dyn ConstraintProperty, assignment: isize) -> bool {
+    fn is_assignment_invalid(
+        &self,
+        parent: &dyn ConstraintProperty,
+        child: &dyn ConstraintProperty,
+        _layer: usize,
+        assignment: isize,
+    ) -> bool {
         let parent = parent.as_any().downcast_ref::<NotEqualsProperty>().unwrap_or_else(|| {
                 panic!(
                     "Calling is_assignment_invalid on parent property of type {} instead of NotEqualsProperty",
@@ -80,7 +99,8 @@ impl Constraint for NotEquals {
         // Similarly, when filtering an edge associated with y, the bottom-up property is false,
         // and we fall back on the first condition: does every path leading to the parent nodes
         // result in the same assignment for x.
-        (parent.set.contains(&bit) && parent.set.size() == 1) || (child.set.contains(&bit) && child.set.size() == 1)
+        (parent.set.contains(bit) && parent.set.size() == 1)
+            || (child.set.contains(bit) && child.set.size() == 1)
     }
 
     fn iter_scope(&self) -> Box<dyn Iterator<Item = VariableIndex> + '_> {
@@ -99,12 +119,12 @@ impl Constraint for NotEquals {
         self
     }
 
-    fn rank_nodes(&self, nodes: &[NodeIndex]) -> Vec<f64> {
+    fn rank_nodes(&self, _nodes: &[NodeIndex]) -> Vec<f64> {
         vec![]
     }
 
-    fn identity_property(&self) -> NotEqualsProperty {
-        NotEqualsProperty::new(self.val_to_bit.clone())
+    fn identity_property(&self) -> Box<dyn ConstraintProperty> {
+        Box::new(NotEqualsProperty::new(self.val_to_bit.clone()))
     }
 }
 
@@ -120,7 +140,7 @@ impl ConstraintProperty for NotEqualsProperty {
                     other.name()
                 );
             });
-        let bit = *self.map(&assignment).unwrap();
+        let bit = *self.map.get(&assignment).unwrap();
         if in_scope {
             self.set.insert(bit);
         }
@@ -154,29 +174,35 @@ impl ConstraintProperty for NotEqualsProperty {
     fn name(&self) -> &'static str {
         "NotEqualsProperty"
     }
-
 }
 
 #[cfg(test)]
 mod test_not_equals {
 
-    use crate::modelling::*;
-    use crate::constraints::{NotEquals, Constraint};
-    use crate::mdd::*;
+    use crate::constraints::{Constraint, NotEquals};
     use crate::mdd::heuristics::*;
     use crate::mdd::mdd::test_mdd::*;
+    use crate::mdd::*;
+    use crate::modelling::*;
+    use std::sync::Arc;
 
     // --- is_satisfied: pure logic, no MDD involved --- //
 
     #[test]
     pub fn test_is_satisfied_different() {
-        let ne = NotEquals::new(VariableIndex(0), VariableIndex(1));
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1], None);
+        let y = problem.add_variable(vec![0, 1], None);
+        let ne = NotEquals::new(x, y, &problem);
         assert!(ne.is_satisfied(&[0, 1]));
     }
 
     #[test]
     pub fn test_is_satisfied_equal() {
-        let ne = NotEquals::new(VariableIndex(0), VariableIndex(1));
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1, 2, 3], None);
+        let y = problem.add_variable(vec![0, 1, 2, 3], None);
+        let ne = NotEquals::new(x, y, &problem);
         assert!(!ne.is_satisfied(&[3, 3]));
     }
 
@@ -189,8 +215,16 @@ mod test_not_equals {
         let y = problem.add_variable(vec![0, 1], None);
         not_equals(&mut problem, x, y);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
-        mdd.refine();
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mut mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
+        mdd.refine(usize::MAX);
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 2);
         assert!(is_solution(vec![0, 1], &solutions));
@@ -204,8 +238,16 @@ mod test_not_equals {
         let y = problem.add_variable(vec![0, 1, 2], None);
         not_equals(&mut problem, x, y);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
-        mdd.refine();
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mut mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
+        mdd.refine(usize::MAX);
         let solutions = get_all_solutions(&mdd);
 
         let mut expected: Vec<Vec<isize>> = vec![];
@@ -237,7 +279,15 @@ mod test_not_equals {
         let y = problem.add_variable(vec![1], None);
         not_equals(&mut problem, x, y);
 
-        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::Custom(vec![0, 1]),
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
         assert!(!mdd.is_unsat());
         assert_eq!(mdd.get_solution(), Some(vec![0, 1]));
     }
@@ -250,7 +300,15 @@ mod test_not_equals {
         let y = problem.add_variable(vec![1], None);
         not_equals(&mut problem, x, y);
 
-        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![1, 0]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::Custom(vec![1, 0]),
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
         assert!(!mdd.is_unsat());
         assert_eq!(mdd.get_solution(), Some(vec![0, 1]));
     }
@@ -265,7 +323,15 @@ mod test_not_equals {
         let y = problem.add_variable(vec![5], None);
         not_equals(&mut problem, x, y);
 
-        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::Custom(vec![0, 1]),
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
         assert!(mdd.is_unsat());
         assert_eq!(mdd.get_solution(), None);
     }
@@ -278,7 +344,15 @@ mod test_not_equals {
         let y = problem.add_variable(vec![5], None);
         not_equals(&mut problem, x, y);
 
-        let mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
         assert!(mdd.is_unsat());
         assert_eq!(mdd.get_solution(), None);
     }
@@ -292,8 +366,16 @@ mod test_not_equals {
         let y = problem.add_variable(vec![0, 1, 2], None);
         not_equals(&mut problem, x, y);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
-        mdd.refine();
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mut mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::Custom(vec![0, 1]),
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
+        mdd.refine(usize::MAX);
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 6);
         for sol in solutions.iter() {
@@ -310,8 +392,16 @@ mod test_not_equals {
         let y = problem.add_variable(vec![0, 1, 2], None);
         not_equals(&mut problem, x, y);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![1, 0]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
-        mdd.refine();
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mut mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::Custom(vec![1, 0]),
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
+        mdd.refine(usize::MAX);
         let solutions = get_all_solutions(&mdd);
         assert_eq!(solutions.len(), 6);
         for sol in solutions.iter() {
@@ -321,14 +411,22 @@ mod test_not_equals {
 
     #[test]
     pub fn test_relaxed_width_is_superset() {
-        // With a max width of 1 and no refine step, the MDD is a relaxation: it must not
-        // exclude any valid solution.
+        // With no refine step, the freshly-built MDD (one node per layer) is already the
+        // width-1 relaxation: it must not exclude any valid solution.
         let mut problem = Problem::default();
         let x = problem.add_variable(vec![0, 1], None);
         let y = problem.add_variable(vec![0, 1], None);
         not_equals(&mut problem, x, y);
 
-        let mdd = Mdd::new(problem, 1, OrderingHeuristic::MinDomMaxLinked, MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
         let solutions = get_all_solutions(&mdd);
         assert!(is_solution(vec![0, 1], &solutions));
         assert!(is_solution(vec![1, 0], &solutions));
@@ -346,8 +444,16 @@ mod test_not_equals {
         not_equals(&mut problem, y, z);
         not_equals(&mut problem, x, z);
 
-        let mut mdd = Mdd::new(problem, usize::MAX, OrderingHeuristic::Custom(vec![0, 1, 2]), MergeHeuristic::LessRelaxed, SelectHeuristic::Greedy);
-        mdd.refine();
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mut mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::Custom(vec![0, 1, 2]),
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
+        mdd.refine(usize::MAX);
         let solutions = get_all_solutions(&mdd);
 
         let mut expected: Vec<Vec<isize>> = vec![];

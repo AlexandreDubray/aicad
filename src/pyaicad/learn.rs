@@ -15,39 +15,11 @@ use rand::seq::SliceRandom;
 
 use crate::learning::consformer::{
     ConsFormerBatcher, ConsFormerConfig, ConsFormerDataset, ConsFormerLoss, ConsFormerSample,
-    PositionalStructure,
 };
 use crate::learning::train::{train_model, ModelSelection, TrainingConfig};
 use crate::modelling::Problem;
 
 use super::problem::PyProblem;
-
-#[pyclass(from_py_object)]
-#[derive(Clone)]
-pub struct PyPositionalEncoding {
-    axis_sizes: Vec<usize>,
-    positions: Vec<Vec<usize>>,
-}
-
-#[pymethods]
-impl PyPositionalEncoding {
-    #[new]
-    fn new(axis_sizes: Vec<usize>, positions: Vec<Vec<usize>>) -> Self {
-        PyPositionalEncoding {
-            axis_sizes,
-            positions,
-        }
-    }
-}
-
-impl From<&PyPositionalEncoding> for PositionalStructure {
-    fn from(p: &PyPositionalEncoding) -> Self {
-        PositionalStructure {
-            axis_sizes: p.axis_sizes.clone(),
-            positions: p.positions.clone(),
-        }
-    }
-}
 
 #[pyclass]
 pub struct PyConsFormerConfig {

@@ -2,14 +2,14 @@ pub mod architecture;
 pub mod dataset;
 pub mod loss;
 
+use super::*;
+use crate::modelling::Problem;
 pub use architecture::ConsFormer;
+use architecture::*;
 pub use dataset::{
     consformer_masks, ConsFormerBatch, ConsFormerBatcher, ConsFormerDataset, ConsFormerSample,
 };
 pub use loss::{ConsFormerLoss, ConstraintLoss};
-use super::*;
-use crate::modelling::Problem;
-use architecture::*;
 
 use burn::config::Config;
 use burn::module::Param;
@@ -69,8 +69,16 @@ impl<B: Backend> NetworkConfig<B> for ConsFormerConfig {
         let position_embedding = if self.positional_encoding_dimensions == 0 {
             None
         } else {
-            let positions = problems[0].iter_variables().map(|variable| problems[0][variable].position().clone().unwrap()).collect();
-            Some(StructuredPositionalEmbedding::new(self.embedding_size, self.positional_encoding_dimensions, positions, device))
+            let positions = problems[0]
+                .iter_variables()
+                .map(|variable| problems[0][variable].position().clone().unwrap())
+                .collect();
+            Some(StructuredPositionalEmbedding::new(
+                self.embedding_size,
+                self.positional_encoding_dimensions,
+                positions,
+                device,
+            ))
         };
 
         ConsFormer {
@@ -91,18 +99,4 @@ impl<B: Backend> NetworkConfig<B> for ConsFormerConfig {
             tau: self.tau,
         }
     }
-}
-
-/// Places each variable of a problem along one or more positional axes
-/// (e.g. Sudoku: a row axis and a column axis; nurse rostering: nurse/day/
-/// shift axes). The number of axes is entirely per-problem
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PositionalStructure {
-    /// axis_sizes[i] = number of distinct positions along axis `i`, i.e.
-    /// how large that axis's embedding table needs to be.
-    pub axis_sizes: Vec<usize>,
-    /// positions[v][i] = variable `v`'s index along axis `i`. Must have one
-    /// entry per problem variable (in `VariableIndex` order), each with
-    /// `axis_sizes.len()` coordinates, each `< axis_sizes[a]`.
-    pub positions: Vec<Vec<usize>>,
 }
