@@ -134,24 +134,34 @@ impl StoppingCriterion {
     }
 }
 
-/// Loads a network's hyperparameters (JSON config) and trained weights from
-/// a checkpoint directory produced by `train_model`/`run_training`
-pub fn load_network<B, NC>(checkpoint_dir: &Path, problems: &[Arc<Problem>], device: &B::Device) -> NC::N
+/// Loads a network's hyperparameters (JSON config) and trained weights from a checkpoint
+/// directory produced by `train_model`/`run_training`. Returns the config alongside the network
+/// (rather than just the network) so callers that also need a hyperparameter off the config --
+/// e.g. `mask_fraction`, to pick a default `destroy_fraction` -- don't have to load `config.json`
+/// a second time themselves.
+///
+/// Fallible rather than panicking: `checkpoint_dir` ultimately comes from a Python caller (a
+/// typo'd path, a directory that isn't actually a checkpoint, or a `weights` file left over from
+/// an incompatible config are all bad-input errors, not internal bugs), so this returns a boxed
+/// `std::error::Error` for the pyo3 layer to turn into a catchable `PyErr` instead of aborting the
+/// whole interpreter.
+pub fn load_network<B, NC>(
+    checkpoint_dir: &Path,
+    problems: &[Arc<Problem>],
+    device: &B::Device,
+) -> Result<(NC, NC::N), Box<dyn std::error::Error>>
 where
     B: Backend,
-    NC: NetworkConfig<B> + Config,
+    NC: NetworkConfig<B> + Config + Clone,
     NC::N: Module<B>,
 {
-    let config: NC =
-        NC::load(checkpoint_dir.join("config.json")).expect("failed to load network config");
-    config
-        .init(problems, device)
-        .load_file(
-            checkpoint_dir.join("weights"),
-            &CompactRecorder::new(),
-            device,
-        )
-        .expect("failed to load network weights")
+    let config: NC = NC::load(checkpoint_dir.join("config.json"))?;
+    let network = config.clone().init(problems, device).load_file(
+        checkpoint_dir.join("weights"),
+        &CompactRecorder::new(),
+        device,
+    )?;
+    Ok((config, network))
 }
 
 pub struct NeuralLocalSearch<B: Backend, N, Ba> {

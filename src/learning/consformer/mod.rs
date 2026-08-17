@@ -66,6 +66,32 @@ pub struct ConsFormerConfig {
     pub tau: f64,
 }
 
+/// The subset of `ConsFormerConfig` the data pipeline (a `ConsFormerMddDataset` and its
+/// `ConsFormerMddBatcher`) needs. Threading one value of this through both, instead of passing
+/// `domain_size`/`mask_fraction` as independent arguments, is what keeps a dataset and its batcher
+/// from ever being built against different `domain_size`s -- see `MddInstance`'s doc for what
+/// silently breaks if they diverge. Build one via `ConsFormerDataConfig::from(&network_config)`
+/// rather than constructing it by hand, so it's always sourced from the same `ConsFormerConfig`
+/// the network itself was built with.
+#[derive(Clone, Copy, Debug)]
+pub struct ConsFormerDataConfig {
+    /// Must match the network's `domain_size` -- the width of the per-variable probability vector
+    /// `ConsFormerMddDataset`'s gather indices are computed against.
+    pub domain_size: usize,
+    /// Fraction of free variables randomly marked eligible for update on each training step (see
+    /// `ConsFormerBatcher::mask_fraction`).
+    pub mask_fraction: f64,
+}
+
+impl From<&ConsFormerConfig> for ConsFormerDataConfig {
+    fn from(c: &ConsFormerConfig) -> Self {
+        Self {
+            domain_size: c.domain_size,
+            mask_fraction: c.mask_fraction,
+        }
+    }
+}
+
 impl<B: Backend> NetworkConfig<B> for ConsFormerConfig {
     type N = ConsFormer<B>;
 

@@ -196,6 +196,10 @@ impl Mdd {
 
     /// Refines the MDD allowing max_width nodes in each layer
     pub fn refine(&mut self, max_width: usize) {
+        if max_width == 0 {
+            log::warn!("Refininig MDD with max_width = 0. Skipping refinement");
+            return;
+        }
         if self.unsat {
             return;
         }
@@ -578,7 +582,7 @@ impl Mdd {
     }
 
     pub fn number_edges(&self) -> usize {
-        self.edges.len()
+        self.edges.iter().map(|layer_edges| layer_edges.len()).sum()
     }
 
     pub fn number_layers(&self) -> usize {

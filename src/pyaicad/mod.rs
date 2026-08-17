@@ -9,7 +9,9 @@ mod problem;
 
 pub use compiler::{Compiler, PyMdd};
 pub use heuristics::{PyMergeHeuristic, PyOrderingHeuristic, PySelectHeuristic};
-pub use learn::{train_consformer, train_consformer_mdd, PyConsFormerConfig, PyTrainingConfig};
+pub use learn::{
+    set_seed, train_consformer, train_consformer_mdd, PyConsFormerConfig, PyTrainingConfig,
+};
 pub use logging::{
     enable_console_logging, set_verbosity_debug, set_verbosity_error, set_verbosity_info,
     set_verbosity_off, set_verbosity_trace, set_verbosity_warning,
@@ -56,6 +58,7 @@ fn pyaicad(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDecodeKind>()?;
     m.add_class::<PySolution>()?;
     m.add_class::<PyStatus>()?;
+    m.add_function(wrap_pyfunction!(set_seed, m)?)?;
     m.add_function(wrap_pyfunction!(train_consformer, m)?)?;
     m.add_function(wrap_pyfunction!(train_consformer_mdd, m)?)?;
     m.add_function(wrap_pyfunction!(neural_local_search, m)?)?;

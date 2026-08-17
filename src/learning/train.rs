@@ -15,7 +15,6 @@ use crate::learning::monitoring::SatisfactionReport;
 use crate::learning::{BatchProblems, Loss, Network, NetworkConfig};
 use crate::modelling::Problem;
 
-
 /// Heuristic to select the best model during training
 #[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
 pub enum ModelSelection {
@@ -160,6 +159,9 @@ where
 
             let score = match training.model_selection {
                 ModelSelection::Loss => {
+                    if valid_batches == 0 {
+                        log::warn!("No valid batch in validation set");
+                    }
                     let avg_valid_loss = valid_loss_sum / valid_batches as f64;
                     log::info!("epoch {epoch}: validation loss = {avg_valid_loss:.4}");
                     avg_valid_loss

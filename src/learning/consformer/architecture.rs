@@ -318,10 +318,13 @@ impl<B: Backend> MultiHeadAttention<B> {
         let mut energy = queries.matmul(keys.transpose()) / (self.hidden_size as f64).sqrt();
 
         // Applies the attention mask. Remove the energy between variables that are not linked in
-        // the primal graph of the CSP
+        // the primal graph of the CSP.
+        //
+        // `attention_mask` is `true` where attention IS allowed (self, or linked in the primal
+        // graph -- see `consformer_mask_data`'s doc)
         let mask_4d: Tensor<B, 4, Bool> =
             attention_mask.reshape([batch_size, 1, number_vars, number_vars]);
-        energy = energy.mask_fill(mask_4d, f32::NEG_INFINITY);
+        energy = energy.mask_fill(mask_4d.bool_not(), f32::NEG_INFINITY);
 
         // Create a probability distribution from the energy mask
         let attention = burn::tensor::activation::softmax(energy, 3);

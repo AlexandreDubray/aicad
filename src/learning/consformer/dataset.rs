@@ -172,24 +172,27 @@ pub(super) fn stack_masks_and_sample_assignments<B: Backend>(
     let attention_masks = Tensor::stack(attention_mask_tensors, 0);
 
     let n = problems[0].number_variables();
-    let mut rng = rand::rng();
     let mut var_masks_data: Vec<bool> = Vec::with_capacity(problems.len() * n);
-    for var_mask in var_mask_tensors {
-        let candidates: Vec<i64> = var_mask
-            .clone()
-            .int()
-            .into_data()
-            .to_vec::<B::IntElem>()
-            .expect("var mask should convert to int")
-            .into_iter()
-            .map(|v| v.elem::<i64>())
-            .collect();
-        var_masks_data.extend(
-            candidates
+    // One `with_rng` call for the whole batch (rather than one per candidate) so a seeded run
+    // only takes the shared RNG's lock once here, not once per variable.
+    crate::utils::with_rng(|rng| {
+        for var_mask in var_mask_tensors {
+            let candidates: Vec<i64> = var_mask
+                .clone()
+                .int()
+                .into_data()
+                .to_vec::<B::IntElem>()
+                .expect("var mask should convert to int")
                 .into_iter()
-                .map(|is_candidate| is_candidate != 0 && rng.random_bool(mask_fraction)),
-        );
-    }
+                .map(|v| v.elem::<i64>())
+                .collect();
+            var_masks_data.extend(
+                candidates
+                    .into_iter()
+                    .map(|is_candidate| is_candidate != 0 && rng.random_bool(mask_fraction)),
+            );
+        }
+    });
     let var_masks: Tensor<B, 2, Bool> =
         Tensor::<B, 1, Bool>::from_data(var_masks_data.as_slice(), device)
             .reshape([problems.len(), n]);

@@ -79,7 +79,7 @@ impl Variable {
     }
 
     pub fn sample(&self) -> isize {
-        let mut roll: f64 = rand::rng().random();
+        let mut roll: f64 = crate::utils::with_rng(|rng| rng.random());
         for (index, prob) in self.probabilities.iter().copied().enumerate() {
             roll -= prob;
             if roll < 0.0 {

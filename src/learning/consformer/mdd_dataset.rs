@@ -19,7 +19,7 @@ use crate::mdd::{Mdd, NodeIndex};
 use crate::modelling::{ConstraintIndex, Problem};
 
 use super::dataset::{consformer_mask_data, stack_masks_and_sample_assignments, ConsFormerMaskData};
-use super::ConsFormerInputs;
+use super::{ConsFormerDataConfig, ConsFormerInputs};
 
 /// Configuration used to compile the per-constraint MDDs. `max_width` is intentionally not
 /// exposed: this dataset always refines to an unbounded width (`Mdd::refine(usize::MAX)`), i.e.
@@ -213,7 +213,13 @@ fn compile_constraint_mdds(
                         let to_idx = edge.to().1;
 
                         let domain_value = problem[variable].value(edge.assignment());
-                        debug_assert!(
+                        // A real `assert!`, not `debug_assert!`: this fires only when the caller
+                        // (ultimately, whatever `domain_size` the Python entrypoint was given)
+                        // doesn't match the problem's own domains, which is a bad-input error, not
+                        // an internal-logic bug -- it should surface as a clear panic in release
+                        // builds too, rather than silently producing an out-of-range
+                        // `gather_index` that corrupts training instead of failing loudly.
+                        assert!(
                             domain_value >= 0 && (domain_value as usize) < domain_size,
                             "constraint `{}`: domain value {} out of the network's [0, {}) \
                              range -- `domain_size` passed to the MDD dataset doesn't match the \
@@ -320,14 +326,18 @@ pub struct ConsFormerMddDataset<B: Backend> {
 
 impl<B: Backend> ConsFormerMddDataset<B> {
     /// Compiles one exact MDD per constraint for every problem and reduces each to its padded
-    /// `MddInstance` representation. `domain_size` must match the network's configured
-    /// `ConsFormerConfig::domain_size` -- see `compile_constraint_mdds`.
+    /// `MddInstance` representation. `data_config.domain_size` must match the network's
+    /// configured `ConsFormerConfig::domain_size` -- see `compile_constraint_mdds`. Build
+    /// `data_config` via `ConsFormerDataConfig::from(&network_config)` rather than by hand, so
+    /// this and the `ConsFormerMddBatcher` built alongside it can't end up with different
+    /// `domain_size`s.
     pub fn new(
         problems: Vec<Arc<Problem>>,
         compilation: MddCompilationConfig,
-        domain_size: usize,
+        data_config: ConsFormerDataConfig,
         device: &B::Device,
     ) -> Self {
+        let domain_size = data_config.domain_size;
         // MDD compilation (the expensive part -- see `compile_constraint_mdds`) and mask
         // construction are both independent per problem and touch no device state, so they run
         // on a capped worker pool (see `utils::worker_pool`) rather than rayon's all-cores
@@ -467,12 +477,23 @@ impl<B: Backend> ConsFormerInputs<B> for ConsFormerMddBatch<B> {
 }
 
 /// Builds `ConsFormerMddBatch`es from `ConsFormerMddSample`s. `domain_size` must match the value
-/// the dataset itself was built with (`ConsFormerMddDataset::new`'s `domain_size`), since it's
-/// needed to offset each instance's `gather_index` into the batch's flattened probability tensor.
+/// the dataset itself was built with, since it's needed to offset each instance's `gather_index`
+/// into the batch's flattened probability tensor -- so this is only constructible from a
+/// `ConsFormerDataConfig`, the same value the dataset is built from, rather than from independent
+/// `mask_fraction`/`domain_size` arguments that could accidentally diverge from the dataset's.
 #[derive(Clone, Copy)]
 pub struct ConsFormerMddBatcher {
-    pub mask_fraction: f64,
-    pub domain_size: usize,
+    mask_fraction: f64,
+    domain_size: usize,
+}
+
+impl ConsFormerMddBatcher {
+    pub fn new(data_config: ConsFormerDataConfig) -> Self {
+        Self {
+            mask_fraction: data_config.mask_fraction,
+            domain_size: data_config.domain_size,
+        }
+    }
 }
 
 impl<B: Backend> Batcher<B, ConsFormerMddSample<B>, ConsFormerMddBatch<B>> for ConsFormerMddBatcher {
@@ -817,11 +838,15 @@ mod tests {
 
         let device = NdArrayDevice::default();
         let domain_size = 7; // covers every problem's domain_max % 5 + 2 above (max 6)
+        let data_config = ConsFormerDataConfig {
+            domain_size,
+            mask_fraction: 0.0,
+        };
 
         let dataset = ConsFormerMddDataset::<NdArray>::new(
             problems.clone(),
             MddCompilationConfig::default(),
-            domain_size,
+            data_config,
             &device,
         );
 
@@ -872,11 +897,15 @@ mod tests {
         let device = NdArrayDevice::default();
         let domain_size = 3;
         let number_vars = 3i64;
+        let data_config = ConsFormerDataConfig {
+            domain_size,
+            mask_fraction: 0.0,
+        };
 
         let dataset = ConsFormerMddDataset::<NdArray>::new(
             problems.clone(),
             MddCompilationConfig::default(),
-            domain_size,
+            data_config,
             &device,
         );
 
@@ -889,10 +918,7 @@ mod tests {
         let samples: Vec<ConsFormerMddSample<NdArray>> =
             (0..dataset.len()).map(|i| dataset.get(i).unwrap()).collect();
 
-        let batcher = ConsFormerMddBatcher {
-            mask_fraction: 0.0,
-            domain_size,
-        };
+        let batcher = ConsFormerMddBatcher::new(data_config);
         let batch = batcher.batch(samples, &device);
 
         // Every sample has exactly 2 constraints (AllDifferent, NotEquals), each with a distinct

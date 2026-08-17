@@ -2,13 +2,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 
 use burn::backend::cuda::{Cuda, CudaDevice};
 use burn::backend::ndarray::{NdArray, NdArrayDevice};
-use burn::config::Config;
 use burn::tensor::backend::Backend;
 
 use rand::RngExt;
@@ -185,39 +184,48 @@ pub fn neural_local_search(
         time_limit: time_limit.map(Duration::from_secs).unwrap_or(Duration::MAX),
         iteration_limit: iteration_limit.unwrap_or(usize::MAX),
     };
-    let seed = seed.unwrap_or_else(|| rand::rng().random_range(0..u64::MAX));
+    // Drawn from the process-wide RNG (see `crate::utils::rng`) so that, when `set_seed` has been
+    // called, even a caller that leaves `seed` unset gets a reproducible destroy sequence instead
+    // of a fresh OS-entropy one each time.
+    let seed = seed.unwrap_or_else(|| crate::utils::with_rng(|rng| rng.random_range(0..u64::MAX)));
 
-    let solutions = if cuda_available() {
-        run::<Cuda>(
-            CudaDevice::default(),
-            problems,
-            max_batch_size,
-            &checkpoint_dir,
-            &network_kind,
-            &destroy_kind,
-            destroy_fraction,
-            &decode_kind,
-            temperature,
-            population_size,
-            budget,
-            seed,
-        )
-    } else {
-        run::<NdArray>(
-            NdArrayDevice::default(),
-            problems,
-            max_batch_size,
-            &checkpoint_dir,
-            &network_kind,
-            &destroy_kind,
-            destroy_fraction,
-            &decode_kind,
-            temperature,
-            population_size,
-            budget,
-            seed,
-        )
-    };
+    // Releases the GIL for the actual search -- see `train_consformer`'s doc for why. Everything
+    // captured here (`problems: Vec<Arc<Problem>>`, the plain-enum `network_kind`/`destroy_kind`/
+    // `decode_kind`, `checkpoint_dir`, `budget`, `seed`) is already a Python-free, `Send` Rust
+    // value by this point, so the closure doesn't touch anything GIL-bound.
+    let solutions = py.detach(move || {
+        if cuda_available() {
+            run::<Cuda>(
+                CudaDevice::default(),
+                problems,
+                max_batch_size,
+                &checkpoint_dir,
+                &network_kind,
+                &destroy_kind,
+                destroy_fraction,
+                &decode_kind,
+                temperature,
+                population_size,
+                budget,
+                seed,
+            )
+        } else {
+            run::<NdArray>(
+                NdArrayDevice::default(),
+                problems,
+                max_batch_size,
+                &checkpoint_dir,
+                &network_kind,
+                &destroy_kind,
+                destroy_fraction,
+                &decode_kind,
+                temperature,
+                population_size,
+                budget,
+                seed,
+            )
+        }
+    })?;
 
     if is_single {
         Ok(Py::new(py, PySolution::from(&solutions[0]))?.into_any())
@@ -248,17 +256,23 @@ fn run<B: Backend>(
     population_size: usize,
     budget: Budget,
     seed: u64,
-) -> Vec<Solution> {
+) -> PyResult<Vec<Solution>> {
     let decode_op = decode_kind.build::<B>(temperature);
 
     match network_kind {
         PyNetworkKind::ConsFormer => {
-            let config = ConsFormerConfig::load(checkpoint_dir.join("config.json"))
-                .expect("failed to load network config");
+            let (config, network) =
+                load_network::<B, ConsFormerConfig>(checkpoint_dir, &problems, &device).map_err(
+                    |e| {
+                        PyRuntimeError::new_err(format!(
+                            "failed to load network from checkpoint {}: {e}",
+                            checkpoint_dir.display()
+                        ))
+                    },
+                )?;
             let fraction = destroy_fraction.unwrap_or(config.mask_fraction);
             let destroy_op = destroy_kind.build(fraction);
 
-            let network = load_network::<B, ConsFormerConfig>(checkpoint_dir, &problems, &device);
             let nls = NeuralLocalSearch::<B, ConsFormer<B>, ConsFormerBatch<B>>::new(
                 network,
                 destroy_op,
@@ -266,7 +280,7 @@ fn run<B: Backend>(
                 population_size,
                 device,
             );
-            chunked_run(&nls, &problems, max_batch_size, budget, seed)
+            Ok(chunked_run(&nls, &problems, max_batch_size, budget, seed))
         }
     }
 }

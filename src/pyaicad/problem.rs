@@ -91,8 +91,9 @@ impl PyProblem {
 
     // --- Model modification --- //
 
-    fn set_variable_position(&mut self, x: usize, position: Vec<usize>) {
-        self.mutate().unwrap()[VariableIndex(x)].set_position(position);
+    fn set_variable_position(&mut self, x: usize, position: Vec<usize>) -> PyResult<()> {
+        self.mutate()?[VariableIndex(x)].set_position(position);
+        Ok(())
     }
 
     // --- introspection: read-only, always available regardless of sharing --- //

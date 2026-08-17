@@ -43,6 +43,19 @@ impl Gcc {
     /// constrained value to its required (lo, hi) occurrence range. Any value of the joint
     /// domain absent from `bounds` is implicitly unconstrained (range [0, |variables|]).
     pub fn new(variables: Vec<VariableIndex>, bounds: Vec<(isize, usize, usize)>) -> Self {
+        let mut check = FxHashMap::<isize, (usize, usize)>::default();
+        for (value, lb, ub) in bounds.iter().copied() {
+            match check.get(&value) {
+                None => {
+                    let _ = check.insert(value, (lb, ub));
+                }
+                Some(&(l, u)) => {
+                    if l != lb || u != ub {
+                        log::warn!("GCC constraint has multiple bounds for value {}: First bound ({}, {}), second bound ({}, {}). Last bound is kept.", value, l, u, lb, ub);
+                    }
+                }
+            };
+        }
         let val_to_bit = Arc::new(
             bounds
                 .iter()
