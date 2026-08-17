@@ -16,6 +16,7 @@ serde = "1.0"
 log = "0.4"
 pyo3-log = "0.13"
 dyn-clone = ">=0.1"
+indicatif = { version = "0.18", features = ["rayon"] }
 
 [package.metadata.docs.rs]
 rustdoc-args = [ "--html-in-header", "katex-header.html" ]

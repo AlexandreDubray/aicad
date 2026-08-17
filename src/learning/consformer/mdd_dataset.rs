@@ -11,6 +11,7 @@ use burn::data::dataset::Dataset;
 use burn::tensor::backend::Backend;
 use burn::tensor::{Bool, Int, Tensor};
 
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
 use crate::learning::BatchProblems;
@@ -338,6 +339,21 @@ impl<B: Backend> ConsFormerMddDataset<B> {
         device: &B::Device,
     ) -> Self {
         let domain_size = data_config.domain_size;
+        // One tick per problem, not per constraint: `compile_constraint_mdds` parallelizes over a
+        // problem's own constraints too (e.g. Sudoku's ~27), so ticking at that finer grain would
+        // need passing a shared `ProgressBar` down into it, and per-problem is already the same
+        // granularity the Python ConsFormer extension's `tqdm(executor.map(get_mdd, ...))` uses.
+        // `ProgressBar` is internally `Arc`-backed, so cloning it into the parallel closure below
+        // (via `progress_with`) is cheap and thread-safe.
+        let progress = ProgressBar::new(problems.len() as u64);
+        progress.set_style(
+            ProgressStyle::with_template(
+                "{msg} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+            )
+            .expect("hard-coded progress bar template should always be valid"),
+        );
+        progress.set_message("Compiling MDDs");
+
         // MDD compilation (the expensive part -- see `compile_constraint_mdds`) and mask
         // construction are both independent per problem and touch no device state, so they run
         // on a capped worker pool (see `utils::worker_pool`) rather than rayon's all-cores
@@ -352,6 +368,7 @@ impl<B: Backend> ConsFormerMddDataset<B> {
             crate::utils::worker_pool().install(|| {
                 problems
                     .par_iter()
+                    .progress_with(progress.clone())
                     .map(|problem| {
                         (
                             consformer_mask_data(problem),
@@ -360,6 +377,7 @@ impl<B: Backend> ConsFormerMddDataset<B> {
                     })
                     .collect()
             });
+        progress.finish_and_clear();
 
         let samples = problems
             .into_iter()
