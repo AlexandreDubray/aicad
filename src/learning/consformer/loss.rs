@@ -236,10 +236,6 @@ impl<B: Backend> Loss<B, ConsFormerBatch<B>> for ConsFormerLoss {
     }
 }
 
-/// Floor applied to every intermediate log-weight in `bucket_log_wmc`'s DP -- `ln(1e-6)`. Chosen
-/// to keep the DP safe in the backend's default `f32` (see that function's doc) while leaving
-/// plenty of headroom below f32's own underflow floor (~1e-38), so precision isn't a concern right
-/// at the clamp boundary either.
 const WMC_LOG_FLOOR: f32 = -13.815511;
 
 fn bucket_log_wmc<B: Backend>(
@@ -252,46 +248,53 @@ fn bucket_log_wmc<B: Backend>(
     let max_edges = bucket.key.max_edges;
     let num_layers = bucket.key.num_layers;
 
+    // w[i, 0] = log(1) = 0: every instance starts at its MDD's root, local node index 0 of layer
+    // 0 (the `Mdd`'s own convention -- see `MddInstance`'s doc). Every other node starts at
+    // log(0) = -inf (not yet reached). This is a constant, not derived from the network's
+    // probabilities, so it's built directly rather than through a tracked op.
     let mut root = vec![f32::NEG_INFINITY; num_instances * max_nodes];
     for i in 0..num_instances {
         root[i * max_nodes] = 0.0;
     }
     let mut w: Tensor<B, 2> =
         Tensor::<B, 1>::from_data(root.as_slice(), &device).reshape([num_instances, max_nodes]);
+    let flat_gather: Tensor<B, 1, Int> = bucket
+        .gather_index
+        .clone()
+        .reshape([num_instances * num_layers * max_edges]);
+    let log_probs_at_edges: Tensor<B, 3> = flat_log_probs.clone().select(0, flat_gather).reshape([
+        num_instances,
+        num_layers,
+        max_edges,
+    ]);
+    // Cast once for the whole tensor instead of once per layer.
+    let edge_mask_float: Tensor<B, 3> = bucket.edge_mask.clone().float();
 
     for layer in 0..num_layers {
-        let gather_layer: Tensor<B, 2, Int> = bucket
-            .gather_index
-            .clone()
-            .narrow(1, layer, 1)
-            .squeeze_dim(1);
-        let mask_layer: Tensor<B, 2, Bool> =
-            bucket.edge_mask.clone().narrow(1, layer, 1).squeeze_dim(1);
         let to_layer: Tensor<B, 2, Int> = bucket.edge_to.clone().narrow(1, layer, 1).squeeze_dim(1);
         let from_layer: Tensor<B, 2, Int> =
             bucket.edge_from.clone().narrow(1, layer, 1).squeeze_dim(1);
-
-        let flat_gather: Tensor<B, 1, Int> = gather_layer.reshape([num_instances * max_edges]);
-        let log_probs_at_edges: Tensor<B, 2> = flat_log_probs
+        let log_probs_layer: Tensor<B, 2> = log_probs_at_edges
             .clone()
-            .select(0, flat_gather)
-            .reshape([num_instances, max_edges]);
+            .narrow(1, layer, 1)
+            .squeeze_dim(1);
+        let mask_layer_float: Tensor<B, 2> =
+            edge_mask_float.clone().narrow(1, layer, 1).squeeze_dim(1);
 
         let w_from = w.clone().gather(1, from_layer);
-        let contributions = w_from + log_probs_at_edges;
-
-        let exp_contributions = contributions.exp() * mask_layer.float();
+        let contributions = w_from + log_probs_layer;
+        let exp_contributions = contributions.exp() * mask_layer_float;
 
         let next = Tensor::<B, 2>::zeros([num_instances, max_nodes], &device);
         let next_linear = next.scatter(1, to_layer, exp_contributions, IndexingUpdateOp::Add);
         w = next_linear.log().clamp_min(WMC_LOG_FLOOR);
     }
 
+    // log(WMC) = the sink's log-weight, local node index 0 of the last layer -- same convention
+    // as root.
     let sink_idx = Tensor::<B, 1, Int>::from_data([0i64], &device);
     w.select(1, sink_idx).reshape([num_instances])
 }
-
-pub struct ConsFormerMddLoss;
 
 fn mdd_wmc_loss<B: Backend>(probs: Tensor<B, 3>, batch: &ConsFormerMddBatch<B>) -> Tensor<B, 1> {
     let batch_size = batch.problems().len();
@@ -321,6 +324,9 @@ fn mdd_wmc_loss<B: Backend>(probs: Tensor<B, 3>, batch: &ConsFormerMddBatch<B>) 
             per_sample_count.scatter(0, bucket.sample_index.clone(), ones, IndexingUpdateOp::Add);
     }
 
+    // `clamp_min(1.0)` only matters for a sample with zero constraints of its own (its sum is 0
+    // too, so the divide is 0/1 either way) -- guards the division without changing any real
+    // sample's result.
     let per_sample_avg = per_sample_sum / per_sample_count.clamp_min(1.0);
     per_sample_avg.mean()
 }
