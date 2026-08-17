@@ -11,9 +11,7 @@ rayon = "1"
 rand = "0.10"
 rand_xoshiro = "0.8"
 deepsize = "0.2.0"
-# Can not use default features because op fusion is not available in CUDA for f64, required by log-wmc
-#burn = { version = "~0.21", features = ["train", "ndarray", "cuda"] }
-burn = { version = "~0.21", default-features = false, features = ["train", "ndarray", "cuda", "std", "autotune"] }
+burn = { version = "~0.21", features = ["train", "ndarray", "cuda"] }
 serde = "1.0"
 log = "0.4"
 pyo3-log = "0.13"
