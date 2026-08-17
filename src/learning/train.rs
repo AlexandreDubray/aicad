@@ -10,6 +10,7 @@ use burn::tensor::backend::AutodiffBackend;
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::learning::monitoring::SatisfactionReport;
 use crate::learning::{BatchProblems, Loss, Network, NetworkConfig};
@@ -109,6 +110,7 @@ where
     for epoch in 0..training.num_epochs {
         let mut epoch_loss = 0.0;
         let mut epoch_report: Option<SatisfactionReport> = None;
+        let epoch_start = Instant::now();
 
         for batch in train_dataloader.iter() {
             let logits = network.forward(&batch);
@@ -125,8 +127,8 @@ where
 
             epoch_loss += loss.into_scalar().elem::<f32>();
         }
-
-        log::info!("epoch {epoch}: loss = {epoch_loss}");
+        let epoch_rt = epoch_start.elapsed().as_secs();
+        log::info!("epoch {epoch}: loss = {epoch_loss} ({epoch_rt} seconds)");
         if let Some(report) = epoch_report {
             report.print(40);
         }

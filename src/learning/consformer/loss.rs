@@ -236,6 +236,8 @@ impl<B: Backend> Loss<B, ConsFormerBatch<B>> for ConsFormerLoss {
     }
 }
 
+pub struct ConsFormerMddLoss;
+
 const WMC_LOG_FLOOR: f32 = -13.815511;
 
 fn bucket_log_wmc<B: Backend>(
