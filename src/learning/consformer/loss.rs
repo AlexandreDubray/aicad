@@ -236,9 +236,10 @@ impl<B: Backend> Loss<B, ConsFormerBatch<B>> for ConsFormerLoss {
     }
 }
 
-pub struct ConsFormerMddLoss;
-
+#[allow(dead_code)]
 const WMC_LOG_FLOOR: f32 = -13.815511;
+const WMC_FLOOR: f32 = 1e-6;
+const MIN_EDGE_PROB: f32 = 1e-6;
 
 fn bucket_log_wmc<B: Backend>(
     bucket: &MddBucketBatch<B>,
@@ -250,16 +251,13 @@ fn bucket_log_wmc<B: Backend>(
     let max_edges = bucket.key.max_edges;
     let num_layers = bucket.key.num_layers;
 
-    // w[i, 0] = log(1) = 0: every instance starts at its MDD's root, local node index 0 of layer
-    // 0 (the `Mdd`'s own convention -- see `MddInstance`'s doc). Every other node starts at
-    // log(0) = -inf (not yet reached). This is a constant, not derived from the network's
-    // probabilities, so it's built directly rather than through a tracked op.
     let mut root = vec![f32::NEG_INFINITY; num_instances * max_nodes];
     for i in 0..num_instances {
         root[i * max_nodes] = 0.0;
     }
     let mut w: Tensor<B, 2> =
         Tensor::<B, 1>::from_data(root.as_slice(), &device).reshape([num_instances, max_nodes]);
+
     let flat_gather: Tensor<B, 1, Int> = bucket
         .gather_index
         .clone()
@@ -285,11 +283,12 @@ fn bucket_log_wmc<B: Backend>(
 
         let w_from = w.clone().gather(1, from_layer);
         let contributions = w_from + log_probs_layer;
+
         let exp_contributions = contributions.exp() * mask_layer_float;
 
         let next = Tensor::<B, 2>::zeros([num_instances, max_nodes], &device);
         let next_linear = next.scatter(1, to_layer, exp_contributions, IndexingUpdateOp::Add);
-        w = next_linear.log().clamp_min(WMC_LOG_FLOOR);
+        w = next_linear.clamp_min(WMC_FLOOR).log();
     }
 
     // log(WMC) = the sink's log-weight, local node index 0 of the last layer -- same convention
@@ -298,12 +297,15 @@ fn bucket_log_wmc<B: Backend>(
     w.select(1, sink_idx).reshape([num_instances])
 }
 
+pub struct ConsFormerMddLoss;
+
 fn mdd_wmc_loss<B: Backend>(probs: Tensor<B, 3>, batch: &ConsFormerMddBatch<B>) -> Tensor<B, 1> {
     let batch_size = batch.problems().len();
     let [_, number_vars, domain_size] = probs.dims();
     let device = probs.device();
 
     let flat_log_probs: Tensor<B, 1> = probs
+        .clamp_min(MIN_EDGE_PROB)
         .log()
         .reshape([batch_size * number_vars * domain_size]);
 
@@ -326,9 +328,6 @@ fn mdd_wmc_loss<B: Backend>(probs: Tensor<B, 3>, batch: &ConsFormerMddBatch<B>) 
             per_sample_count.scatter(0, bucket.sample_index.clone(), ones, IndexingUpdateOp::Add);
     }
 
-    // `clamp_min(1.0)` only matters for a sample with zero constraints of its own (its sum is 0
-    // too, so the divide is 0/1 either way) -- guards the division without changing any real
-    // sample's result.
     let per_sample_avg = per_sample_sum / per_sample_count.clamp_min(1.0);
     per_sample_avg.mean()
 }
@@ -717,6 +716,167 @@ mod mdd_loss_tests {
         assert!(
             grad_values.iter().any(|&v| v != 0.0),
             "gradient should not be identically zero"
+        );
+    }
+
+    /// Regression test for the `log(0)`-in-backward NaN bug fixed by clamping `bucket_log_wmc`'s
+    /// `next_linear` *before* `.log()` instead of clamping `.log()`'s own output afterward (see
+    /// `bucket_log_wmc`'s doc). Unlike `loss_backpropagates_through_the_batched_wmc_dp` above
+    /// (random, unpeaked logits -- the floor never engages, so that test can't catch this), this
+    /// drives the network's own output through `gumbel_softmax`/`blend_with_current` into the same
+    /// "everyone prefers the same value" sharply-peaked shape as
+    /// `bucket_log_wmc_clamps_instead_of_underflowing_on_sharply_peaked_probabilities`, so at least
+    /// one *real, still-referenced* DP node genuinely underflows to `WMC_LOG_FLOOR` -- the exact
+    /// condition the old post-`log` clamp ordering turned into a NaN gradient once that clamped
+    /// node's value was gathered by the next layer. The bug was intermittent by nature (it only
+    /// fires once training sharpens the network's confidence enough for a real, non-padding node
+    /// to underflow), which is why this test manufactures that condition directly rather than
+    /// relying on random initialization to eventually hit it.
+    #[test]
+    fn loss_backpropagates_finite_gradients_when_the_floor_genuinely_engages() {
+        use burn::backend::Autodiff;
+
+        type ADBackend = Autodiff<NdArray>;
+        let device = NdArrayDevice::default();
+        let domain_size = 9;
+
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(domain_size, (0..domain_size as isize).collect(), None);
+        all_different(&mut problem, vars);
+        let problems = vec![Arc::new(problem)];
+
+        let data_config = ConsFormerDataConfig {
+            domain_size,
+            mask_fraction: 1.0,
+        };
+        let dataset = ConsFormerMddDataset::<ADBackend>::new(
+            problems,
+            MddCompilationConfig::default(),
+            data_config,
+            &device,
+        );
+        let samples: Vec<_> = (0..dataset.len())
+            .map(|i| dataset.get(i).unwrap())
+            .collect();
+        let batcher = ConsFormerMddBatcher::new(data_config);
+        let batch = batcher.batch(samples, &device);
+
+        // Every variable's logits sharply favor value 0 -- a gap of 40 between the peak and every
+        // other logit survives `gumbel_softmax`'s noise easily, so post-softmax probabilities land
+        // in the same extreme regime as the forward-only clamp test, this time reached through the
+        // real logits -> gumbel_softmax -> blend_with_current -> loss path instead of a hand-built
+        // probability tensor.
+        let mut logits_data = vec![-20.0f32; domain_size * domain_size];
+        for v in 0..domain_size {
+            logits_data[v * domain_size] = 20.0;
+        }
+        let logits: Tensor<ADBackend, 3> =
+            Tensor::<ADBackend, 1>::from_data(logits_data.as_slice(), &device)
+                .reshape([1, domain_size, domain_size])
+                .require_grad();
+
+        let loss = ConsFormerMddLoss.loss(logits.clone(), &batch);
+        let loss_value: f32 = loss.clone().into_data().to_vec::<f32>().unwrap()[0];
+        assert!(
+            loss_value.is_finite(),
+            "loss should be finite, got {loss_value}"
+        );
+
+        let grads = loss.backward();
+        let grad = logits
+            .grad(&grads)
+            .expect("logits should have a gradient after backward()");
+
+        let grad_values: Vec<f32> = grad.into_data().to_vec::<f32>().unwrap();
+        assert!(
+            grad_values.iter().all(|v| v.is_finite()),
+            "every gradient entry should be finite even when the WMC floor genuinely engages -- got {:?}",
+            grad_values,
+        );
+    }
+
+    /// Direct answer to "is the loss ever NaN in extreme cases": combines every source of exact
+    /// `0.0`/near-underflow this module now clamps against, in one batch, and checks the whole
+    /// `ConsFormerMddLoss::loss` path (forward *and* backward) stays finite throughout.
+    ///
+    /// - `mask_fraction = 0.5` (not `0.0` or `1.0` like the other tests): some variables land on
+    ///   `blend_with_current`'s hard one-hot substitution (exact `0.0`/`1.0` probabilities --
+    ///   exercises `MIN_EDGE_PROB`), others stay network-predicted (exercises `WMC_FLOOR` through
+    ///   real backprop, not just a forward-only check).
+    /// - Sharply peaked logits (same "everyone prefers value 0" shape as the clamp tests above) on
+    ///   every variable's own prediction, so the predicted positions are as underflow-prone as
+    ///   `bucket_log_wmc_clamps_instead_of_underflowing_on_sharply_peaked_probabilities`.
+    /// - Two different constraint shapes per sample (a 9-layer permutation `AllDifferent` and a
+    ///   2-layer `NotEquals`), across two samples, so more than one bucket/padding shape is live at
+    ///   once (as in `two_sample_batch`, just at Sudoku scale instead of domain 3).
+    ///
+    /// If any of `MIN_EDGE_PROB`, `WMC_FLOOR`, or the clamp-before-`log` ordering regresses, this
+    /// is the test most likely to catch it, since it's the only one exercising all three at once.
+    #[test]
+    fn loss_stays_finite_under_combined_extreme_conditions() {
+        use burn::backend::Autodiff;
+
+        type ADBackend = Autodiff<NdArray>;
+        let device = NdArrayDevice::default();
+        let domain_size = 9;
+
+        let mut problems = Vec::new();
+        for _ in 0..2 {
+            let mut problem = Problem::default();
+            let vars =
+                problem.add_variables(domain_size, (0..domain_size as isize).collect(), None);
+            all_different(&mut problem, vars.clone());
+            not_equals(&mut problem, vars[0], vars[1]);
+            problems.push(Arc::new(problem));
+        }
+
+        let data_config = ConsFormerDataConfig {
+            domain_size,
+            mask_fraction: 0.5,
+        };
+        let dataset = ConsFormerMddDataset::<ADBackend>::new(
+            problems,
+            MddCompilationConfig::default(),
+            data_config,
+            &device,
+        );
+        let samples: Vec<_> = (0..dataset.len())
+            .map(|i| dataset.get(i).unwrap())
+            .collect();
+        let batcher = ConsFormerMddBatcher::new(data_config);
+        let batch = batcher.batch(samples, &device);
+
+        // Every variable of every sample sharply favors value 0 -- whichever positions
+        // `blend_with_current` leaves network-predicted (per the random `mask_fraction = 0.5`
+        // draw) will underflow just as readily as the dedicated clamp tests above.
+        let mut logits_data = vec![-20.0f32; 2 * domain_size * domain_size];
+        for sample in 0..2 {
+            for v in 0..domain_size {
+                logits_data[sample * domain_size * domain_size + v * domain_size] = 20.0;
+            }
+        }
+        let logits: Tensor<ADBackend, 3> =
+            Tensor::<ADBackend, 1>::from_data(logits_data.as_slice(), &device)
+                .reshape([2, domain_size, domain_size])
+                .require_grad();
+
+        let loss = ConsFormerMddLoss.loss(logits.clone(), &batch);
+        let loss_value: f32 = loss.clone().into_data().to_vec::<f32>().unwrap()[0];
+        assert!(
+            loss_value.is_finite(),
+            "loss should be finite, got {loss_value}"
+        );
+
+        let grads = loss.backward();
+        let grad = logits
+            .grad(&grads)
+            .expect("logits should have a gradient after backward()");
+
+        let grad_values: Vec<f32> = grad.into_data().to_vec::<f32>().unwrap();
+        assert!(
+            grad_values.iter().all(|v| v.is_finite()),
+            "every gradient entry should be finite under combined extreme conditions -- got {:?}",
+            grad_values,
         );
     }
 }

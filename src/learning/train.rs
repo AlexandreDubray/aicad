@@ -121,11 +121,35 @@ where
                 None => epoch_report = Some(batch_report),
             }
 
-            let loss = loss_fn.loss(logits, &batch);
+            let loss = loss_fn.loss(logits.clone(), &batch);
+            let loss_scalar = loss.clone().into_scalar().elem::<f32>();
+            if !loss_scalar.is_finite() {
+                let logits_data: Vec<f32> = logits
+                    .into_data()
+                    .to_vec::<f32>()
+                    .unwrap_or_else(|_| Vec::new());
+                let nan_count = logits_data.iter().filter(|v| v.is_nan()).count();
+                let inf_count = logits_data.iter().filter(|v| v.is_infinite()).count();
+                let (finite_min, finite_max) = logits_data
+                    .iter()
+                    .filter(|v| v.is_finite())
+                    .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &v| {
+                        (lo.min(v), hi.max(v))
+                    });
+                panic!(
+                    "epoch {epoch}: loss went non-finite ({loss_scalar}) -- stopping before this \
+                     batch's optimizer step so the network/optimizer state isn't poisoned any \
+                     further. logits: {nan_count} NaN, {inf_count} Inf out of {} values, finite \
+                     range [{finite_min}, {finite_max}]. If validation checkpointing is enabled, \
+                     the file saved at the best score before this epoch is your recovery point.",
+                    logits_data.len(),
+                );
+            }
+
             let grads = GradientsParams::from_grads(loss.backward(), &network);
             network = optim.step(training.lr, network, grads);
 
-            epoch_loss += loss.into_scalar().elem::<f32>();
+            epoch_loss += loss_scalar;
         }
         let epoch_rt = epoch_start.elapsed().as_secs();
         log::info!("epoch {epoch}: loss = {epoch_loss} ({epoch_rt} seconds)");
@@ -161,9 +185,6 @@ where
 
             let score = match training.model_selection {
                 ModelSelection::Loss => {
-                    if valid_batches == 0 {
-                        log::warn!("No valid batch in validation set");
-                    }
                     let avg_valid_loss = valid_loss_sum / valid_batches as f64;
                     log::info!("epoch {epoch}: validation loss = {avg_valid_loss:.4}");
                     avg_valid_loss
