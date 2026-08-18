@@ -11,7 +11,9 @@ rayon = "1"
 rand = "0.10"
 rand_xoshiro = "0.8"
 deepsize = "0.2.0"
-burn = { version = "~0.21", features = ["train", "ndarray", "cuda"] }
+# need to deactivate op-fusion due to a bug in cubecl resulting in invalid memory access
+#burn = { version = "~0.21", features = ["train", "ndarray", "cuda"] }
+burn = { version = "~0.21", default-features = false, features = ["train", "ndarray", "cuda", "std", "autotune"] }
 serde = "1.0"
 log = "0.4"
 pyo3-log = "0.13"
