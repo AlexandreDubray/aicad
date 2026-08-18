@@ -196,10 +196,6 @@ impl Mdd {
 
     /// Refines the MDD allowing max_width nodes in each layer
     pub fn refine(&mut self, max_width: usize) {
-        if max_width == 0 {
-            log::warn!("Refininig MDD with max_width = 0. Skipping refinement");
-            return;
-        }
         if self.unsat {
             return;
         }
@@ -500,6 +496,7 @@ impl Mdd {
         }
     }
 
+    // TODO: Recursively merge child nodes when two outgoing edges have the same label
     fn merge_nodes(&mut self, from: NodeIndex, into: NodeIndex) {
         self[into].set_relaxed(true);
         for i in 0..self[from].number_parents() {
@@ -582,11 +579,23 @@ impl Mdd {
     }
 
     pub fn number_edges(&self) -> usize {
-        self.edges.iter().map(|layer_edges| layer_edges.len()).sum()
+        self.edges.len()
     }
 
     pub fn number_layers(&self) -> usize {
         self.nodes.len()
+    }
+
+    pub fn root(&self) -> NodeIndex {
+        self.root
+    }
+
+    pub fn sink(&self) -> NodeIndex {
+        self.sink
+    }
+
+    pub fn nodes_in_layer(&self, layer: usize) -> impl Iterator<Item = NodeIndex> + '_ {
+        (0..self.nodes[layer].len()).map(move |index| NodeIndex(layer, index))
     }
 
     pub fn get_solution(&self) -> Option<Vec<isize>> {

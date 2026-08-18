@@ -12,12 +12,13 @@ use burn::tensor::backend::Backend;
 
 use rand::RngExt;
 
-use crate::learning::consformer::{ConsFormer, ConsFormerBatch, ConsFormerConfig};
+use crate::learning::consformer::{ConsFormer, ConsFormerBatch, ConsFormerConfig, MddCompilationConfig};
 use crate::learning::Network;
 use crate::modelling::Problem;
 use crate::nls::decode::{Argmax, DecodingOperator, Sampling};
 use crate::nls::destroy::{DestroyOperator, RandomDestroy, RelatedDestroy, WorstDestroy};
-use crate::nls::{load_network, Budget, NeuralLocalSearch, Solution, Status};
+use crate::nls::{load_network, Budget, MddGibbsDecoding, NeuralLocalSearch, Solution, Status};
+use crate::sampling::DecodeMode;
 
 use super::learn::cuda_available;
 use super::problem::PyProblem;
@@ -93,13 +94,34 @@ impl PyDestroyKind {
 pub enum PyDecodeKind {
     Argmax,
     Sampling,
+    MddGibbs,
 }
 
+#[allow(clippy::too_many_arguments)]
 impl PyDecodeKind {
-    fn build<B: Backend>(&self, temperature: f64) -> Box<dyn DecodingOperator<B>> {
+    fn build<B: Backend>(
+        &self,
+        temperature: f64,
+        domain_size: usize,
+        mdd_rounds: usize,
+        mdd_greedy: bool,
+    ) -> Box<dyn DecodingOperator<B>> {
         match self {
             PyDecodeKind::Argmax => Box::new(Argmax),
             PyDecodeKind::Sampling => Box::new(Sampling { temperature }),
+            PyDecodeKind::MddGibbs => {
+                let mode = if mdd_greedy {
+                    DecodeMode::Greedy
+                } else {
+                    DecodeMode::Sample
+                };
+                Box::new(MddGibbsDecoding::new(
+                    MddCompilationConfig::default(),
+                    domain_size,
+                    mdd_rounds,
+                    mode,
+                ))
+            }
         }
     }
 }
@@ -144,6 +166,8 @@ pub enum PyProblemsArg<'py> {
     destroy_fraction=None,
     decode_kind=PyDecodeKind::Argmax,
     temperature=0.1,
+    mdd_rounds=4,
+    mdd_greedy=false,
     seed=None,
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -160,6 +184,8 @@ pub fn neural_local_search(
     destroy_fraction: Option<f64>,
     decode_kind: PyDecodeKind,
     temperature: f64,
+    mdd_rounds: usize,
+    mdd_greedy: bool,
     seed: Option<u64>,
 ) -> PyResult<Py<PyAny>> {
     let is_single = matches!(problems, PyProblemsArg::Single(_));
@@ -205,6 +231,8 @@ pub fn neural_local_search(
                 destroy_fraction,
                 &decode_kind,
                 temperature,
+                mdd_rounds,
+                mdd_greedy,
                 population_size,
                 budget,
                 seed,
@@ -220,6 +248,8 @@ pub fn neural_local_search(
                 destroy_fraction,
                 &decode_kind,
                 temperature,
+                mdd_rounds,
+                mdd_greedy,
                 population_size,
                 budget,
                 seed,
@@ -253,12 +283,12 @@ fn run<B: Backend>(
     destroy_fraction: Option<f64>,
     decode_kind: &PyDecodeKind,
     temperature: f64,
+    mdd_rounds: usize,
+    mdd_greedy: bool,
     population_size: usize,
     budget: Budget,
     seed: u64,
 ) -> PyResult<Vec<Solution>> {
-    let decode_op = decode_kind.build::<B>(temperature);
-
     match network_kind {
         PyNetworkKind::ConsFormer => {
             let (config, network) =
@@ -272,6 +302,8 @@ fn run<B: Backend>(
                 )?;
             let fraction = destroy_fraction.unwrap_or(config.mask_fraction);
             let destroy_op = destroy_kind.build(fraction);
+            let decode_op =
+                decode_kind.build::<B>(temperature, config.domain_size, mdd_rounds, mdd_greedy);
 
             let nls = NeuralLocalSearch::<B, ConsFormer<B>, ConsFormerBatch<B>>::new(
                 network,

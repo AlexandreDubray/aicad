@@ -794,24 +794,6 @@ mod mdd_loss_tests {
             grad_values,
         );
     }
-
-    /// Direct answer to "is the loss ever NaN in extreme cases": combines every source of exact
-    /// `0.0`/near-underflow this module now clamps against, in one batch, and checks the whole
-    /// `ConsFormerMddLoss::loss` path (forward *and* backward) stays finite throughout.
-    ///
-    /// - `mask_fraction = 0.5` (not `0.0` or `1.0` like the other tests): some variables land on
-    ///   `blend_with_current`'s hard one-hot substitution (exact `0.0`/`1.0` probabilities --
-    ///   exercises `MIN_EDGE_PROB`), others stay network-predicted (exercises `WMC_FLOOR` through
-    ///   real backprop, not just a forward-only check).
-    /// - Sharply peaked logits (same "everyone prefers value 0" shape as the clamp tests above) on
-    ///   every variable's own prediction, so the predicted positions are as underflow-prone as
-    ///   `bucket_log_wmc_clamps_instead_of_underflowing_on_sharply_peaked_probabilities`.
-    /// - Two different constraint shapes per sample (a 9-layer permutation `AllDifferent` and a
-    ///   2-layer `NotEquals`), across two samples, so more than one bucket/padding shape is live at
-    ///   once (as in `two_sample_batch`, just at Sudoku scale instead of domain 3).
-    ///
-    /// If any of `MIN_EDGE_PROB`, `WMC_FLOOR`, or the clamp-before-`log` ordering regresses, this
-    /// is the test most likely to catch it, since it's the only one exercising all three at once.
     #[test]
     fn loss_stays_finite_under_combined_extreme_conditions() {
         use burn::backend::Autodiff;

@@ -5,3 +5,4 @@ mod utils;
 pub mod pyaicad;
 pub mod learning;
 pub mod nls;
+pub mod sampling;

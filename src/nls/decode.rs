@@ -2,9 +2,14 @@
 //! The following decoding strategies are implemented:
 //!     - Use an argmax: Always select the value associated with the highest logit
 //!     - Use a softmax: sample proportionnaly to the logits
+//!     - Use a MDD-based Gibbs sampling (see mdd_decode.rs file)
+
+use std::sync::Arc;
 
 use burn::tensor::backend::Backend;
 use burn::tensor::{Bool, Distribution, Int, Tensor};
+
+use crate::modelling::Problem;
 
 /// Turns this iteration's logits into the next assignment. Only positions
 /// flagged in `destroy_mask` may change; everywhere else the current value
@@ -15,6 +20,8 @@ pub trait DecodingOperator<B: Backend>: Send + Sync {
         logits: Tensor<B, 3>,
         destroy_mask: Tensor<B, 2, Bool>,
         current: Tensor<B, 2, Int>,
+        problems: &[Arc<Problem>],
+        population_size: usize,
     ) -> Tensor<B, 2, Int>;
 }
 
@@ -27,6 +34,8 @@ impl<B: Backend> DecodingOperator<B> for Argmax {
         logits: Tensor<B, 3>,
         destroy_mask: Tensor<B, 2, Bool>,
         current: Tensor<B, 2, Int>,
+        _problems: &[Arc<Problem>],
+        _population_size: usize,
     ) -> Tensor<B, 2, Int> {
         let proposed: Tensor<B, 2, Int> = logits.argmax(2).squeeze_dim(2);
         current.mask_where(destroy_mask, proposed)
@@ -45,6 +54,8 @@ impl<B: Backend> DecodingOperator<B> for Sampling {
         logits: Tensor<B, 3>,
         destroy_mask: Tensor<B, 2, Bool>,
         current: Tensor<B, 2, Int>,
+        _problems: &[Arc<Problem>],
+        _population_size: usize,
     ) -> Tensor<B, 2, Int> {
         let device = logits.device();
         let u = Tensor::<B, 3>::random(logits.dims(), Distribution::Uniform(1e-20, 1.0), &device);

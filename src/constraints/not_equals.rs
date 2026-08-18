@@ -140,8 +140,8 @@ impl ConstraintProperty for NotEqualsProperty {
                     other.name()
                 );
             });
-        let bit = *self.map.get(&assignment).unwrap();
         if in_scope {
+            let bit = *self.map.get(&assignment).unwrap();
             self.set.insert(bit);
         }
         self.set.union(&other.set);

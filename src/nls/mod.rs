@@ -5,9 +5,11 @@
 
 pub mod decode;
 pub mod destroy;
+pub mod mdd_decode;
 
 pub use decode::DecodingOperator;
 pub use destroy::DestroyOperator;
+pub use mdd_decode::MddGibbsDecoding;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -262,7 +264,9 @@ where
                 &self.device,
             );
             let logits = self.network.forward(&batch);
-            assignments = self.decode_op.decode(logits, destroy_mask, assignments);
+            assignments = self
+                .decode_op
+                .decode(logits, destroy_mask, assignments, problems, p);
             rows = to_rows(&assignments, total_rows, n);
 
             stop.tick();
