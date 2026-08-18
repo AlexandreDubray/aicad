@@ -126,10 +126,14 @@ impl<B: Backend> DecodingOperator<B> for MddGibbsDecoding {
             .into_data()
             .to_vec::<f32>()
             .expect("softmax output should be f32-convertible");
+        // Must pass by i64 because of cross-representation between GPU and CPU
         let mask_flat: Vec<bool> = destroy_mask
             .into_data()
-            .to_vec::<bool>()
-            .expect("destroy mask should be bool-convertible");
+            .to_vec::<i64>()
+            .expect("destroy mask should be int-convertible")
+            .into_iter()
+            .map(|v| v != 0)
+            .collect();
         let current_flat: Vec<i64> = current
             .into_data()
             .to_vec::<i64>()
