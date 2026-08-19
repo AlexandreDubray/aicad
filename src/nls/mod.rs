@@ -20,7 +20,7 @@ use burn::module::Module;
 use burn::prelude::ElementConversion;
 use burn::record::CompactRecorder;
 use burn::tensor::backend::Backend;
-use burn::tensor::{Bool, Int, Tensor};
+use burn::tensor::{Int, Tensor};
 
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -240,7 +240,7 @@ where
         let mut solutions: Vec<Option<Solution>> = vec![None; num_problems];
 
         while !stop.is_exhausted() && solutions.iter().any(Option::is_none) {
-            let mut destroy_mask_data = vec![false; total_rows * n];
+            let mut destroy_mask_data = vec![0i64; total_rows * n];
             for (row_idx, row) in rows.iter().enumerate() {
                 let problem_idx = row_idx / p;
                 // Frozen: this problem already has a solution, leave its rows untouched.
@@ -249,11 +249,11 @@ where
                 }
                 let problem = &problems[problem_idx];
                 for var in self.destroy_op.destroy(problem, row, &mut rng) {
-                    destroy_mask_data[row_idx * n + var] = true;
+                    destroy_mask_data[row_idx * n + var] = 1;
                 }
             }
-            let destroy_mask: Tensor<B, 2, Bool> =
-                Tensor::<B, 1, Bool>::from_data(destroy_mask_data.as_slice(), &self.device)
+            let destroy_mask: Tensor<B, 2, Int> =
+                Tensor::<B, 1, Int>::from_data(destroy_mask_data.as_slice(), &self.device)
                     .reshape([total_rows, n]);
 
             let batch = Ba::for_assignments(

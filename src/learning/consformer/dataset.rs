@@ -115,11 +115,6 @@ pub struct ConsFormerDataset<B: Backend> {
 
 impl<B: Backend> ConsFormerDataset<B> {
     pub fn new(problems: Vec<Arc<Problem>>, device: &B::Device) -> Self {
-        // Mask construction is independent per problem, so the CPU work (building the raw
-        // boolean vectors) is spread across a capped worker pool (see `utils::worker_pool` --
-        // deliberately not rayon's all-cores default, to leave headroom for the rest of the
-        // system and for other jobs on a shared benchmarking machine). Tensor construction from
-        // that raw data is kept single-threaded (see `ConsFormerMaskData`).
         let mask_data: Vec<ConsFormerMaskData> = crate::utils::worker_pool().install(|| {
             problems
                 .par_iter()
@@ -299,7 +294,7 @@ impl<B: Backend> Batch<B> for ConsFormerBatch<B> {
         problems: &[Arc<Problem>],
         population_size: usize,
         assignments: Tensor<B, 2, Int>,
-        destroy_mask: Tensor<B, 2, Bool>,
+        destroy_mask: Tensor<B, 2, Int>,
         device: &B::Device,
     ) -> Self {
         let attention_masks = Tensor::cat(
@@ -307,7 +302,9 @@ impl<B: Backend> Batch<B> for ConsFormerBatch<B> {
                 .iter()
                 .map(|problem| {
                     let (attention_mask, _) = consformer_masks::<B>(problem, device);
-                    attention_mask.unsqueeze::<3>().repeat_dim(0, population_size)
+                    attention_mask
+                        .unsqueeze::<3>()
+                        .repeat_dim(0, population_size)
                 })
                 .collect(),
             0,
@@ -320,7 +317,7 @@ impl<B: Backend> Batch<B> for ConsFormerBatch<B> {
         ConsFormerBatch {
             assignments,
             attention_masks,
-            var_masks: destroy_mask,
+            var_masks: destroy_mask.equal_elem(1),
             problems: expanded_problems,
         }
     }

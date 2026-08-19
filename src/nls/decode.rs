@@ -2,12 +2,12 @@
 //! The following decoding strategies are implemented:
 //!     - Use an argmax: Always select the value associated with the highest logit
 //!     - Use a softmax: sample proportionnaly to the logits
-//!     - Use a MDD-based Gibbs sampling (see mdd_decode.rs file)
+//!     - Use mdd-based gibbs sampling
 
 use std::sync::Arc;
 
 use burn::tensor::backend::Backend;
-use burn::tensor::{Bool, Distribution, Int, Tensor};
+use burn::tensor::{Distribution, Int, Tensor};
 
 use crate::modelling::Problem;
 
@@ -18,7 +18,7 @@ pub trait DecodingOperator<B: Backend>: Send + Sync {
     fn decode(
         &self,
         logits: Tensor<B, 3>,
-        destroy_mask: Tensor<B, 2, Bool>,
+        destroy_mask: Tensor<B, 2, Int>,
         current: Tensor<B, 2, Int>,
         problems: &[Arc<Problem>],
         population_size: usize,
@@ -32,13 +32,13 @@ impl<B: Backend> DecodingOperator<B> for Argmax {
     fn decode(
         &self,
         logits: Tensor<B, 3>,
-        destroy_mask: Tensor<B, 2, Bool>,
+        destroy_mask: Tensor<B, 2, Int>,
         current: Tensor<B, 2, Int>,
         _problems: &[Arc<Problem>],
         _population_size: usize,
     ) -> Tensor<B, 2, Int> {
         let proposed: Tensor<B, 2, Int> = logits.argmax(2).squeeze_dim(2);
-        current.mask_where(destroy_mask, proposed)
+        current.mask_where(destroy_mask.equal_elem(1), proposed)
     }
 }
 
@@ -52,7 +52,7 @@ impl<B: Backend> DecodingOperator<B> for Sampling {
     fn decode(
         &self,
         logits: Tensor<B, 3>,
-        destroy_mask: Tensor<B, 2, Bool>,
+        destroy_mask: Tensor<B, 2, Int>,
         current: Tensor<B, 2, Int>,
         _problems: &[Arc<Problem>],
         _population_size: usize,
@@ -64,6 +64,6 @@ impl<B: Backend> DecodingOperator<B> for Sampling {
 
         let scaled = logits.div_scalar(self.temperature) + gumbel;
         let proposed: Tensor<B, 2, Int> = scaled.argmax(2).squeeze_dim(2);
-        current.mask_where(destroy_mask, proposed)
+        current.mask_where(destroy_mask.equal_elem(1), proposed)
     }
 }

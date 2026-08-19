@@ -56,7 +56,9 @@ fn clamped_alpha_at(
             break;
         }
     }
-    alpha[current_node.1] = path_probability;
+    if current_node.0 == target_layer {
+        alpha[current_node.1] = path_probability;
+    }
 
     alpha
 }
@@ -137,16 +139,94 @@ pub fn clamped_conditional(
         }
     }
 
+    normalize_or_uniform(weights, domain_size)
+}
+
+/// Normalises a categorical probability distribution if at least one element has non-zero weight,
+/// otherwise returns a uniform distribution
+fn normalize_or_uniform(mut weights: Vec<f64>, domain_size: usize) -> Vec<f64> {
     let total: f64 = weights.iter().sum();
     if total <= 0.0 {
-        // The current assignment is totally inconsistent with the MDD; we return an uniform
-        // distribution
         return vec![1.0 / domain_size as f64; domain_size];
     }
     for w in &mut weights {
         *w /= total;
     }
     weights
+}
+
+/// Unconditional (i.e. not clamped to any assignment) forward/backward WMC pass over `mdd`, given
+/// only `probs`. `alpha[layer][node]`/`beta[layer][node]` are indexed the same way
+/// `mdd.nodes_in_layer(layer)` enumerates that layer's nodes.
+fn unconditional_alpha_beta(mdd: &Mdd, probs: &[Vec<f64>]) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
+    let last_layer = mdd.sink().0;
+
+    let mut alpha: Vec<Vec<f64>> = Vec::with_capacity(last_layer + 1);
+    alpha.push(vec![1.0; mdd.number_nodes_in_layer(0)]);
+    for layer in 0..last_layer {
+        let variable = mdd.decision_at_layer(layer);
+        let mut next_alpha = vec![0.0; mdd.number_nodes_in_layer(layer + 1)];
+        for node in mdd.nodes_in_layer(layer) {
+            let mass = alpha[layer][node.1];
+            if mass == 0.0 {
+                continue;
+            }
+            for edge in mdd[node].iter_children() {
+                let value = mdd[edge].assignment();
+                let prob = probs[variable.0][value.0].max(MIN_PROB);
+                next_alpha[mdd[edge].to().1] += mass * prob;
+            }
+        }
+        alpha.push(next_alpha);
+    }
+
+    let mut beta: Vec<Vec<f64>> = vec![Vec::new(); last_layer + 1];
+    beta[last_layer] = vec![1.0; mdd.number_nodes_in_layer(last_layer)];
+    for layer in (0..last_layer).rev() {
+        let variable = mdd.decision_at_layer(layer);
+        let mut prev_beta = vec![0.0; mdd.number_nodes_in_layer(layer)];
+        for node in mdd.nodes_in_layer(layer) {
+            let mut mass = 0.0;
+            for edge in mdd[node].iter_children() {
+                let value = mdd[edge].assignment();
+                let prob = probs[variable.0][value.0].max(MIN_PROB);
+                mass += prob * beta[layer + 1][mdd[edge].to().1];
+            }
+            prev_beta[node.1] = mass;
+        }
+        beta[layer] = prev_beta;
+    }
+
+    (alpha, beta)
+}
+
+/// Unconditional per-value marginal of every decision layer of `mdd`, given only `probs` -- no
+/// assignment is clamped anywhere, so this can't be blinded by an inconsistency elsewhere in the
+/// MDD's scope the way `clamped_conditional` can. Returned in layer order, `result[layer]` has
+/// length `probs[mdd.decision_at_layer(layer).0].len()`.
+fn mdd_marginals(mdd: &Mdd, probs: &[Vec<f64>]) -> Vec<Vec<f64>> {
+    let last_layer = mdd.sink().0;
+    let (alpha, beta) = unconditional_alpha_beta(mdd, probs);
+
+    (0..last_layer)
+        .map(|layer| {
+            let variable = mdd.decision_at_layer(layer);
+            let domain_size = probs[variable.0].len();
+            let mut weights = vec![0.0; domain_size];
+            for node in mdd.nodes_in_layer(layer) {
+                let mass = alpha[layer][node.1];
+                if mass == 0.0 {
+                    continue;
+                }
+                for edge in mdd[node].iter_children() {
+                    let value = mdd[edge].assignment();
+                    let prob = probs[variable.0][value.0].max(MIN_PROB);
+                    weights[value.0] += mass * prob * beta[layer + 1][mdd[edge].to().1];
+                }
+            }
+            normalize_or_uniform(weights, domain_size)
+        })
+        .collect()
 }
 
 /// Sampler used for generating a new assignment given a set of MDDs; aggregate multiple MDDs
@@ -187,6 +267,17 @@ impl<'a> GibbsSampler<'a> {
         self.weights[mdd_index] = weight;
     }
 
+    fn members_of(&self, var: VariableIndex) -> &[(usize, usize)] {
+        let members = &self.var_to_mdds[var.0];
+        assert!(
+            !members.is_empty(),
+            "variable {} is not in the scope of any MDD -- every variable must appear in at \
+             least one for GibbsSampler to have anything to decode it from",
+            var.0
+        );
+        members
+    }
+
     /// Combines the all probability distribution for a given variable. These probability
     /// distribution are conditionned on the MDDs and the current assignment. The combination is a
     /// weighted sum of each MDD conditional distribution, renormalised to sum to 1.0
@@ -196,40 +287,49 @@ impl<'a> GibbsSampler<'a> {
         probs: &[Vec<f64>],
         assignment: &[ValueIndex],
     ) -> Vec<f64> {
-        // Set of (mdd_index, target_layer) for variable var
-        let members = &self.var_to_mdds[var.0];
-        assert!(
-            !members.is_empty(),
-            "variable {} is not in the scope of any MDD -- every variable must appear in at \
-             least one for GibbsSampler to have anything to decode it from",
-            var.0
-        );
-
+        let members = self.members_of(var);
         let domain_size = probs[var.0].len();
         let mut log_combined = vec![0.0; domain_size];
         for &(mdd_index, layer) in members {
-            // Voting weight of the MDD
             let weight = self.weights[mdd_index];
-            // P(var = value | mdd && assignment) for every value in the variable domain
             let conditional = clamped_conditional(&self.mdds[mdd_index], layer, probs, assignment);
             for (d, log_d) in log_combined.iter_mut().enumerate() {
                 *log_d += weight * conditional[d].max(MIN_PROB).ln();
             }
         }
+        log_combine_and_normalize(log_combined)
+    }
 
-        // Renormalise in log-space. Shift by maximum (similar to log-sum-exp trick for numerical
-        // stability)
-        let max_log = log_combined
-            .iter()
-            .copied()
-            .fold(f64::NEG_INFINITY, f64::max);
-        let mut combined: Vec<f64> = log_combined.iter().map(|&l| (l - max_log).exp()).collect();
-        let total: f64 = combined.iter().sum();
-        for c in &mut combined {
-            *c /= total;
+    /// Same combination as `combined_conditional`, but every MDD's contribution is its
+    /// unconditional marginal (`mdd_marginals`) rather than a conditional clamped to `assignment`.
+    pub fn combined_marginal(
+        &self,
+        var: VariableIndex,
+        probs: &[Vec<f64>],
+        marginals: &[Vec<Vec<f64>>],
+    ) -> Vec<f64> {
+        let members = self.members_of(var);
+        let domain_size = probs[var.0].len();
+        let mut log_combined = vec![0.0; domain_size];
+        for &(mdd_index, layer) in members {
+            let weight = self.weights[mdd_index];
+            let marginal = &marginals[mdd_index][layer];
+            for (d, log_d) in log_combined.iter_mut().enumerate() {
+                *log_d += weight * marginal[d].max(MIN_PROB).ln();
+            }
         }
-        // combined is a normalised distribution over the variable domain
-        combined
+        log_combine_and_normalize(log_combined)
+    }
+
+    /// `mdd_marginals` for every MDD this sampler holds, given `probs`. Computed once per call
+    /// (each MDD is a single forward+backward pass over every layer at once) rather than per
+    /// queried variable, since -- unlike `clamped_conditional` -- the result doesn't depend on any
+    /// assignment.
+    pub fn unconditional_marginals(&self, probs: &[Vec<f64>]) -> Vec<Vec<Vec<f64>>> {
+        self.mdds
+            .iter()
+            .map(|mdd| mdd_marginals(mdd, probs))
+            .collect()
     }
 
     /// Perform a number of gibbs sampling given the probability and assignment. From an initial
@@ -257,6 +357,48 @@ impl<'a> GibbsSampler<'a> {
             }
         }
     }
+
+    /// Resamples `block` (typically the scope of a small set of destroyed constraints) in two
+    /// stages: every variable in `block` is first drawn independently from `combined_marginal`
+    /// (unconditional, so a stale/inconsistent value elsewhere in `assignment` can't blind it),
+    /// then -- if `cleanup_rounds > 0` -- `sweep` runs `cleanup_rounds` clamped rounds restricted
+    /// to `block`, seeded from that draw, to resolve any joint inconsistency the independent draw
+    /// left behind (two block variables of the same MDD can still collide, since marginals don't
+    /// carry the joint's correlations the way a clamped conditional does).
+    pub fn resample_block(
+        &self,
+        probs: &[Vec<f64>],
+        assignment: &mut [ValueIndex],
+        block: &[VariableIndex],
+        mode: DecodeMode,
+        cleanup_rounds: usize,
+    ) {
+        let marginals = self.unconditional_marginals(probs);
+        for &var in block {
+            let combined = self.combined_marginal(var, probs, &marginals);
+            assignment[var.0] = ValueIndex(match mode {
+                DecodeMode::Greedy => argmax(&combined),
+                DecodeMode::Sample => sample_categorical(&combined),
+            });
+        }
+
+        if cleanup_rounds > 0 {
+            self.sweep(probs, assignment, block, cleanup_rounds, mode);
+        }
+    }
+}
+
+fn log_combine_and_normalize(log_combined: Vec<f64>) -> Vec<f64> {
+    let max_log = log_combined
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let mut combined: Vec<f64> = log_combined.iter().map(|&l| (l - max_log).exp()).collect();
+    let total: f64 = combined.iter().sum();
+    for c in &mut combined {
+        *c /= total;
+    }
+    combined
 }
 
 fn argmax(weights: &[f64]) -> usize {
@@ -511,6 +653,111 @@ mod tests {
         // loosened accordingly (still tight enough to catch a real logic error).
         assert!((combined[0] - 1.0).abs() < 1e-6, "{combined:?}");
         assert!((combined[1] - 0.0).abs() < 1e-6, "{combined:?}");
+    }
+
+    #[test]
+    fn mdd_marginals_matches_brute_force_marginal_for_not_equals() {
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1], None);
+        let y = problem.add_variable(vec![0, 1], None);
+        not_equals(&mut problem, x, y);
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mdd = build_mdd(problem.clone(), &constraints);
+
+        let probs = vec![vec![0.9, 0.1], vec![0.3, 0.7]];
+        let marginals = mdd_marginals(&mdd, &probs);
+
+        let x_layer = (0..mdd.number_layers() - 1)
+            .find(|&l| mdd.decision_at_layer(l) == x)
+            .unwrap();
+        let y_layer = (0..mdd.number_layers() - 1)
+            .find(|&l| mdd.decision_at_layer(l) == y)
+            .unwrap();
+
+        // P(x=0) ~ probs_x[0]*probs_y[1], P(x=1) ~ probs_x[1]*probs_y[0], normalised; and
+        // symmetrically for y. Hand-computed from probs = [[0.9, 0.1], [0.3, 0.7]].
+        assert!(
+            (marginals[x_layer][0] - 21.0 / 22.0).abs() < 1e-9,
+            "{marginals:?}"
+        );
+        assert!(
+            (marginals[x_layer][1] - 1.0 / 22.0).abs() < 1e-9,
+            "{marginals:?}"
+        );
+        assert!(
+            (marginals[y_layer][0] - 1.0 / 22.0).abs() < 1e-9,
+            "{marginals:?}"
+        );
+        assert!(
+            (marginals[y_layer][1] - 21.0 / 22.0).abs() < 1e-9,
+            "{marginals:?}"
+        );
+    }
+
+    #[test]
+    fn resample_block_with_zero_cleanup_rounds_only_samples_from_marginals() {
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1], None);
+        let y = problem.add_variable(vec![0, 1], None);
+        not_equals(&mut problem, x, y);
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mdd = build_mdd(problem.clone(), &constraints);
+        let probs = uniform_probs(&problem);
+        let mdds = vec![mdd];
+        let sampler = GibbsSampler::new(&mdds);
+
+        let block = vec![x, y];
+        let marginals = sampler.unconditional_marginals(&probs);
+        let expected_x = argmax(&sampler.combined_marginal(x, &probs, &marginals));
+        let expected_y = argmax(&sampler.combined_marginal(y, &probs, &marginals));
+
+        let mut assignment = vec![ValueIndex(0); problem.number_variables()];
+        sampler.resample_block(&probs, &mut assignment, &block, DecodeMode::Greedy, 0);
+
+        assert_eq!(assignment[x.0], ValueIndex(expected_x));
+        assert_eq!(assignment[y.0], ValueIndex(expected_y));
+    }
+
+    #[test]
+    fn resample_block_with_cleanup_rounds_is_feasible_from_a_colliding_start() {
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1], None);
+        let y = problem.add_variable(vec![0, 1, 2], None);
+        let z = problem.add_variable(vec![1, 2], None);
+        not_equals(&mut problem, x, y);
+        not_equals(&mut problem, y, z);
+        not_equals(&mut problem, x, z);
+
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mdd = build_mdd(problem.clone(), &constraints);
+        let probs = uniform_probs(&problem);
+        let mdds = vec![mdd];
+        let sampler = GibbsSampler::new(&mdds);
+
+        let block: Vec<VariableIndex> = (0..mdds[0].number_layers() - 1)
+            .map(|l| mdds[0].decision_at_layer(l))
+            .collect();
+
+        for cleanup_rounds in [1, 4] {
+            let mut assignment = vec![ValueIndex(0); problem.number_variables()];
+            sampler.resample_block(
+                &probs,
+                &mut assignment,
+                &block,
+                DecodeMode::Greedy,
+                cleanup_rounds,
+            );
+
+            let xv = problem[x].value(assignment[x.0]);
+            let yv = problem[y].value(assignment[y.0]);
+            let zv = problem[z].value(assignment[z.0]);
+            assert_ne!(xv, yv, "cleanup_rounds={cleanup_rounds}");
+            assert_ne!(yv, zv, "cleanup_rounds={cleanup_rounds}");
+            assert_ne!(xv, zv, "cleanup_rounds={cleanup_rounds}");
+        }
     }
 
     #[test]

@@ -19,6 +19,7 @@ pub use mdd_dataset::{
 use burn::config::Config;
 use burn::module::Param;
 use burn::nn::LinearConfig;
+use burn::tensor::Bool;
 
 use std::sync::Arc;
 

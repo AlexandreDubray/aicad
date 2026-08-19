@@ -105,6 +105,7 @@ impl PyDecodeKind {
         domain_size: usize,
         mdd_rounds: usize,
         mdd_greedy: bool,
+        mdd_gibbs_cleanup: bool,
     ) -> Box<dyn DecodingOperator<B>> {
         match self {
             PyDecodeKind::Argmax => Box::new(Argmax),
@@ -120,6 +121,7 @@ impl PyDecodeKind {
                     domain_size,
                     mdd_rounds,
                     mode,
+                    mdd_gibbs_cleanup,
                 ))
             }
         }
@@ -168,6 +170,7 @@ pub enum PyProblemsArg<'py> {
     temperature=0.1,
     mdd_rounds=4,
     mdd_greedy=false,
+    mdd_gibbs_cleanup=true,
     seed=None,
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -186,6 +189,7 @@ pub fn neural_local_search(
     temperature: f64,
     mdd_rounds: usize,
     mdd_greedy: bool,
+    mdd_gibbs_cleanup: bool,
     seed: Option<u64>,
 ) -> PyResult<Py<PyAny>> {
     let is_single = matches!(problems, PyProblemsArg::Single(_));
@@ -233,6 +237,7 @@ pub fn neural_local_search(
                 temperature,
                 mdd_rounds,
                 mdd_greedy,
+                mdd_gibbs_cleanup,
                 population_size,
                 budget,
                 seed,
@@ -250,6 +255,7 @@ pub fn neural_local_search(
                 temperature,
                 mdd_rounds,
                 mdd_greedy,
+                mdd_gibbs_cleanup,
                 population_size,
                 budget,
                 seed,
@@ -285,6 +291,7 @@ fn run<B: Backend>(
     temperature: f64,
     mdd_rounds: usize,
     mdd_greedy: bool,
+    mdd_gibbs_cleanup: bool,
     population_size: usize,
     budget: Budget,
     seed: u64,
@@ -302,8 +309,13 @@ fn run<B: Backend>(
                 )?;
             let fraction = destroy_fraction.unwrap_or(config.mask_fraction);
             let destroy_op = destroy_kind.build(fraction);
-            let decode_op =
-                decode_kind.build::<B>(temperature, config.domain_size, mdd_rounds, mdd_greedy);
+            let decode_op = decode_kind.build::<B>(
+                temperature,
+                config.domain_size,
+                mdd_rounds,
+                mdd_greedy,
+                mdd_gibbs_cleanup,
+            );
 
             let nls = NeuralLocalSearch::<B, ConsFormer<B>, ConsFormerBatch<B>>::new(
                 network,
