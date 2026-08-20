@@ -8,6 +8,7 @@ use pyo3::types::PyList;
 
 use burn::backend::cuda::{Cuda, CudaDevice};
 use burn::backend::ndarray::{NdArray, NdArrayDevice};
+use burn::config::Config;
 use burn::tensor::backend::Backend;
 
 use rand::RngExt;
@@ -17,7 +18,10 @@ use crate::learning::Network;
 use crate::modelling::Problem;
 use crate::nls::decode::{Argmax, DecodingOperator, Sampling};
 use crate::nls::destroy::{DestroyOperator, RandomDestroy, RelatedDestroy, WorstDestroy};
-use crate::nls::{load_network, Budget, MddGibbsDecoding, NeuralLocalSearch, Solution, Status};
+use crate::nls::{
+    load_network, Budget, MaskSchedule, MddGibbsDecoding, NeuralLocalSearch, Solution,
+    SolveConfig, Status,
+};
 use crate::sampling::DecodeMode;
 
 use super::learn::cuda_available;
@@ -71,6 +75,23 @@ pub enum PyNetworkKind {
     ConsFormer,
 }
 
+impl PyNetworkKind {
+    fn tag(&self) -> &'static str {
+        match self {
+            PyNetworkKind::ConsFormer => "consformer",
+        }
+    }
+
+    fn parse(tag: &str) -> PyResult<Self> {
+        match tag {
+            "consformer" => Ok(PyNetworkKind::ConsFormer),
+            other => Err(PyValueError::new_err(format!(
+                "unknown network_kind {other:?}"
+            ))),
+        }
+    }
+}
+
 #[pyclass(from_py_object)]
 #[derive(Clone)]
 pub enum PyDestroyKind {
@@ -80,51 +101,64 @@ pub enum PyDestroyKind {
 }
 
 impl PyDestroyKind {
-    fn build(&self, fraction: f64) -> Box<dyn DestroyOperator> {
+    fn build(&self) -> Box<dyn DestroyOperator> {
         match self {
-            PyDestroyKind::Random => Box::new(RandomDestroy { fraction }),
-            PyDestroyKind::Worst => Box::new(WorstDestroy { fraction }),
-            PyDestroyKind::Related => Box::new(RelatedDestroy { fraction }),
+            PyDestroyKind::Random => Box::new(RandomDestroy),
+            PyDestroyKind::Worst => Box::new(WorstDestroy),
+            PyDestroyKind::Related => Box::new(RelatedDestroy),
+        }
+    }
+
+    fn tag(&self) -> &'static str {
+        match self {
+            PyDestroyKind::Random => "random",
+            PyDestroyKind::Worst => "worst",
+            PyDestroyKind::Related => "related",
+        }
+    }
+
+    fn parse(tag: &str) -> PyResult<Self> {
+        match tag {
+            "random" => Ok(PyDestroyKind::Random),
+            "worst" => Ok(PyDestroyKind::Worst),
+            "related" => Ok(PyDestroyKind::Related),
+            other => Err(PyValueError::new_err(format!(
+                "unknown destroy_kind {other:?}"
+            ))),
         }
     }
 }
 
-#[pyclass(from_py_object)]
-#[derive(Clone)]
-pub enum PyDecodeKind {
-    Argmax,
-    Sampling,
-    MddGibbs,
-}
-
-#[allow(clippy::too_many_arguments)]
-impl PyDecodeKind {
-    fn build<B: Backend>(
-        &self,
-        temperature: f64,
-        domain_size: usize,
-        mdd_rounds: usize,
-        mdd_greedy: bool,
-        mdd_gibbs_cleanup: bool,
-    ) -> Box<dyn DecodingOperator<B>> {
-        match self {
-            PyDecodeKind::Argmax => Box::new(Argmax),
-            PyDecodeKind::Sampling => Box::new(Sampling { temperature }),
-            PyDecodeKind::MddGibbs => {
-                let mode = if mdd_greedy {
-                    DecodeMode::Greedy
-                } else {
-                    DecodeMode::Sample
-                };
-                Box::new(MddGibbsDecoding::new(
-                    MddCompilationConfig::default(),
-                    domain_size,
-                    mdd_rounds,
-                    mode,
-                    mdd_gibbs_cleanup,
-                ))
-            }
-        }
+/// Builds the decode operator for `mdd_decode`/`stochastic_decode`: `mdd_decode` picks whether
+/// the per-variable distribution is combined via the problem's MDD marginals first (`MddGibbs`)
+/// or decoded independently (`Argmax`/`Sampling`); `stochastic_decode` picks greedy vs. stochastic
+/// within whichever of those is selected -- including, for `MddGibbs`, its optional Gibbs-cleanup
+/// sweeps, which share the same `DecodeMode`.
+fn build_decode_op<B: Backend>(
+    mdd_decode: bool,
+    stochastic_decode: bool,
+    temperature: f64,
+    domain_size: usize,
+    gibbs_round: usize,
+    mdd_gibbs_cleanup: bool,
+) -> Box<dyn DecodingOperator<B>> {
+    if mdd_decode {
+        let mode = if stochastic_decode {
+            DecodeMode::Sample
+        } else {
+            DecodeMode::Greedy
+        };
+        Box::new(MddGibbsDecoding::new(
+            MddCompilationConfig::default(),
+            domain_size,
+            gibbs_round,
+            mode,
+            mdd_gibbs_cleanup,
+        ))
+    } else if stochastic_decode {
+        Box::new(Sampling { temperature })
+    } else {
+        Box::new(Argmax)
     }
 }
 
@@ -137,6 +171,156 @@ pub enum PyProblemsArg<'py> {
     Single(PyRef<'py, PyProblem>),
 }
 
+#[pyclass(from_py_object)]
+#[derive(Clone)]
+pub struct PySolveConfig {
+    #[pyo3(get, set)]
+    pub network_kind: PyNetworkKind,
+    #[pyo3(get, set)]
+    pub batch_size: Option<usize>,
+    #[pyo3(get, set)]
+    pub destroy_kind: PyDestroyKind,
+    #[pyo3(get, set)]
+    pub destroy_fraction_max: f64,
+    #[pyo3(get, set)]
+    pub destroy_fraction_min: f64,
+    #[pyo3(get, set)]
+    pub mask_schedule_epochs: usize,
+    #[pyo3(get, set)]
+    pub mdd_decode: bool,
+    #[pyo3(get, set)]
+    pub stochastic_decode: bool,
+    #[pyo3(get, set)]
+    pub temperature: f64,
+    #[pyo3(get, set)]
+    pub gibbs_round: usize,
+    #[pyo3(get, set)]
+    pub mdd_gibbs_cleanup: bool,
+    #[pyo3(get, set)]
+    pub time_limit: Option<u64>,
+    #[pyo3(get, set)]
+    pub iteration_limit: Option<usize>,
+    #[pyo3(get, set)]
+    pub seed: Option<u64>,
+}
+
+#[pymethods]
+impl PySolveConfig {
+    #[new]
+    #[pyo3(signature = (
+        network_kind=PyNetworkKind::ConsFormer,
+        batch_size=None,
+        destroy_kind=PyDestroyKind::Random,
+        destroy_fraction_max=1.0,
+        destroy_fraction_min=1.0,
+        mask_schedule_epochs=0,
+        mdd_decode=false,
+        stochastic_decode=false,
+        temperature=0.1,
+        gibbs_round=4,
+        mdd_gibbs_cleanup=true,
+        time_limit=None,
+        iteration_limit=None,
+        seed=None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        network_kind: PyNetworkKind,
+        batch_size: Option<usize>,
+        destroy_kind: PyDestroyKind,
+        destroy_fraction_max: f64,
+        destroy_fraction_min: f64,
+        mask_schedule_epochs: usize,
+        mdd_decode: bool,
+        stochastic_decode: bool,
+        temperature: f64,
+        gibbs_round: usize,
+        mdd_gibbs_cleanup: bool,
+        time_limit: Option<u64>,
+        iteration_limit: Option<usize>,
+        seed: Option<u64>,
+    ) -> PyResult<Self> {
+        let config = PySolveConfig {
+            network_kind,
+            batch_size,
+            destroy_kind,
+            destroy_fraction_max,
+            destroy_fraction_min,
+            mask_schedule_epochs,
+            mdd_decode,
+            stochastic_decode,
+            temperature,
+            gibbs_round,
+            mdd_gibbs_cleanup,
+            time_limit,
+            iteration_limit,
+            seed,
+        };
+        SolveConfig::from(&config)
+            .validate()
+            .map_err(PyValueError::new_err)?;
+        Ok(config)
+    }
+
+    #[staticmethod]
+    fn from_json(path: String) -> PyResult<Self> {
+        let config = SolveConfig::load_lenient(&path)
+            .map_err(|e| PyValueError::new_err(format!("failed to load {path}: {e}")))?;
+        (&config).try_into()
+    }
+
+    fn save_json(&self, path: String) -> PyResult<()> {
+        let config: SolveConfig = self.into();
+        config
+            .save(&path)
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to save {path}: {e}")))
+    }
+}
+
+impl From<&PySolveConfig> for SolveConfig {
+    fn from(c: &PySolveConfig) -> Self {
+        SolveConfig {
+            network_kind: c.network_kind.tag().to_string(),
+            batch_size: c.batch_size,
+            destroy_kind: c.destroy_kind.tag().to_string(),
+            destroy_fraction_max: c.destroy_fraction_max,
+            destroy_fraction_min: c.destroy_fraction_min,
+            mask_schedule_epochs: c.mask_schedule_epochs,
+            mdd_decode: c.mdd_decode,
+            stochastic_decode: c.stochastic_decode,
+            temperature: c.temperature,
+            gibbs_round: c.gibbs_round,
+            mdd_gibbs_cleanup: c.mdd_gibbs_cleanup,
+            time_limit: c.time_limit,
+            iteration_limit: c.iteration_limit,
+            seed: c.seed,
+        }
+    }
+}
+
+impl TryFrom<&SolveConfig> for PySolveConfig {
+    type Error = PyErr;
+
+    fn try_from(c: &SolveConfig) -> Result<Self, Self::Error> {
+        Ok(PySolveConfig {
+            network_kind: PyNetworkKind::parse(&c.network_kind)?,
+            batch_size: c.batch_size,
+            destroy_kind: PyDestroyKind::parse(&c.destroy_kind)?,
+            destroy_fraction_max: c.destroy_fraction_max,
+            destroy_fraction_min: c.destroy_fraction_min,
+            mask_schedule_epochs: c.mask_schedule_epochs,
+            mdd_decode: c.mdd_decode,
+            stochastic_decode: c.stochastic_decode,
+            temperature: c.temperature,
+            gibbs_round: c.gibbs_round,
+            mdd_gibbs_cleanup: c.mdd_gibbs_cleanup,
+            time_limit: c.time_limit,
+            iteration_limit: c.iteration_limit,
+            seed: c.seed,
+        })
+    }
+}
+
 /// Runs neural local search on `problems` (a single `Problem` or a list of
 /// them, batched together into one search) using a network loaded from
 /// `checkpoint_dir` (the `config.json` + `weights` produced by
@@ -145,52 +329,26 @@ pub enum PyProblemsArg<'py> {
 /// given a list. Every problem in a batch must have the same number of
 /// variables.
 ///
-/// `max_batch_size` caps how many problems (times `population_size` rows
-/// each) are ever loaded onto the device at once; when the full problem list
-/// doesn't fit, it's processed in sequential chunks of at most that size,
-/// reusing the same loaded network. Left unset, every problem is batched
-/// together in a single pass (today's behaviour). `time_limit` and
-/// `iteration_limit` apply per problem, matching the classical-CP convention
-/// of a private timeout per instance: every chunk gets its own full budget,
-/// so e.g. `time_limit=10` means each problem gets up to 10 seconds to
-/// solve, regardless of how many chunks it took to get through the whole
-/// list -- not 10 seconds total across the call.
+/// `batch_size` caps how many problems are ever loaded onto the device at
+/// once; when the full problem list doesn't fit, it's processed in
+/// sequential chunks of at most that size, reusing the same loaded network.
+/// Left unset, every problem is batched together in a single pass (today's
+/// behaviour). `time_limit` and `iteration_limit` apply per problem,
+/// matching the classical-CP convention of a private timeout per instance:
+/// every chunk gets its own full budget, so e.g. `time_limit=10` means each
+/// problem gets up to 10 seconds to solve, regardless of how many chunks it
+/// took to get through the whole list -- not 10 seconds total across the
+/// call.
+///
+/// `config` gathers every knob unrelated to `problems`/`checkpoint_dir` (see `PySolveConfig`);
+/// left unset, it's `PySolveConfig()` -- today's zero-config defaults.
 #[pyfunction]
-#[pyo3(signature = (
-    problems,
-    checkpoint_dir,
-    network_kind=PyNetworkKind::ConsFormer,
-    time_limit=None,
-    iteration_limit=None,
-    population_size=1,
-    max_batch_size=None,
-    destroy_kind=PyDestroyKind::Random,
-    destroy_fraction=None,
-    decode_kind=PyDecodeKind::Argmax,
-    temperature=0.1,
-    mdd_rounds=4,
-    mdd_greedy=false,
-    mdd_gibbs_cleanup=true,
-    seed=None,
-))]
-#[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (problems, checkpoint_dir, config=None))]
 pub fn neural_local_search(
     py: Python<'_>,
     problems: PyProblemsArg<'_>,
     checkpoint_dir: String,
-    network_kind: PyNetworkKind,
-    time_limit: Option<u64>,
-    iteration_limit: Option<usize>,
-    population_size: usize,
-    max_batch_size: Option<usize>,
-    destroy_kind: PyDestroyKind,
-    destroy_fraction: Option<f64>,
-    decode_kind: PyDecodeKind,
-    temperature: f64,
-    mdd_rounds: usize,
-    mdd_greedy: bool,
-    mdd_gibbs_cleanup: bool,
-    seed: Option<u64>,
+    config: Option<PySolveConfig>,
 ) -> PyResult<Py<PyAny>> {
     let is_single = matches!(problems, PyProblemsArg::Single(_));
     let problems: Vec<Arc<Problem>> = match problems {
@@ -210,35 +368,35 @@ pub fn neural_local_search(
     }
 
     let checkpoint_dir = PathBuf::from(checkpoint_dir);
+    let config: SolveConfig = config.as_ref().map(SolveConfig::from).unwrap_or_default();
+    // `PySolveConfig::new` already validates this, but its fields are individually settable from
+    // Python afterwards (`#[pyo3(get, set)]`), so re-check here at the point of use.
+    config.validate().map_err(PyValueError::new_err)?;
     let budget = Budget {
-        time_limit: time_limit.map(Duration::from_secs).unwrap_or(Duration::MAX),
-        iteration_limit: iteration_limit.unwrap_or(usize::MAX),
+        time_limit: config
+            .time_limit
+            .map(Duration::from_secs)
+            .unwrap_or(Duration::MAX),
+        iteration_limit: config.iteration_limit.unwrap_or(usize::MAX),
     };
     // Drawn from the process-wide RNG (see `crate::utils::rng`) so that, when `set_seed` has been
     // called, even a caller that leaves `seed` unset gets a reproducible destroy sequence instead
     // of a fresh OS-entropy one each time.
-    let seed = seed.unwrap_or_else(|| crate::utils::with_rng(|rng| rng.random_range(0..u64::MAX)));
+    let seed = config
+        .seed
+        .unwrap_or_else(|| crate::utils::with_rng(|rng| rng.random_range(0..u64::MAX)));
 
     // Releases the GIL for the actual search -- see `train_consformer`'s doc for why. Everything
-    // captured here (`problems: Vec<Arc<Problem>>`, the plain-enum `network_kind`/`destroy_kind`/
-    // `decode_kind`, `checkpoint_dir`, `budget`, `seed`) is already a Python-free, `Send` Rust
-    // value by this point, so the closure doesn't touch anything GIL-bound.
+    // captured here (`problems: Vec<Arc<Problem>>`, `config`, `checkpoint_dir`, `budget`, `seed`)
+    // is already a Python-free, `Send` Rust value by this point, so the closure doesn't touch
+    // anything GIL-bound.
     let solutions = py.detach(move || {
         if cuda_available() {
             run::<Cuda>(
                 CudaDevice::default(),
                 problems,
-                max_batch_size,
                 &checkpoint_dir,
-                &network_kind,
-                &destroy_kind,
-                destroy_fraction,
-                &decode_kind,
-                temperature,
-                mdd_rounds,
-                mdd_greedy,
-                mdd_gibbs_cleanup,
-                population_size,
+                &config,
                 budget,
                 seed,
             )
@@ -246,17 +404,8 @@ pub fn neural_local_search(
             run::<NdArray>(
                 NdArrayDevice::default(),
                 problems,
-                max_batch_size,
                 &checkpoint_dir,
-                &network_kind,
-                &destroy_kind,
-                destroy_fraction,
-                &decode_kind,
-                temperature,
-                mdd_rounds,
-                mdd_greedy,
-                mdd_gibbs_cleanup,
-                population_size,
+                &config,
                 budget,
                 seed,
             )
@@ -278,27 +427,20 @@ pub fn neural_local_search(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn run<B: Backend>(
     device: B::Device,
     problems: Vec<Arc<Problem>>,
-    max_batch_size: Option<usize>,
     checkpoint_dir: &Path,
-    network_kind: &PyNetworkKind,
-    destroy_kind: &PyDestroyKind,
-    destroy_fraction: Option<f64>,
-    decode_kind: &PyDecodeKind,
-    temperature: f64,
-    mdd_rounds: usize,
-    mdd_greedy: bool,
-    mdd_gibbs_cleanup: bool,
-    population_size: usize,
+    config: &SolveConfig,
     budget: Budget,
     seed: u64,
 ) -> PyResult<Vec<Solution>> {
+    let network_kind = PyNetworkKind::parse(&config.network_kind)?;
+    let destroy_kind = PyDestroyKind::parse(&config.destroy_kind)?;
+
     match network_kind {
         PyNetworkKind::ConsFormer => {
-            let (config, network) =
+            let (network_config, network) =
                 load_network::<B, ConsFormerConfig>(checkpoint_dir, &problems, &device).map_err(
                     |e| {
                         PyRuntimeError::new_err(format!(
@@ -307,24 +449,30 @@ fn run<B: Backend>(
                         ))
                     },
                 )?;
-            let fraction = destroy_fraction.unwrap_or(config.mask_fraction);
-            let destroy_op = destroy_kind.build(fraction);
-            let decode_op = decode_kind.build::<B>(
-                temperature,
-                config.domain_size,
-                mdd_rounds,
-                mdd_greedy,
-                mdd_gibbs_cleanup,
+            let mask_schedule = MaskSchedule {
+                max: config.destroy_fraction_max,
+                min: config.destroy_fraction_min,
+                epochs: config.mask_schedule_epochs,
+            };
+            let destroy_op = destroy_kind.build();
+            let decode_op = build_decode_op::<B>(
+                config.mdd_decode,
+                config.stochastic_decode,
+                config.temperature,
+                network_config.domain_size,
+                config.gibbs_round,
+                config.mdd_gibbs_cleanup,
             );
 
             let nls = NeuralLocalSearch::<B, ConsFormer<B>, ConsFormerBatch<B>>::new(
                 network,
                 destroy_op,
+                mask_schedule,
                 decode_op,
-                population_size,
+                1,
                 device,
             );
-            Ok(chunked_run(&nls, &problems, max_batch_size, budget, seed))
+            Ok(chunked_run(&nls, &problems, config.batch_size, budget, seed))
         }
     }
 }
@@ -332,11 +480,11 @@ fn run<B: Backend>(
 fn chunked_run<B: Backend, N: Network<B, Ba>, Ba: crate::learning::Batch<B>>(
     nls: &NeuralLocalSearch<B, N, Ba>,
     problems: &[Arc<Problem>],
-    max_batch_size: Option<usize>,
+    batch_size: Option<usize>,
     budget: Budget,
     seed: u64,
 ) -> Vec<Solution> {
-    let chunk_size = max_batch_size.unwrap_or(problems.len()).max(1);
+    let chunk_size = batch_size.unwrap_or(problems.len()).max(1);
     let mut solutions = Vec::with_capacity(problems.len());
     log::info!("Solving {} problems by chunk of size {}", problems.len(), chunk_size);
     for (chunk_idx, chunk) in problems.chunks(chunk_size).enumerate() {

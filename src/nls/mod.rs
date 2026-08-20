@@ -3,12 +3,14 @@
 //! training loop entirely -- it only needs a loaded network, a problem, and
 //! a destroy/decode operator pair.
 
+pub mod config;
 pub mod decode;
 pub mod destroy;
 pub mod mdd_decode;
 
+pub use config::SolveConfig;
 pub use decode::DecodingOperator;
-pub use destroy::DestroyOperator;
+pub use destroy::{DestroyOperator, MaskSchedule};
 pub use mdd_decode::MddGibbsDecoding;
 
 use std::path::Path;
@@ -171,6 +173,8 @@ pub struct NeuralLocalSearch<B: Backend, N, Ba> {
     network: N,
     /// Heuristic for the destroy operator
     destroy_op: Box<dyn DestroyOperator>,
+    /// How the destroy fraction evolves across a `run` call's iterations
+    mask_schedule: MaskSchedule,
     /// How to decode (arg-max or sample)
     decode_op: Box<dyn DecodingOperator<B>>,
     /// Number of assignments ran in parallel, per problem
@@ -198,6 +202,7 @@ where
     pub fn new(
         network: N,
         destroy_op: Box<dyn DestroyOperator>,
+        mask_schedule: MaskSchedule,
         decode_op: Box<dyn DecodingOperator<B>>,
         population_size: usize,
         device: B::Device,
@@ -205,6 +210,7 @@ where
         Self {
             network,
             destroy_op,
+            mask_schedule,
             decode_op,
             population_size,
             device,
@@ -240,6 +246,7 @@ where
         let mut solutions: Vec<Option<Solution>> = vec![None; num_problems];
 
         while !stop.is_exhausted() && solutions.iter().any(Option::is_none) {
+            let fraction = self.mask_schedule.fraction_at(stop.iters_done);
             let mut destroy_mask_data = vec![0i64; total_rows * n];
             for (row_idx, row) in rows.iter().enumerate() {
                 let problem_idx = row_idx / p;
@@ -248,7 +255,7 @@ where
                     continue;
                 }
                 let problem = &problems[problem_idx];
-                for var in self.destroy_op.destroy(problem, row, &mut rng) {
+                for var in self.destroy_op.destroy(problem, row, fraction, &mut rng) {
                     destroy_mask_data[row_idx * n + var] = 1;
                 }
             }
