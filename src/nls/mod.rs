@@ -113,26 +113,15 @@ impl StoppingCriterion {
             || self.iters_done >= self.budget.iteration_limit
     }
 
-    /// Logs, per problem, the best (over its population) constraint satisfaction rate.
-    fn log(&self, rows: &[Vec<isize>], problems: &[Arc<Problem>], population_size: usize) {
+    fn log(&self, solutions: &[Option<Solution>]) {
         if self.iters_done.is_multiple_of(100) {
-            let solved = problems
-                .iter()
-                .enumerate()
-                .filter(|(problem_idx, problem)| {
-                    let base = problem_idx * population_size;
-                    rows[base..base + population_size]
-                        .iter()
-                        .any(|row| {
-                            problem.is_solution(row)
-                        })
-                }).count();
+            let solved = solutions.iter().filter(|s| s.is_some()).count();
             log::info!(
                 "Iteration {}, elapsed: {} seconds. Number solved {}/{}",
                 self.iters_done,
                 self.start.elapsed().as_secs(),
                 solved,
-                problems.len(),
+                solutions.len(),
             );
         }
     }
@@ -224,9 +213,11 @@ where
     /// destroy operator's randomness. All problems must share the same
     /// `number_variables()`.
     ///
-    /// A problem that finds a solution before the others is frozen in place
-    /// (its rows stop being destroyed/repaired, but stay in the batch so
-    /// tensor shapes remain consistent) while the rest keep iterating.
+    /// A problem that finds a solution is removed from the batch on the spot -- its rows no
+    /// longer take part in `destroy`/forward/`decode` at all, rather than sitting untouched in a
+    /// batch sized for every problem. This matters at scale: solving 1000 problems together where
+    /// 900 solve in the first few iterations and 100 linger for the rest of the budget would
+    /// otherwise keep forwarding all 1000 rows through the network on every remaining iteration.
     ///
     /// Returns one `Solution` per problem, in the same order as `problems`.
     pub fn run(&self, problems: &[Arc<Problem>], budget: Budget, seed: u64) -> Vec<Solution> {
@@ -236,53 +227,54 @@ where
         let num_problems = problems.len();
         let n = problems[0].number_variables();
         let p = self.population_size;
-        let total_rows = num_problems * p;
-
-        // Starts from a random assignment; note that each variable is sampled given its domain, so
-        // assigned variables are taken into account
-        let mut assignments = self.random_init(problems);
-        let mut rows = to_rows(&assignments, total_rows, n);
 
         let mut solutions: Vec<Option<Solution>> = vec![None; num_problems];
 
-        while !stop.is_exhausted() && solutions.iter().any(Option::is_none) {
+        // The still-unsolved subset of `problems` currently being searched, and `active[i]`'s
+        // index back into `problems`/`solutions`. Both shrink as problems solve.
+        let mut active: Vec<usize> = (0..num_problems).collect();
+        let mut active_problems: Vec<Arc<Problem>> = problems.to_vec();
+
+        // Starts from a random assignment; note that each variable is sampled given its domain, so
+        // assigned variables are taken into account
+        let mut assignments = self.random_init(&active_problems);
+        let mut rows = to_rows(&assignments, active_problems.len() * p, n);
+
+        while !stop.is_exhausted() && !active_problems.is_empty() {
             let fraction = self.mask_schedule.fraction_at(stop.iters_done);
-            let mut destroy_mask_data = vec![0i64; total_rows * n];
+            let mut destroy_mask_data = vec![0i64; rows.len() * n];
             for (row_idx, row) in rows.iter().enumerate() {
-                let problem_idx = row_idx / p;
-                // Frozen: this problem already has a solution, leave its rows untouched.
-                if solutions[problem_idx].is_some() {
-                    continue;
-                }
-                let problem = &problems[problem_idx];
+                let problem = &active_problems[row_idx / p];
                 for var in self.destroy_op.destroy(problem, row, fraction, &mut rng) {
                     destroy_mask_data[row_idx * n + var] = 1;
                 }
             }
             let destroy_mask: Tensor<B, 2, Int> =
                 Tensor::<B, 1, Int>::from_data(destroy_mask_data.as_slice(), &self.device)
-                    .reshape([total_rows, n]);
+                    .reshape([rows.len(), n]);
 
             let batch = Ba::for_assignments(
-                problems,
+                &active_problems,
                 p,
                 assignments.clone(),
                 destroy_mask.clone(),
                 &self.device,
             );
             let logits = self.network.forward(&batch);
-            assignments = self
-                .decode_op
-                .decode(logits, destroy_mask, assignments, problems, p);
-            rows = to_rows(&assignments, total_rows, n);
+            assignments =
+                self.decode_op
+                    .decode(logits, destroy_mask, assignments, &active_problems, p);
+            rows = to_rows(&assignments, active_problems.len() * p, n);
 
             stop.tick();
 
-            for (problem_idx, problem) in problems.iter().enumerate() {
-                if solutions[problem_idx].is_some() {
-                    continue;
-                }
-                let base = problem_idx * p;
+            let before = active.len();
+            let mut still_active = Vec::with_capacity(before);
+            let mut still_active_problems = Vec::with_capacity(active_problems.len());
+            let mut still_rows = Vec::with_capacity(rows.len());
+            for (local_idx, &problem_idx) in active.iter().enumerate() {
+                let problem = &active_problems[local_idx];
+                let base = local_idx * p;
                 if let Some(row) = rows[base..base + p]
                     .iter()
                     .find(|row| problem.is_solution(row))
@@ -293,10 +285,24 @@ where
                         solution: Some(row.to_owned()),
                         status: Status::Satisfiable,
                     });
+                    continue;
+                }
+                still_active.push(problem_idx);
+                still_active_problems.push(problem.clone());
+                still_rows.extend_from_slice(&rows[base..base + p]);
+            }
+            if still_active.len() < before {
+                active = still_active;
+                active_problems = still_active_problems;
+                rows = still_rows;
+                // `assignments` is left stale when `active_problems` just emptied out -- the
+                // `while` condition above exits before it's read again.
+                if !active_problems.is_empty() {
+                    assignments = rows_to_tensor(&rows, n, &self.device);
                 }
             }
 
-            stop.log(&rows, problems, p);
+            stop.log(&solutions);
         }
 
         solutions
@@ -324,6 +330,14 @@ where
         Tensor::<B, 1, Int>::from_data(data.as_slice(), &self.device)
             .reshape([problems.len() * self.population_size, n])
     }
+}
+
+fn rows_to_tensor<B: Backend>(rows: &[Vec<isize>], n: usize, device: &B::Device) -> Tensor<B, 2, Int> {
+    let data: Vec<i64> = rows
+        .iter()
+        .flat_map(|row| row.iter().map(|&v| v as i64))
+        .collect();
+    Tensor::<B, 1, Int>::from_data(data.as_slice(), device).reshape([rows.len(), n])
 }
 
 fn to_rows<B: Backend>(assignments: &Tensor<B, 2, Int>, p: usize, n: usize) -> Vec<Vec<isize>> {
