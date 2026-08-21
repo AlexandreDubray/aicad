@@ -182,6 +182,8 @@ where
     Ba: Batch<B>,
     N: Network<B, Ba>,
 {
+    const COMPACTION_INTERVAL: usize = 100;
+
     /// Builds the search engine: everything that's independent of *which*
     /// problems get solved (network weights, operators, device). Call `run`
     /// once per batch of problems -- the engine can be reused across several
@@ -213,12 +215,6 @@ where
     /// destroy operator's randomness. All problems must share the same
     /// `number_variables()`.
     ///
-    /// A problem that finds a solution is removed from the batch on the spot -- its rows no
-    /// longer take part in `destroy`/forward/`decode` at all, rather than sitting untouched in a
-    /// batch sized for every problem. This matters at scale: solving 1000 problems together where
-    /// 900 solve in the first few iterations and 100 linger for the rest of the budget would
-    /// otherwise keep forwarding all 1000 rows through the network on every remaining iteration.
-    ///
     /// Returns one `Solution` per problem, in the same order as `problems`.
     pub fn run(&self, problems: &[Arc<Problem>], budget: Budget, seed: u64) -> Vec<Solution> {
         let mut rng = StdRng::seed_from_u64(seed);
@@ -230,8 +226,6 @@ where
 
         let mut solutions: Vec<Option<Solution>> = vec![None; num_problems];
 
-        // The still-unsolved subset of `problems` currently being searched, and `active[i]`'s
-        // index back into `problems`/`solutions`. Both shrink as problems solve.
         let mut active: Vec<usize> = (0..num_problems).collect();
         let mut active_problems: Vec<Arc<Problem>> = problems.to_vec();
 
@@ -240,10 +234,16 @@ where
         let mut assignments = self.random_init(&active_problems);
         let mut rows = to_rows(&assignments, active_problems.len() * p, n);
 
-        while !stop.is_exhausted() && !active_problems.is_empty() {
+        while !stop.is_exhausted() && solutions.iter().any(Option::is_none) {
             let fraction = self.mask_schedule.fraction_at(stop.iters_done);
             let mut destroy_mask_data = vec![0i64; rows.len() * n];
             for (row_idx, row) in rows.iter().enumerate() {
+                let problem_idx = active[row_idx / p];
+                // Frozen: this problem already has a solution, leave its row untouched until it's
+                // compacted out.
+                if solutions[problem_idx].is_some() {
+                    continue;
+                }
                 let problem = &active_problems[row_idx / p];
                 for var in self.destroy_op.destroy(problem, row, fraction, &mut rng) {
                     destroy_mask_data[row_idx * n + var] = 1;
@@ -268,11 +268,10 @@ where
 
             stop.tick();
 
-            let before = active.len();
-            let mut still_active = Vec::with_capacity(before);
-            let mut still_active_problems = Vec::with_capacity(active_problems.len());
-            let mut still_rows = Vec::with_capacity(rows.len());
             for (local_idx, &problem_idx) in active.iter().enumerate() {
+                if solutions[problem_idx].is_some() {
+                    continue;
+                }
                 let problem = &active_problems[local_idx];
                 let base = local_idx * p;
                 if let Some(row) = rows[base..base + p]
@@ -285,20 +284,32 @@ where
                         solution: Some(row.to_owned()),
                         status: Status::Satisfiable,
                     });
-                    continue;
                 }
-                still_active.push(problem_idx);
-                still_active_problems.push(problem.clone());
-                still_rows.extend_from_slice(&rows[base..base + p]);
             }
-            if still_active.len() < before {
-                active = still_active;
-                active_problems = still_active_problems;
-                rows = still_rows;
-                // `assignments` is left stale when `active_problems` just emptied out -- the
-                // `while` condition above exits before it's read again.
-                if !active_problems.is_empty() {
-                    assignments = rows_to_tensor(&rows, n, &self.device);
+
+            if stop.iters_done.is_multiple_of(Self::COMPACTION_INTERVAL) {
+                let before = active.len();
+                let mut still_active = Vec::with_capacity(before);
+                let mut still_active_problems = Vec::with_capacity(active_problems.len());
+                let mut still_rows = Vec::with_capacity(rows.len());
+                for (local_idx, &problem_idx) in active.iter().enumerate() {
+                    if solutions[problem_idx].is_some() {
+                        continue;
+                    }
+                    still_active.push(problem_idx);
+                    still_active_problems.push(active_problems[local_idx].clone());
+                    let base = local_idx * p;
+                    still_rows.extend_from_slice(&rows[base..base + p]);
+                }
+                if still_active.len() < before {
+                    active = still_active;
+                    active_problems = still_active_problems;
+                    rows = still_rows;
+                    // Left stale when every remaining active problem just got compacted away --
+                    // the `while` condition above exits before it's read again in that case.
+                    if !active_problems.is_empty() {
+                        assignments = rows_to_tensor(&rows, n, &self.device);
+                    }
                 }
             }
 
@@ -332,7 +343,11 @@ where
     }
 }
 
-fn rows_to_tensor<B: Backend>(rows: &[Vec<isize>], n: usize, device: &B::Device) -> Tensor<B, 2, Int> {
+fn rows_to_tensor<B: Backend>(
+    rows: &[Vec<isize>],
+    n: usize,
+    device: &B::Device,
+) -> Tensor<B, 2, Int> {
     let data: Vec<i64> = rows
         .iter()
         .flat_map(|row| row.iter().map(|&v| v as i64))
