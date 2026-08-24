@@ -13,8 +13,9 @@ pub use learn::{
     set_seed, train_consformer, train_consformer_mdd, PyConsFormerConfig, PyTrainingConfig,
 };
 pub use logging::{
-    enable_console_logging, set_verbosity_debug, set_verbosity_error, set_verbosity_info,
-    set_verbosity_off, set_verbosity_trace, set_verbosity_warning,
+    disable_data_log, enable_console_logging, enable_data_log, set_verbosity_debug,
+    set_verbosity_error, set_verbosity_info, set_verbosity_off, set_verbosity_trace,
+    set_verbosity_warning,
 };
 pub use nls::{
     neural_local_search, PyDestroyKind, PyNetworkKind, PySolution, PySolveConfig, PyStatus,
@@ -69,5 +70,7 @@ fn pyaicad(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_verbosity_debug, m)?)?;
     m.add_function(wrap_pyfunction!(set_verbosity_trace, m)?)?;
     m.add_function(wrap_pyfunction!(enable_console_logging, m)?)?;
+    m.add_function(wrap_pyfunction!(enable_data_log, m)?)?;
+    m.add_function(wrap_pyfunction!(disable_data_log, m)?)?;
     Ok(())
 }

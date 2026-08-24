@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use burn::prelude::ElementConversion;
@@ -7,11 +8,13 @@ use burn::tensor::{Int, Tensor};
 
 use rayon::prelude::*;
 
+use crate::data_log;
+use crate::diagnostics;
 use crate::learning::consformer::MddCompilationConfig;
 use crate::mdd::Mdd;
 use crate::modelling::{ConstraintIndex, Problem, ValueIndex, VariableIndex};
 use crate::nls::decode::DecodingOperator;
-use crate::sampling::{DecodeMode, GibbsSampler};
+use crate::sampling::{entropy, DecodeMode, GibbsSampler};
 
 struct Cache {
     problems: Vec<Arc<Problem>>,
@@ -25,6 +28,7 @@ pub struct MddGibbsDecoding {
     mode: DecodeMode,
     gibbs_cleanup: bool,
     cache: Mutex<Option<Cache>>,
+    call_count: AtomicUsize,
 }
 
 impl MddGibbsDecoding {
@@ -46,6 +50,7 @@ impl MddGibbsDecoding {
             mode,
             gibbs_cleanup,
             cache: Mutex::new(None),
+            call_count: AtomicUsize::new(0),
         }
     }
 
@@ -126,6 +131,7 @@ impl<B: Backend> DecodingOperator<B> for MddGibbsDecoding {
         problems: &[Arc<Problem>],
         population_size: usize,
     ) -> Tensor<B, 2, Int> {
+        let iteration = self.call_count.fetch_add(1, Ordering::Relaxed);
         let device = current.device();
         let [total_rows, n, domain_size] = logits.dims();
         assert_eq!(
@@ -197,6 +203,25 @@ impl<B: Backend> DecodingOperator<B> for MddGibbsDecoding {
                         .filter(|&v| mask_flat[row * n + v])
                         .map(VariableIndex)
                         .collect();
+
+                    if diagnostics::is_enabled() {
+                        // if diagnostic is enable, dump the entropy of distribution before and
+                        // after mdd combination. Note that the combination is recomputed; hence,
+                        // there is an overhead, should only be used for debugging/analysis.
+                        let marginals = sampler.unconditional_marginals(&probs);
+                        for &var in &order {
+                            let combined = sampler.combined_marginal(var, &probs, &marginals);
+                            data_log!(
+                                "mdd_entropy",
+                                iteration = iteration,
+                                problem_idx = problem_idx,
+                                row = row,
+                                var = var.0,
+                                entropy_before = entropy(&probs[var.0]),
+                                entropy_after = entropy(&combined),
+                            );
+                        }
+                    }
 
                     let cleanup_rounds = if self.gibbs_cleanup { self.rounds } else { 0 };
                     sampler.resample_block(

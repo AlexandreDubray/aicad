@@ -424,6 +424,14 @@ fn sample_categorical(weights: &[f64]) -> usize {
     })
 }
 
+/// Shannon entropy of a discrete distribution.
+pub fn entropy(dist: &[f64]) -> f64 {
+    dist.iter()
+        .filter(|&&p| p > 0.0)
+        .map(|&p| -p * p.ln())
+        .sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -775,5 +783,16 @@ mod tests {
     fn argmax_picks_the_largest_weight() {
         assert_eq!(argmax(&[0.1, 0.7, 0.2]), 1);
         assert_eq!(argmax(&[0.9, 0.05, 0.05]), 0);
+    }
+
+    #[test]
+    fn entropy_of_a_deterministic_distribution_is_zero() {
+        assert_eq!(entropy(&[1.0, 0.0, 0.0]), 0.0);
+    }
+
+    #[test]
+    fn entropy_of_a_uniform_distribution_matches_ln_n() {
+        let dist = vec![0.25; 4];
+        assert!((entropy(&dist) - 4.0f64.ln()).abs() < 1e-12);
     }
 }

@@ -1,4 +1,9 @@
+use std::path::PathBuf;
+
+use pyo3::exceptions::PyOSError;
 use pyo3::prelude::*;
+
+use crate::diagnostics;
 
 const LOGGER_NAME: &str = "aicad";
 
@@ -65,4 +70,19 @@ pub fn set_verbosity_trace(py: Python<'_>) -> PyResult<()> {
 pub fn enable_console_logging(py: Python<'_>) -> PyResult<()> {
     py.import("logging")?.call_method0("basicConfig")?;
     Ok(())
+}
+
+/// Turns on `data_log!` recording for the rest of the process (or until `disable_data_log` is
+/// called): every enabled `data_log!` call site writes one JSON object per line to `path`,
+/// truncating it first.
+#[pyfunction]
+pub fn enable_data_log(path: String) -> PyResult<()> {
+    diagnostics::enable(&PathBuf::from(path)).map_err(|e| PyOSError::new_err(e.to_string()))
+}
+
+/// Stops `data_log!` recording and flushes/closes the file opened by `enable_data_log`. This MUST
+/// be called before exiting the process; otherwise some data may be lost
+#[pyfunction]
+pub fn disable_data_log() {
+    diagnostics::disable();
 }
