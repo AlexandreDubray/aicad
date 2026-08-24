@@ -205,9 +205,6 @@ impl<B: Backend> DecodingOperator<B> for MddGibbsDecoding {
                         .collect();
 
                     if diagnostics::is_enabled() {
-                        // if diagnostic is enable, dump the entropy of distribution before and
-                        // after mdd combination. Note that the combination is recomputed; hence,
-                        // there is an overhead, should only be used for debugging/analysis.
                         let marginals = sampler.unconditional_marginals(&probs);
                         for &var in &order {
                             let combined = sampler.combined_marginal(var, &probs, &marginals);
@@ -217,6 +214,8 @@ impl<B: Backend> DecodingOperator<B> for MddGibbsDecoding {
                                 problem_idx = problem_idx,
                                 row = row,
                                 var = var.0,
+                                domain_size = probs[var.0].len(),
+                                number_mdds = sampler.members_of(var).len(),
                                 entropy_before = entropy(&probs[var.0]),
                                 entropy_after = entropy(&combined),
                             );

@@ -267,7 +267,7 @@ impl<'a> GibbsSampler<'a> {
         self.weights[mdd_index] = weight;
     }
 
-    fn members_of(&self, var: VariableIndex) -> &[(usize, usize)] {
+    pub fn members_of(&self, var: VariableIndex) -> &[(usize, usize)] {
         let members = &self.var_to_mdds[var.0];
         assert!(
             !members.is_empty(),
