@@ -13,14 +13,17 @@ use burn::tensor::backend::Backend;
 
 use rand::RngExt;
 
-use crate::learning::consformer::{ConsFormer, ConsFormerBatch, ConsFormerConfig, MddCompilationConfig};
+use crate::learning::consformer::{
+    ConsFormer, ConsFormerBatch, ConsFormerConfig, MddCompilationConfig,
+};
 use crate::learning::Network;
+use crate::mdd::heuristics::ConstraintGrouping;
 use crate::modelling::Problem;
 use crate::nls::decode::{Argmax, DecodingOperator, Sampling};
 use crate::nls::destroy::{DestroyOperator, RandomDestroy, RelatedDestroy, WorstDestroy};
 use crate::nls::{
-    load_network, Budget, MaskSchedule, MddGibbsDecoding, NeuralLocalSearch, Solution,
-    SolveConfig, Status,
+    load_network, Budget, MaskSchedule, MddGibbsDecoding, NeuralLocalSearch, Solution, SolveConfig,
+    Status,
 };
 use crate::sampling::DecodeMode;
 
@@ -133,7 +136,9 @@ impl PyDestroyKind {
 /// the per-variable distribution is combined via the problem's MDD marginals first (`MddGibbs`)
 /// or decoded independently (`Argmax`/`Sampling`); `stochastic_decode` picks greedy vs. stochastic
 /// within whichever of those is selected -- including, for `MddGibbs`, its optional Gibbs-cleanup
-/// sweeps, which share the same `DecodeMode`.
+/// sweeps, which share the same `DecodeMode`. `mdd_grouping_size_bound` picks how `MddGibbs`
+/// compiles its MDDs -- see `ConstraintGrouping`'s doc and `SolveConfig::mdd_grouping_size_bound`.
+#[allow(clippy::too_many_arguments)]
 fn build_decode_op<B: Backend>(
     mdd_decode: bool,
     stochastic_decode: bool,
@@ -141,6 +146,7 @@ fn build_decode_op<B: Backend>(
     domain_size: usize,
     gibbs_round: usize,
     mdd_gibbs_cleanup: bool,
+    mdd_grouping_size_bound: usize,
 ) -> Box<dyn DecodingOperator<B>> {
     if mdd_decode {
         let mode = if stochastic_decode {
@@ -148,8 +154,15 @@ fn build_decode_op<B: Backend>(
         } else {
             DecodeMode::Greedy
         };
+        let compilation = MddCompilationConfig {
+            grouping: ConstraintGrouping {
+                size_bound: mdd_grouping_size_bound,
+                ..ConstraintGrouping::PER_CONSTRAINT
+            },
+            ..MddCompilationConfig::default()
+        };
         Box::new(MddGibbsDecoding::new(
-            MddCompilationConfig::default(),
+            compilation,
             domain_size,
             gibbs_round,
             mode,
@@ -197,6 +210,8 @@ pub struct PySolveConfig {
     #[pyo3(get, set)]
     pub mdd_gibbs_cleanup: bool,
     #[pyo3(get, set)]
+    pub mdd_grouping_size_bound: usize,
+    #[pyo3(get, set)]
     pub time_limit: Option<u64>,
     #[pyo3(get, set)]
     pub iteration_limit: Option<usize>,
@@ -216,9 +231,10 @@ impl PySolveConfig {
         mask_schedule_epochs=0,
         mdd_decode=false,
         stochastic_decode=false,
-        temperature=0.1,
+        temperature=1.0,
         gibbs_round=4,
         mdd_gibbs_cleanup=true,
+        mdd_grouping_size_bound=0,
         time_limit=None,
         iteration_limit=None,
         seed=None,
@@ -236,6 +252,7 @@ impl PySolveConfig {
         temperature: f64,
         gibbs_round: usize,
         mdd_gibbs_cleanup: bool,
+        mdd_grouping_size_bound: usize,
         time_limit: Option<u64>,
         iteration_limit: Option<usize>,
         seed: Option<u64>,
@@ -252,6 +269,7 @@ impl PySolveConfig {
             temperature,
             gibbs_round,
             mdd_gibbs_cleanup,
+            mdd_grouping_size_bound,
             time_limit,
             iteration_limit,
             seed,
@@ -291,6 +309,7 @@ impl From<&PySolveConfig> for SolveConfig {
             temperature: c.temperature,
             gibbs_round: c.gibbs_round,
             mdd_gibbs_cleanup: c.mdd_gibbs_cleanup,
+            mdd_grouping_size_bound: c.mdd_grouping_size_bound,
             time_limit: c.time_limit,
             iteration_limit: c.iteration_limit,
             seed: c.seed,
@@ -314,6 +333,7 @@ impl TryFrom<&SolveConfig> for PySolveConfig {
             temperature: c.temperature,
             gibbs_round: c.gibbs_round,
             mdd_gibbs_cleanup: c.mdd_gibbs_cleanup,
+            mdd_grouping_size_bound: c.mdd_grouping_size_bound,
             time_limit: c.time_limit,
             iteration_limit: c.iteration_limit,
             seed: c.seed,
@@ -462,6 +482,7 @@ fn run<B: Backend>(
                 network_config.domain_size,
                 config.gibbs_round,
                 config.mdd_gibbs_cleanup,
+                config.mdd_grouping_size_bound,
             );
 
             let nls = NeuralLocalSearch::<B, ConsFormer<B>, ConsFormerBatch<B>>::new(
@@ -472,7 +493,13 @@ fn run<B: Backend>(
                 1,
                 device,
             );
-            Ok(chunked_run(&nls, &problems, config.batch_size, budget, seed))
+            Ok(chunked_run(
+                &nls,
+                &problems,
+                config.batch_size,
+                budget,
+                seed,
+            ))
         }
     }
 }
@@ -486,7 +513,11 @@ fn chunked_run<B: Backend, N: Network<B, Ba>, Ba: crate::learning::Batch<B>>(
 ) -> Vec<Solution> {
     let chunk_size = batch_size.unwrap_or(problems.len()).max(1);
     let mut solutions = Vec::with_capacity(problems.len());
-    log::info!("Solving {} problems by chunk of size {}", problems.len(), chunk_size);
+    log::info!(
+        "Solving {} problems by chunk of size {}",
+        problems.len(),
+        chunk_size
+    );
     for (chunk_idx, chunk) in problems.chunks(chunk_size).enumerate() {
         log::info!("Solving chunk {}", chunk_idx);
         // Vary the seed per chunk so chunks don't replay the exact same destroy sequence.

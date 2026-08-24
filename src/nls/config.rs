@@ -46,6 +46,8 @@ pub struct SolveConfig {
     /// If gibbs sampling is applied in mdd-decoding, how many sampling round
     #[config(default = 4)]
     pub gibbs_round: usize,
+    #[config(default = 0)]
+    pub mdd_grouping_size_bound: usize,
 }
 
 impl SolveConfig {
@@ -104,9 +106,10 @@ impl Default for SolveConfig {
             mask_schedule_epochs: 0,
             mdd_decode: false,
             stochastic_decode: false,
-            temperature: 0.1,
+            temperature: 1.0,
             mdd_gibbs_cleanup: true,
             gibbs_round: 4,
+            mdd_grouping_size_bound: 0,
         }
     }
 }
@@ -126,6 +129,7 @@ mod tests {
         assert!(!config.stochastic_decode);
         assert_eq!(config.gibbs_round, 4);
         assert!(config.mdd_gibbs_cleanup);
+        assert_eq!(config.mdd_grouping_size_bound, 0);
         assert!(config.validate().is_ok());
     }
 

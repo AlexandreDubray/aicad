@@ -182,6 +182,8 @@ where
     Ba: Batch<B>,
     N: Network<B, Ba>,
 {
+    /// How often (in iterations) `run` physically drops solved problems out of the batch. See
+    /// `run`'s doc for why this is periodic rather than immediate.
     const COMPACTION_INTERVAL: usize = 100;
 
     /// Builds the search engine: everything that's independent of *which*
@@ -215,6 +217,14 @@ where
     /// destroy operator's randomness. All problems must share the same
     /// `number_variables()`.
     ///
+    /// A problem that finds a solution is frozen in place immediately (its rows stop being
+    /// destroyed, so its solution can't be overwritten by a later iteration), but is only
+    /// physically removed from the batch every `COMPACTION_INTERVAL` iterations -- rebuilding the
+    /// row/tensor bookkeeping on every single solve is itself non-negligible overhead at these
+    /// batch sizes, so it's amortised over a stretch of iterations instead. Either way,
+    /// `Solution::iterations` records the exact iteration a problem solved on, not the (later)
+    /// iteration it happened to be swept out of the batch on.
+    ///
     /// Returns one `Solution` per problem, in the same order as `problems`.
     pub fn run(&self, problems: &[Arc<Problem>], budget: Budget, seed: u64) -> Vec<Solution> {
         let mut rng = StdRng::seed_from_u64(seed);
@@ -226,6 +236,9 @@ where
 
         let mut solutions: Vec<Option<Solution>> = vec![None; num_problems];
 
+        // The problems whose rows are currently in `rows`/`assignments`, and `active[i]`'s index
+        // back into `problems`/`solutions`. May include already-solved problems in between
+        // compaction passes -- see `COMPACTION_INTERVAL` below.
         let mut active: Vec<usize> = (0..num_problems).collect();
         let mut active_problems: Vec<Arc<Problem>> = problems.to_vec();
 
@@ -343,11 +356,7 @@ where
     }
 }
 
-fn rows_to_tensor<B: Backend>(
-    rows: &[Vec<isize>],
-    n: usize,
-    device: &B::Device,
-) -> Tensor<B, 2, Int> {
+fn rows_to_tensor<B: Backend>(rows: &[Vec<isize>], n: usize, device: &B::Device) -> Tensor<B, 2, Int> {
     let data: Vec<i64> = rows
         .iter()
         .flat_map(|row| row.iter().map(|&v| v as i64))

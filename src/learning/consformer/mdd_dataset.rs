@@ -15,26 +15,23 @@ use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
 use crate::learning::BatchProblems;
-use crate::mdd::heuristics::{MergeHeuristic, OrderingHeuristic, SelectHeuristic};
+use crate::mdd::heuristics::{
+    ConstraintGrouping, MergeHeuristic, OrderingHeuristic, SelectHeuristic,
+};
 use crate::mdd::{Mdd, NodeIndex};
 use crate::modelling::{ConstraintIndex, Problem};
 
-use super::dataset::{consformer_mask_data, stack_masks_and_sample_assignments, ConsFormerMaskData};
+use super::dataset::{
+    consformer_mask_data, stack_masks_and_sample_assignments, ConsFormerMaskData,
+};
 use super::{ConsFormerDataConfig, ConsFormerInputs};
 
-/// Configuration used to compile the per-constraint MDDs. `max_width` is intentionally not
-/// exposed: this dataset always refines to an unbounded width (`Mdd::refine(usize::MAX)`), i.e.
-/// exact per-constraint MDDs -- expected to stay small since each one covers a single
-/// constraint's scope only, not the whole problem. `select` still matters (it picks which
-/// relaxed node `refine` splits at each layer); `merge` does not, since `merge_layer` only
-/// triggers once a layer would exceed `max_width`, which an unbounded width never does -- kept
-/// here anyway so `Mdd::new`'s full signature is available (and so a future relaxed mode could
-/// turn it on) without changing this config's shape.
 #[derive(Clone, Debug)]
 pub struct MddCompilationConfig {
     pub ordering: OrderingHeuristic,
     pub merge: MergeHeuristic,
     pub select: SelectHeuristic,
+    pub grouping: ConstraintGrouping,
 }
 
 impl Default for MddCompilationConfig {
@@ -43,6 +40,7 @@ impl Default for MddCompilationConfig {
             ordering: OrderingHeuristic::MinDomMaxLinked,
             merge: MergeHeuristic::LessRelaxed,
             select: SelectHeuristic::Greedy,
+            grouping: ConstraintGrouping::PER_CONSTRAINT,
         }
     }
 }
@@ -75,27 +73,6 @@ impl MddBucketKey {
     }
 }
 
-/// One constraint's exact MDD, reduced to the flat, padded representation the WMC loss operates
-/// on. Nothing about the `Mdd` graph itself survives past dataset construction -- only this.
-///
-/// This is an *edge list*, not a dense `(to, from)` grid: two distinct edges between the same
-/// pair of nodes (different decision values, same successor -- routine near a sink, where many
-/// values converge to "accepted") are common, and their probability contributions must be summed,
-/// not overwritten, so a single scalar per `(to, from)` cell would silently drop one of them. All
-/// four arrays below are conceptually a padded `(num_layers, max_edges)` table, flattened
-/// row-major; slot `(l, e)` is real (`edge_mask[..] == true`) exactly when the MDD's layer `l` has
-/// an `e`-th active edge, in which case `edge_from`/`edge_to` give that edge's endpoints (as local
-/// node indices, `edge_from` in layer `l`'s node-layer, `edge_to` in layer `l + 1`'s) and
-/// `gather_index` is the flat local index -- `variable_index * domain_size + domain_value` -- of
-/// the probability that edge's decision variable puts on that edge's assignment. Root and sink
-/// are always local node index 0 of their layer (the `Mdd`'s own convention), so no extra
-/// bookkeeping is needed to find them.
-///
-/// A constraint whose own domains already make it unsatisfiable (`Mdd::is_unsat`) is represented
-/// exactly like any other: constraint propagation strips every edge, so `edge_mask` ends up
-/// all-false and the resulting WMC is correctly 0 -- no special case needed, though it's worth a
-/// log (dataset construction warns) since it usually means a fixed/hint value already violates
-/// one of the problem's own constraints.
 #[derive(Clone)]
 pub struct MddInstance {
     pub bucket: MddBucketKey,
@@ -113,17 +90,14 @@ pub struct MddInstance {
     /// Local index (within `bucket.max_nodes`, in layer `l`'s node-layer) of that edge's source
     /// node. Meaningless (left at 0) on padding slots.
     pub edge_from: Vec<i64>,
-    /// Which constraint of the problem this MDD was compiled for.
-    pub constraint: ConstraintIndex,
-    /// `constraint.name()`, kept alongside for diagnostics without holding a reference back into
-    /// the constraint itself.
-    pub constraint_name: &'static str,
+    pub constraints: Vec<ConstraintIndex>,
+    pub label: String,
 }
 
 impl std::fmt::Debug for MddInstance {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MddInstance")
-            .field("constraint", &self.constraint_name)
+            .field("label", &self.label)
             .field("bucket", &self.bucket)
             .field(
                 "active_edges",
@@ -141,50 +115,42 @@ struct RawEdge {
     flat_index: i64,
 }
 
-/// Compiles `problem`'s constraints into one exact MDD each, and reduces every one to an
-/// `MddInstance`. `domain_size` must match the value the network itself is configured with
-/// (`ConsFormerConfig::domain_size`): it's the width of the per-variable probability vector the
-/// gather indices are computed against, and this dataset has no other way to learn it, since a
-/// single variable's own domain can be narrower (e.g. a fixed/hint cell).
+/// Human-readable label for a compiled group, used in diagnostics (`MddInstance::label`, unsat
+/// warnings, out-of-range assertions) -- the group's constraint name(s), joined.
+fn describe_group(problem: &Problem, constraints: &[ConstraintIndex]) -> String {
+    constraints
+        .iter()
+        .map(|&c| problem[c].name())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn compile_constraint_mdds(
     problem: &Arc<Problem>,
     compilation: &MddCompilationConfig,
     domain_size: usize,
 ) -> Vec<MddInstance> {
-    // Each constraint's MDD is compiled independently of every other constraint's, so this
-    // parallelizes too -- worthwhile on its own for problems with many constraints (e.g. Sudoku's
-    // ~27), and it composes with `ConsFormerMddDataset::new` parallelizing across problems: rayon's
-    // work-stealing scheduler flattens both levels across the same thread pool rather than
-    // oversubscribing when both are active at once. When called from within
-    // `ConsFormerMddDataset::new` this runs on that pool's capped-size worker pool (see
-    // `utils::worker_pool`); called on its own (e.g. from tests), it falls back to rayon's
-    // ordinary global pool.
-    let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
-    constraints
+    let groups = compilation.grouping.groups(problem);
+    groups
         .into_par_iter()
-        .map(|constraint| {
+        .map(|constraints| {
             let mut mdd = Mdd::new(
                 Arc::clone(problem),
                 compilation.ordering.clone(),
                 compilation.merge.clone(),
                 compilation.select.clone(),
-                &[constraint],
+                &constraints,
             );
-            // `Mdd::new` alone returns the maximally *relaxed* "universe" MDD: one node per
-            // layer, with per-value distinctions collapsed together. `refine` is what actually
-            // splits nodes apart along distinct incoming edges; called with an unbounded width it
-            // never has to merge anything back (`merge_layer` only triggers once a layer would
-            // exceed `max_width`), so it runs to a fixed point and the result is the exact,
-            // fully-split per-constraint MDD this dataset needs.
             mdd.refine(usize::MAX);
+
+            let label = describe_group(problem, &constraints);
 
             if mdd.is_unsat() {
                 log::warn!(
-                    "constraint `{}` (index {}) is unsatisfiable given its own scope's domains -- \
-                     its compiled MDD has no accepting path, so its WMC will always be 0. This \
-                     usually means a fixed/hint value already violates this constraint.",
-                    problem[constraint].name(),
-                    constraint.0,
+                    "MDD group `{}` is unsatisfiable given its own scope's domains -- its \
+                     compiled MDD has no accepting path, so its WMC will always be 0. This \
+                     usually means a fixed/hint value already violates one of its constraints.",
+                    label,
                 );
             }
 
@@ -222,10 +188,10 @@ fn compile_constraint_mdds(
                         // `gather_index` that corrupts training instead of failing loudly.
                         assert!(
                             domain_value >= 0 && (domain_value as usize) < domain_size,
-                            "constraint `{}`: domain value {} out of the network's [0, {}) \
+                            "group `{}`: domain value {} out of the network's [0, {}) \
                              range -- `domain_size` passed to the MDD dataset doesn't match the \
                              network's configured domain_size",
-                            problem[constraint].name(),
+                            label,
                             domain_value,
                             domain_size,
                         );
@@ -272,8 +238,8 @@ fn compile_constraint_mdds(
                 edge_mask,
                 edge_to,
                 edge_from,
-                constraint,
-                constraint_name: problem[constraint].name(),
+                constraints,
+                label,
             }
         })
         .collect()
@@ -364,8 +330,8 @@ impl<B: Backend> ConsFormerMddDataset<B> {
         // spilling onto the global one. Only the final `Tensor::from_data` calls stay
         // single-threaded, to avoid any backend-specific assumptions about building tensors
         // concurrently from multiple threads (e.g. around CUDA context handling).
-        let per_problem: Vec<(ConsFormerMaskData, Vec<MddInstance>)> =
-            crate::utils::worker_pool().install(|| {
+        let per_problem: Vec<(ConsFormerMaskData, Vec<MddInstance>)> = crate::utils::worker_pool()
+            .install(|| {
                 problems
                     .par_iter()
                     .progress_with(progress.clone())
@@ -514,7 +480,9 @@ impl ConsFormerMddBatcher {
     }
 }
 
-impl<B: Backend> Batcher<B, ConsFormerMddSample<B>, ConsFormerMddBatch<B>> for ConsFormerMddBatcher {
+impl<B: Backend> Batcher<B, ConsFormerMddSample<B>, ConsFormerMddBatch<B>>
+    for ConsFormerMddBatcher
+{
     fn batch(
         &self,
         samples: Vec<ConsFormerMddSample<B>>,
@@ -524,8 +492,7 @@ impl<B: Backend> Batcher<B, ConsFormerMddSample<B>, ConsFormerMddBatch<B>> for C
             samples.iter().map(|s| s.attention_mask.clone()).collect();
         let var_mask_tensors: Vec<Tensor<B, 1, Bool>> =
             samples.iter().map(|s| s.var_mask.clone()).collect();
-        let problems: Vec<Arc<Problem>> =
-            samples.iter().map(|s| Arc::clone(&s.problem)).collect();
+        let problems: Vec<Arc<Problem>> = samples.iter().map(|s| Arc::clone(&s.problem)).collect();
 
         let (attention_masks, var_masks, assignments) = stack_masks_and_sample_assignments(
             attention_mask_tensors,
@@ -576,7 +543,8 @@ impl<B: Backend> Batcher<B, ConsFormerMddSample<B>, ConsFormerMddBatch<B>> for C
                     // valid in-bounds index (into that sample's own variable 0, value 0), it's
                     // just masked out by `edge_mask` before it can contribute anything.
                     let sample_offset = *sample_idx as i64 * number_vars * domain_size;
-                    gather_index.extend(instance.gather_index.iter().map(|&idx| idx + sample_offset));
+                    gather_index
+                        .extend(instance.gather_index.iter().map(|&idx| idx + sample_offset));
                     edge_mask.extend(instance.edge_mask.iter().copied());
                     edge_to.extend(instance.edge_to.iter().copied());
                     edge_from.extend(instance.edge_from.iter().copied());
@@ -933,8 +901,9 @@ mod tests {
             .map(|i| Arc::clone(dataset.get(i).unwrap().constraint_mdds()))
             .collect();
 
-        let samples: Vec<ConsFormerMddSample<NdArray>> =
-            (0..dataset.len()).map(|i| dataset.get(i).unwrap()).collect();
+        let samples: Vec<ConsFormerMddSample<NdArray>> = (0..dataset.len())
+            .map(|i| dataset.get(i).unwrap())
+            .collect();
 
         let batcher = ConsFormerMddBatcher::new(data_config);
         let batch = batcher.batch(samples, &device);
@@ -952,7 +921,10 @@ mod tests {
 
         for bucket in &batch.mdd_buckets {
             let num_instances = bucket.sample_index.dims()[0];
-            assert_eq!(bucket.gather_index.dims(), [num_instances, bucket.key.num_layers, bucket.key.max_edges]);
+            assert_eq!(
+                bucket.gather_index.dims(),
+                [num_instances, bucket.key.num_layers, bucket.key.max_edges]
+            );
 
             let sample_indices: Vec<i64> = bucket
                 .sample_index

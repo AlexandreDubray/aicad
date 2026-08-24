@@ -12,12 +12,13 @@ use crate::data_log;
 use crate::diagnostics;
 use crate::learning::consformer::MddCompilationConfig;
 use crate::mdd::Mdd;
-use crate::modelling::{ConstraintIndex, Problem, ValueIndex, VariableIndex};
+use crate::modelling::{Problem, ValueIndex, VariableIndex};
 use crate::nls::decode::DecodingOperator;
 use crate::sampling::{entropy, DecodeMode, GibbsSampler};
 
 struct Cache {
     problems: Vec<Arc<Problem>>,
+    /// Per problem, the compiled MDDs.
     mdds: Vec<Vec<Mdd>>,
 }
 
@@ -28,6 +29,8 @@ pub struct MddGibbsDecoding {
     mode: DecodeMode,
     gibbs_cleanup: bool,
     cache: Mutex<Option<Cache>>,
+    /// Bumped once per `decode` call; used purely as an "iteration" tag on `data_log!` events (see
+    /// `decode`'s body), not for anything behavioural.
     call_count: AtomicUsize,
 }
 
@@ -73,33 +76,37 @@ impl MddGibbsDecoding {
             });
         }
 
-        f(&cache.as_ref().unwrap().mdds)
+        let cache = cache.as_ref().unwrap();
+        f(&cache.mdds)
     }
 }
 
-/// One exact MDD per constraint of `problem`, in `problem.iter_constraints()` order.
+/// Compiles MDDs for `problem` using mini-bucket elimination
 fn compile_problem_mdds(problem: &Arc<Problem>, compilation: &MddCompilationConfig) -> Vec<Mdd> {
-    let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
-    constraints
+    let groups = compilation.grouping.groups(problem);
+    groups
         .into_par_iter()
-        .map(|constraint| {
+        .map(|constraints| {
             let mut mdd = Mdd::new(
                 Arc::clone(problem),
                 compilation.ordering.clone(),
                 compilation.merge,
                 compilation.select,
-                &[constraint],
+                &constraints,
             );
             mdd.refine(usize::MAX);
 
             if mdd.is_unsat() {
+                let label = constraints
+                    .iter()
+                    .map(|&c| problem[c].name())
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 log::warn!(
-                    "constraint `{}` (index {}) is unsatisfiable given its own scope's domains -- \
-                     its compiled MDD has no accepting path, so MddGibbsDecoding will always \
-                     abstain (uniform conditional) for it. This usually means a fixed/hint value \
-                     already violates this constraint.",
-                    problem[constraint].name(),
-                    constraint.0,
+                    "MDD group `{label}` is unsatisfiable given its own scope's domains -- its \
+                     compiled MDD has no accepting path, so MddGibbsDecoding will always abstain \
+                     (uniform conditional) for it. This usually means a fixed/hint value already \
+                     violates one of its constraints.",
                 );
             }
 
@@ -247,16 +254,23 @@ impl<B: Backend> DecodingOperator<B> for MddGibbsDecoding {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mdd::heuristics::{MergeHeuristic, OrderingHeuristic, SelectHeuristic};
+    use crate::mdd::heuristics::{
+        ConstraintGrouping, MergeHeuristic, OrderingHeuristic, SelectHeuristic,
+    };
     use crate::modelling::{gcc, not_equals};
     use burn::backend::ndarray::{NdArray, NdArrayDevice};
     use burn::tensor::{Distribution, TensorData};
 
     fn compilation() -> MddCompilationConfig {
+        compilation_with_grouping(ConstraintGrouping::PER_CONSTRAINT)
+    }
+
+    fn compilation_with_grouping(grouping: ConstraintGrouping) -> MddCompilationConfig {
         MddCompilationConfig {
             ordering: OrderingHeuristic::MinDomMaxLinked,
             merge: MergeHeuristic::LessRelaxed,
             select: SelectHeuristic::Greedy,
+            grouping,
         }
     }
 
@@ -358,6 +372,55 @@ mod tests {
         let n = problem.number_variables();
 
         let op = MddGibbsDecoding::new(compilation(), domain_size, 10, DecodeMode::Greedy, true);
+
+        let logits = Tensor::<B, 1>::from_data(
+            TensorData::new(vec![0.0f32; n * domain_size], [n * domain_size]),
+            &device,
+        )
+        .reshape([1, n, domain_size]);
+        let destroy_mask =
+            Tensor::<B, 2, Int>::from_data(TensorData::new(vec![1i64; n], [1, n]), &device);
+        // Every variable starts pointing at the same (globally infeasible) domain position.
+        let current = Tensor::<B, 2, Int>::from_data(
+            TensorData::new(vec![0i64, 0i64, 1i64], [1, n]),
+            &device,
+        );
+
+        let next = DecodingOperator::<B>::decode(&op, logits, destroy_mask, current, &problems, 1);
+        let next_data: Vec<i64> = next.into_data().to_vec::<i64>().unwrap();
+
+        assert_ne!(next_data[x.0], next_data[y.0], "{next_data:?}");
+        assert_ne!(next_data[y.0], next_data[z.0], "{next_data:?}");
+        assert_ne!(next_data[x.0], next_data[z.0], "{next_data:?}");
+    }
+
+    #[test]
+    fn gibbs_cleanup_recovers_feasibility_from_a_colliding_start_under_mini_bucket_grouping() {
+        type B = NdArray;
+        let device = NdArrayDevice::default();
+        let domain_size = 3;
+
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1], None);
+        let y = problem.add_variable(vec![0, 1, 2], None);
+        let z = problem.add_variable(vec![1, 2], None);
+        not_equals(&mut problem, x, y);
+        not_equals(&mut problem, y, z);
+        not_equals(&mut problem, x, z);
+        let problem = Arc::new(problem);
+        let problems = vec![problem.clone()];
+        let n = problem.number_variables();
+
+        let op = MddGibbsDecoding::new(
+            compilation_with_grouping(ConstraintGrouping {
+                ordering: crate::mdd::heuristics::EliminationOrdering::GreedyMinFill,
+                size_bound: 3,
+            }),
+            domain_size,
+            10,
+            DecodeMode::Greedy,
+            true,
+        );
 
         let logits = Tensor::<B, 1>::from_data(
             TensorData::new(vec![0.0f32; n * domain_size], [n * domain_size]),
