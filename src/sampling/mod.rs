@@ -288,20 +288,25 @@ impl<'a> GibbsSampler<'a> {
         assignment: &[ValueIndex],
     ) -> Vec<f64> {
         let members = self.members_of(var);
-        let domain_size = probs[var.0].len();
-        let mut log_combined = vec![0.0; domain_size];
+        let network_log: Vec<f64> = probs[var.0].iter().map(|&p| p.max(MIN_PROB).ln()).collect();
+        let mut log_combined = network_log.clone();
         for &(mdd_index, layer) in members {
             let weight = self.weights[mdd_index];
             let conditional = clamped_conditional(&self.mdds[mdd_index], layer, probs, assignment);
             for (d, log_d) in log_combined.iter_mut().enumerate() {
-                *log_d += weight * conditional[d].max(MIN_PROB).ln();
+                // For each MDD, we divide (in log-space) by the network own belief. Otherwise,
+                // combining multiple MDDs over the same variable introduce multiple times the
+                // network belief into the marginal, which is fine when there are few constraints,
+                // but gives degenerate results when the number of MDDs increases (e.g., graph
+                // colouring)
+                *log_d += weight * (conditional[d].max(MIN_PROB).ln() - network_log[d]);
             }
         }
         log_combine_and_normalize(log_combined)
     }
 
     /// Same combination as `combined_conditional`, but every MDD's contribution is its
-    /// unconditional marginal (`mdd_marginals`) rather than a conditional clamped to `assignment`.
+    /// unconditional marginal (`mdd_marginals`) rather than a conditional clamped to `assignment`
     pub fn combined_marginal(
         &self,
         var: VariableIndex,
@@ -309,13 +314,15 @@ impl<'a> GibbsSampler<'a> {
         marginals: &[Vec<Vec<f64>>],
     ) -> Vec<f64> {
         let members = self.members_of(var);
-        let domain_size = probs[var.0].len();
-        let mut log_combined = vec![0.0; domain_size];
+        let network_log: Vec<f64> = probs[var.0].iter().map(|&p| p.max(MIN_PROB).ln()).collect();
+        let mut log_combined = network_log.clone();
         for &(mdd_index, layer) in members {
             let weight = self.weights[mdd_index];
             let marginal = &marginals[mdd_index][layer];
             for (d, log_d) in log_combined.iter_mut().enumerate() {
-                *log_d += weight * marginal[d].max(MIN_PROB).ln();
+                // Similarly to combined_conditional, needs to correct the multiple inclusion of
+                // the network probability in the marginal
+                *log_d += weight * (marginal[d].max(MIN_PROB).ln() - network_log[d]);
             }
         }
         log_combine_and_normalize(log_combined)
@@ -661,6 +668,82 @@ mod tests {
         // loosened accordingly (still tight enough to catch a real logic error).
         assert!((combined[0] - 1.0).abs() < 1e-6, "{combined:?}");
         assert!((combined[1] - 0.0).abs() < 1e-6, "{combined:?}");
+    }
+
+    /// Builds `count` independent, mutually uninformative MDDs over a single variable `x` (each
+    /// one an unbound gcc, same trick as `gibbs_sampler_combines_multiple_mdds_via_product_of_experts`
+    /// -- a real scope, but zero actual restriction). `x` belongs to all of them, so
+    /// `var_to_mdds[x]` has `count` entries: exactly the fan-in situation `combined_marginal`/
+    /// `combined_conditional` need to not double-count the network's own belief about `x`.
+    fn uninformative_mdds_over_one_variable(
+        count: usize,
+    ) -> (Arc<Problem>, VariableIndex, Vec<Mdd>) {
+        let mut problems = Vec::with_capacity(count);
+        for _ in 0..count {
+            let mut problem = Problem::default();
+            let x = problem.add_variable(vec![0, 1, 2], None);
+            gcc(&mut problem, vec![x], vec![]);
+            problems.push(Arc::new(problem));
+        }
+        let x = VariableIndex(0);
+        let mdds: Vec<Mdd> = problems
+            .iter()
+            .map(|p| {
+                let constraints: Vec<ConstraintIndex> = p.iter_constraints().collect();
+                build_mdd(p.clone(), &constraints)
+            })
+            .collect();
+        (problems[0].clone(), x, mdds)
+    }
+
+    #[test]
+    fn combined_marginal_does_not_multiply_the_networks_own_belief_once_per_mdd_membership() {
+        // Regression test for the fan-in over-counting bug: previously, `combined_marginal` summed
+        // each member MDD's log-marginal as-is, and since every MDD's own marginal already bakes
+        // in the network's belief about `x` (`probs[x]`), a variable belonging to `count`
+        // uninformative MDDs would have that same belief effectively raised to the `count`-th
+        // power -- sharpening the combined distribution even though none of the MDDs contribute
+        // any actual constraint information. With the fix, the network's belief must be applied
+        // exactly once, so the combined marginal should stay close to `probs[x]` itself regardless
+        // of how many (uninformative) MDDs `x` is a member of.
+        let probs = vec![vec![0.7, 0.2, 0.1]];
+
+        for count in [1, 5, 20] {
+            let (_problem, x, mdds) = uninformative_mdds_over_one_variable(count);
+            let sampler = GibbsSampler::new(&mdds);
+            let marginals = sampler.unconditional_marginals(&probs);
+            let combined = sampler.combined_marginal(x, &probs, &marginals);
+
+            for d in 0..3 {
+                assert!(
+                    (combined[d] - probs[0][d]).abs() < 1e-6,
+                    "count={count}, d={d}, combined={combined:?}, expected={:?}",
+                    probs[0]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn combined_conditional_does_not_multiply_the_networks_own_belief_once_per_mdd_membership() {
+        // Same regression as `combined_marginal_does_not_multiply_the_networks_own_belief_once_per_mdd_membership`,
+        // but through the clamped-conditional path (`combined_conditional`) used by `sweep`.
+        let probs = vec![vec![0.7, 0.2, 0.1]];
+
+        for count in [1, 5, 20] {
+            let (problem, x, mdds) = uninformative_mdds_over_one_variable(count);
+            let sampler = GibbsSampler::new(&mdds);
+            let assignment = vec![ValueIndex(0); problem.number_variables()];
+            let combined = sampler.combined_conditional(x, &probs, &assignment);
+
+            for d in 0..3 {
+                assert!(
+                    (combined[d] - probs[0][d]).abs() < 1e-6,
+                    "count={count}, d={d}, combined={combined:?}, expected={:?}",
+                    probs[0]
+                );
+            }
+        }
     }
 
     #[test]
