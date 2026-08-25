@@ -8,6 +8,8 @@ use burn::tensor::{Int, Tensor};
 
 use rayon::prelude::*;
 
+use rustc_hash::{FxHashMap, FxHashSet};
+
 use crate::data_log;
 use crate::diagnostics;
 use crate::learning::consformer::MddCompilationConfig;
@@ -17,9 +19,7 @@ use crate::nls::decode::DecodingOperator;
 use crate::sampling::{entropy, DecodeMode, GibbsSampler};
 
 struct Cache {
-    problems: Vec<Arc<Problem>>,
-    /// Per problem, the compiled MDDs.
-    mdds: Vec<Vec<Mdd>>,
+    mdds: FxHashMap<usize, Vec<Mdd>>,
 }
 
 pub struct MddGibbsDecoding {
@@ -28,7 +28,7 @@ pub struct MddGibbsDecoding {
     rounds: usize,
     mode: DecodeMode,
     gibbs_cleanup: bool,
-    cache: Mutex<Option<Cache>>,
+    cache: Mutex<Cache>,
     /// Bumped once per `decode` call; used purely as an "iteration" tag on `data_log!` events (see
     /// `decode`'s body), not for anything behavioural.
     call_count: AtomicUsize,
@@ -52,32 +52,32 @@ impl MddGibbsDecoding {
             rounds,
             mode,
             gibbs_cleanup,
-            cache: Mutex::new(None),
+            cache: Mutex::new(Cache { mdds: FxHashMap::default() }),
             call_count: AtomicUsize::new(0),
         }
     }
 
-    fn with_mdds<R>(&self, problems: &[Arc<Problem>], f: impl FnOnce(&[Vec<Mdd>]) -> R) -> R {
+    fn cache_key(problem: &Arc<Problem>) -> usize {
+        Arc::as_ptr(problem) as usize
+    }
+
+    fn with_mdds<R>(&self, problems: &[Arc<Problem>], f: impl FnOnce(&[&[Mdd]]) -> R) -> R {
         let mut cache = self.cache.lock().unwrap();
-        let up_to_date = matches!(
-            &*cache,
-            Some(c) if c.problems.len() == problems.len()
-                && c.problems.iter().zip(problems).all(|(a, b)| Arc::ptr_eq(a, b))
-        );
+        let current_keys: FxHashSet<usize> = problems.iter().map(Self::cache_key).collect();
+        cache.mdds.retain(|key, _| current_keys.contains(key));
 
-        if !up_to_date {
-            let mdds: Vec<Vec<Mdd>> = problems
-                .par_iter()
-                .map(|problem| compile_problem_mdds(problem, &self.compilation))
-                .collect();
-            *cache = Some(Cache {
-                problems: problems.to_vec(),
-                mdds,
-            });
-        }
+        let missing: Vec<&Arc<Problem>> = problems
+            .iter()
+            .filter(|p| !cache.mdds.contains_key(&Self::cache_key(p)))
+            .collect();
+        let compiled: Vec<(usize, Vec<Mdd>)> = missing
+            .par_iter()
+            .map(|&problem| (Self::cache_key(problem), compile_problem_mdds(problem, &self.compilation)))
+            .collect();
+        cache.mdds.extend(compiled);
 
-        let cache = cache.as_ref().unwrap();
-        f(&cache.mdds)
+        let ordered: Vec<&[Mdd]> = problems.iter().map(|p| cache.mdds[&Self::cache_key(p)].as_slice()).collect();
+        f(&ordered)
     }
 }
 
