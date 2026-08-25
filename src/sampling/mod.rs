@@ -4,8 +4,15 @@ use crate::modelling::{ValueIndex, VariableIndex};
 use rand::seq::SliceRandom;
 use rand::RngExt;
 
-/// Floor applied to the probabilities to avoid undefined behavior
-const MIN_PROB: f64 = 1e-9;
+const LOG_ZERO: f64 = -745.0;
+
+fn safe_ln(p: f64) -> f64 {
+    if p > 0.0 {
+        p.ln()
+    } else {
+        LOG_ZERO
+    }
+}
 
 /// How `GibbsSampler::sweep` turns a variable's combined conditional distribution into a value.
 #[derive(Clone, Copy, Debug)]
@@ -44,7 +51,7 @@ fn clamped_alpha_at(
             let value = mdd[edge].assignment();
             if value == clamp_value {
                 // We found the edge, we follow it
-                path_probability = path_probability * probs[variable.0][value.0].max(MIN_PROB);
+                path_probability *= probs[variable.0][value.0];
                 current_node = mdd[edge].to();
                 break;
             }
@@ -95,7 +102,7 @@ fn clamped_beta_at(
                 if value != clamp_value {
                     continue;
                 }
-                let prob = probs[variable.0][value.0].max(MIN_PROB);
+                let prob = probs[variable.0][value.0];
                 // Multiply the edge probability with the backward WMC of the child
                 mass += prob * beta[mdd[edge].to().1];
             }
@@ -132,7 +139,7 @@ pub fn clamped_conditional(
         }
         for edge in mdd[node].iter_children() {
             let value = mdd[edge].assignment();
-            let prob = probs[variable.0][value.0].max(MIN_PROB);
+            let prob = probs[variable.0][value.0];
             // We accumulate the probability of reaching the node, selecting the edge, and
             // extending the partial assignment (with the edge) into a full solution
             weights[value.0] += mass * prob * beta[mdd[edge].to().1];
@@ -173,7 +180,7 @@ fn unconditional_alpha_beta(mdd: &Mdd, probs: &[Vec<f64>]) -> (Vec<Vec<f64>>, Ve
             }
             for edge in mdd[node].iter_children() {
                 let value = mdd[edge].assignment();
-                let prob = probs[variable.0][value.0].max(MIN_PROB);
+                let prob = probs[variable.0][value.0];
                 next_alpha[mdd[edge].to().1] += mass * prob;
             }
         }
@@ -189,7 +196,7 @@ fn unconditional_alpha_beta(mdd: &Mdd, probs: &[Vec<f64>]) -> (Vec<Vec<f64>>, Ve
             let mut mass = 0.0;
             for edge in mdd[node].iter_children() {
                 let value = mdd[edge].assignment();
-                let prob = probs[variable.0][value.0].max(MIN_PROB);
+                let prob = probs[variable.0][value.0];
                 mass += prob * beta[layer + 1][mdd[edge].to().1];
             }
             prev_beta[node.1] = mass;
@@ -220,7 +227,7 @@ fn mdd_marginals(mdd: &Mdd, probs: &[Vec<f64>]) -> Vec<Vec<f64>> {
                 }
                 for edge in mdd[node].iter_children() {
                     let value = mdd[edge].assignment();
-                    let prob = probs[variable.0][value.0].max(MIN_PROB);
+                    let prob = probs[variable.0][value.0];
                     weights[value.0] += mass * prob * beta[layer + 1][mdd[edge].to().1];
                 }
             }
@@ -288,18 +295,18 @@ impl<'a> GibbsSampler<'a> {
         assignment: &[ValueIndex],
     ) -> Vec<f64> {
         let members = self.members_of(var);
-        let network_log: Vec<f64> = probs[var.0].iter().map(|&p| p.max(MIN_PROB).ln()).collect();
+        let network_log: Vec<f64> = probs[var.0].iter().map(|&p| safe_ln(p)).collect();
         let mut log_combined = network_log.clone();
         for &(mdd_index, layer) in members {
             let weight = self.weights[mdd_index];
             let conditional = clamped_conditional(&self.mdds[mdd_index], layer, probs, assignment);
             for (d, log_d) in log_combined.iter_mut().enumerate() {
-                // For each MDD, we divide (in log-space) by the network own belief. Otherwise,
+                // For each MDD, we devide (in log-space) by the network own belief. Otherwise,
                 // combining multiple MDDs over the same variable introduce multiple times the
                 // network belief into the marginal, which is fine when there are few constraints,
                 // but gives degenerate results when the number of MDDs increases (e.g., graph
                 // colouring)
-                *log_d += weight * (conditional[d].max(MIN_PROB).ln() - network_log[d]);
+                *log_d += weight * (safe_ln(conditional[d]) - network_log[d]);
             }
         }
         log_combine_and_normalize(log_combined)
@@ -314,15 +321,13 @@ impl<'a> GibbsSampler<'a> {
         marginals: &[Vec<Vec<f64>>],
     ) -> Vec<f64> {
         let members = self.members_of(var);
-        let network_log: Vec<f64> = probs[var.0].iter().map(|&p| p.max(MIN_PROB).ln()).collect();
+        let network_log: Vec<f64> = probs[var.0].iter().map(|&p| safe_ln(p)).collect();
         let mut log_combined = network_log.clone();
         for &(mdd_index, layer) in members {
             let weight = self.weights[mdd_index];
             let marginal = &marginals[mdd_index][layer];
             for (d, log_d) in log_combined.iter_mut().enumerate() {
-                // Similarly to combined_conditional, needs to correct the multiple inclusion of
-                // the network probability in the marginal
-                *log_d += weight * (marginal[d].max(MIN_PROB).ln() - network_log[d]);
+                *log_d += weight * (safe_ln(marginal[d]) - network_log[d]);
             }
         }
         log_combine_and_normalize(log_combined)
@@ -662,10 +667,10 @@ mod tests {
         assignment[x.0] = ValueIndex(1);
         let combined = sampler.combined_conditional(y, &probs, &assignment);
         // Only not_equals(x, y) actually constrains y here; with x=1, y=0 is the only option.
-        // `mdd_b`'s unbound gcc contributes a uniform (non-opinionated) conditional, and
-        // `MIN_PROB` keeps every probability this module works with strictly positive, so the
-        // combined result approaches but never exactly reaches [1.0, 0.0] -- tolerance is
-        // loosened accordingly (still tight enough to catch a real logic error).
+        // `mdd_b`'s unbound gcc contributes a uniform (non-opinionated) conditional. `safe_ln`
+        // means y=1's genuinely-zero conditional no longer gets floored up to a fixed MIN_PROB, so
+        // the combined result can land exactly on [1.0, 0.0] -- the tolerance here is kept loose
+        // regardless, since exactness isn't the point of this test.
         assert!((combined[0] - 1.0).abs() < 1e-6, "{combined:?}");
         assert!((combined[1] - 0.0).abs() < 1e-6, "{combined:?}");
     }
@@ -744,6 +749,33 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn combined_marginal_preserves_network_confidence_far_below_the_old_min_prob_floor() {
+        // Regression test for the entropy-floor bug: the old `MIN_PROB = 1e-9` clamp was applied
+        // to `probs` itself before it ever reached the combination math, so no matter how sharp the
+        // network's real output was, the combined distribution could never read as more confident
+        // than that floor allowed -- observed as `combined_marginal`'s output plateauing at a fixed
+        // entropy regardless of how much further the raw network kept sharpening, identically for
+        // every problem type and grouping (even `size_bound = 0`, i.e. plain per-constraint MDDs
+        // with no merging at all), since the floor sat upstream of any MDD-specific computation.
+        // With `safe_ln`, a probability well below the old floor (here 1e-15, six orders of
+        // magnitude past where `MIN_PROB` used to clamp) must survive combination with a set of
+        // uninformative MDDs essentially unchanged, instead of being floored up to ~1e-9.
+        let probs = vec![vec![1.0 - 2e-15, 1e-15, 1e-15]];
+        let (_problem, x, mdds) = uninformative_mdds_over_one_variable(5);
+        let sampler = GibbsSampler::new(&mdds);
+        let marginals = sampler.unconditional_marginals(&probs);
+        let combined = sampler.combined_marginal(x, &probs, &marginals);
+
+        // The old MIN_PROB=1e-9 floor would have left combined[1]/combined[2] at roughly 1e-9;
+        // asserting well below that (and consistent with the true ~1e-15 input) catches a
+        // regression back to a fixed floor without demanding exact-to-the-bit reproduction of the
+        // input (renormalization and floating-point summation can shift the last few digits).
+        assert!(combined[1] < 1e-12, "combined={combined:?}");
+        assert!(combined[2] < 1e-12, "combined={combined:?}");
+        assert!((combined[0] - 1.0).abs() < 1e-9, "combined={combined:?}");
     }
 
     #[test]
