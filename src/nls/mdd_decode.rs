@@ -6,6 +6,7 @@ use burn::tensor::activation::softmax;
 use burn::tensor::backend::Backend;
 use burn::tensor::{Int, Tensor};
 
+use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
 
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -70,8 +71,12 @@ impl MddGibbsDecoding {
             .iter()
             .filter(|p| !cache.mdds.contains_key(&Self::cache_key(p)))
             .collect();
+        if !missing.is_empty() {
+            log::info!("Compiling {} mdds", missing.len());
+        }
         let compiled: Vec<(usize, Vec<Mdd>)> = missing
             .par_iter()
+            .progress_count(missing.len() as u64)
             .map(|&problem| (Self::cache_key(problem), compile_problem_mdds(problem, &self.compilation)))
             .collect();
         cache.mdds.extend(compiled);
