@@ -13,19 +13,14 @@ use burn::tensor::backend::Backend;
 
 use rand::RngExt;
 
-use crate::learning::consformer::{
-    ConsFormer, ConsFormerBatch, ConsFormerConfig, MddCompilationConfig,
-};
+use crate::learning::consformer::{ConsFormer, ConsFormerBatch, ConsFormerConfig};
 use crate::learning::Network;
-use crate::mdd::heuristics::ConstraintGrouping;
 use crate::modelling::Problem;
 use crate::nls::decode::{Argmax, DecodingOperator, Sampling};
 use crate::nls::destroy::{DestroyOperator, RandomDestroy, RelatedDestroy, WorstDestroy};
 use crate::nls::{
-    load_network, Budget, MaskSchedule, MddGibbsDecoding, NeuralLocalSearch, Solution, SolveConfig,
-    Status,
+    load_network, Budget, MaskSchedule, NeuralLocalSearch, Solution, SolveConfig, Status,
 };
-use crate::sampling::DecodeMode;
 
 use super::learn::cuda_available;
 use super::problem::PyProblem;
@@ -132,43 +127,13 @@ impl PyDestroyKind {
     }
 }
 
-/// Builds the decode operator for `mdd_decode`/`stochastic_decode`: `mdd_decode` picks whether
-/// the per-variable distribution is combined via the problem's MDD marginals first (`MddGibbs`)
-/// or decoded independently (`Argmax`/`Sampling`); `stochastic_decode` picks greedy vs. stochastic
-/// within whichever of those is selected -- including, for `MddGibbs`, its optional Gibbs-cleanup
-/// sweeps, which share the same `DecodeMode`. `mdd_grouping_size_bound` picks how `MddGibbs`
-/// compiles its MDDs -- see `ConstraintGrouping`'s doc and `SolveConfig::mdd_grouping_size_bound`.
-#[allow(clippy::too_many_arguments)]
+/// Builds the decode operator for neural local search: `stochastic_decode`
+/// picks greedy (`Argmax`) vs. stochastic (`Sampling`) decoding of the network's logits.
 fn build_decode_op<B: Backend>(
-    mdd_decode: bool,
     stochastic_decode: bool,
     temperature: f64,
-    domain_size: usize,
-    gibbs_round: usize,
-    mdd_gibbs_cleanup: bool,
-    mdd_grouping_size_bound: usize,
 ) -> Box<dyn DecodingOperator<B>> {
-    if mdd_decode {
-        let mode = if stochastic_decode {
-            DecodeMode::Sample
-        } else {
-            DecodeMode::Greedy
-        };
-        let compilation = MddCompilationConfig {
-            grouping: ConstraintGrouping {
-                size_bound: mdd_grouping_size_bound,
-                ..ConstraintGrouping::PER_CONSTRAINT
-            },
-            ..MddCompilationConfig::default()
-        };
-        Box::new(MddGibbsDecoding::new(
-            compilation,
-            domain_size,
-            gibbs_round,
-            mode,
-            mdd_gibbs_cleanup,
-        ))
-    } else if stochastic_decode {
+    if stochastic_decode {
         Box::new(Sampling { temperature })
     } else {
         Box::new(Argmax)
@@ -200,17 +165,9 @@ pub struct PySolveConfig {
     #[pyo3(get, set)]
     pub mask_schedule_epochs: usize,
     #[pyo3(get, set)]
-    pub mdd_decode: bool,
-    #[pyo3(get, set)]
     pub stochastic_decode: bool,
     #[pyo3(get, set)]
     pub temperature: f64,
-    #[pyo3(get, set)]
-    pub gibbs_round: usize,
-    #[pyo3(get, set)]
-    pub mdd_gibbs_cleanup: bool,
-    #[pyo3(get, set)]
-    pub mdd_grouping_size_bound: usize,
     #[pyo3(get, set)]
     pub time_limit: Option<u64>,
     #[pyo3(get, set)]
@@ -229,12 +186,8 @@ impl PySolveConfig {
         destroy_fraction_max=1.0,
         destroy_fraction_min=1.0,
         mask_schedule_epochs=0,
-        mdd_decode=false,
         stochastic_decode=false,
         temperature=1.0,
-        gibbs_round=4,
-        mdd_gibbs_cleanup=true,
-        mdd_grouping_size_bound=0,
         time_limit=None,
         iteration_limit=None,
         seed=None,
@@ -247,12 +200,8 @@ impl PySolveConfig {
         destroy_fraction_max: f64,
         destroy_fraction_min: f64,
         mask_schedule_epochs: usize,
-        mdd_decode: bool,
         stochastic_decode: bool,
         temperature: f64,
-        gibbs_round: usize,
-        mdd_gibbs_cleanup: bool,
-        mdd_grouping_size_bound: usize,
         time_limit: Option<u64>,
         iteration_limit: Option<usize>,
         seed: Option<u64>,
@@ -264,12 +213,8 @@ impl PySolveConfig {
             destroy_fraction_max,
             destroy_fraction_min,
             mask_schedule_epochs,
-            mdd_decode,
             stochastic_decode,
             temperature,
-            gibbs_round,
-            mdd_gibbs_cleanup,
-            mdd_grouping_size_bound,
             time_limit,
             iteration_limit,
             seed,
@@ -304,12 +249,8 @@ impl From<&PySolveConfig> for SolveConfig {
             destroy_fraction_max: c.destroy_fraction_max,
             destroy_fraction_min: c.destroy_fraction_min,
             mask_schedule_epochs: c.mask_schedule_epochs,
-            mdd_decode: c.mdd_decode,
             stochastic_decode: c.stochastic_decode,
             temperature: c.temperature,
-            gibbs_round: c.gibbs_round,
-            mdd_gibbs_cleanup: c.mdd_gibbs_cleanup,
-            mdd_grouping_size_bound: c.mdd_grouping_size_bound,
             time_limit: c.time_limit,
             iteration_limit: c.iteration_limit,
             seed: c.seed,
@@ -328,12 +269,8 @@ impl TryFrom<&SolveConfig> for PySolveConfig {
             destroy_fraction_max: c.destroy_fraction_max,
             destroy_fraction_min: c.destroy_fraction_min,
             mask_schedule_epochs: c.mask_schedule_epochs,
-            mdd_decode: c.mdd_decode,
             stochastic_decode: c.stochastic_decode,
             temperature: c.temperature,
-            gibbs_round: c.gibbs_round,
-            mdd_gibbs_cleanup: c.mdd_gibbs_cleanup,
-            mdd_grouping_size_bound: c.mdd_grouping_size_bound,
             time_limit: c.time_limit,
             iteration_limit: c.iteration_limit,
             seed: c.seed,
@@ -460,7 +397,7 @@ fn run<B: Backend>(
 
     match network_kind {
         PyNetworkKind::ConsFormer => {
-            let (network_config, network) =
+            let (_network_config, network) =
                 load_network::<B, ConsFormerConfig>(checkpoint_dir, &problems, &device).map_err(
                     |e| {
                         PyRuntimeError::new_err(format!(
@@ -475,15 +412,7 @@ fn run<B: Backend>(
                 epochs: config.mask_schedule_epochs,
             };
             let destroy_op = destroy_kind.build();
-            let decode_op = build_decode_op::<B>(
-                config.mdd_decode,
-                config.stochastic_decode,
-                config.temperature,
-                network_config.domain_size,
-                config.gibbs_round,
-                config.mdd_gibbs_cleanup,
-                config.mdd_grouping_size_bound,
-            );
+            let decode_op = build_decode_op::<B>(config.stochastic_decode, config.temperature);
 
             let nls = NeuralLocalSearch::<B, ConsFormer<B>, ConsFormerBatch<B>>::new(
                 network,

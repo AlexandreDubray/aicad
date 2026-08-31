@@ -6,12 +6,10 @@
 pub mod config;
 pub mod decode;
 pub mod destroy;
-pub mod mdd_decode;
 
 pub use config::SolveConfig;
 pub use decode::DecodingOperator;
 pub use destroy::{DestroyOperator, MaskSchedule};
-pub use mdd_decode::MddGibbsDecoding;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -19,7 +17,6 @@ use std::time::{Duration, Instant};
 
 use burn::config::Config;
 use burn::module::Module;
-use burn::prelude::ElementConversion;
 use burn::record::CompactRecorder;
 use burn::tensor::backend::Backend;
 use burn::tensor::{Int, Tensor};
@@ -29,6 +26,7 @@ use rand::SeedableRng;
 
 use crate::learning::{Batch, Network, NetworkConfig};
 use crate::modelling::Problem;
+use crate::utils::tensor::*;
 
 /// A solution returned by the solver, with its statistics
 #[derive(Clone)]
@@ -354,31 +352,4 @@ where
         Tensor::<B, 1, Int>::from_data(data.as_slice(), &self.device)
             .reshape([problems.len() * self.population_size, n])
     }
-}
-
-fn rows_to_tensor<B: Backend>(rows: &[Vec<isize>], n: usize, device: &B::Device) -> Tensor<B, 2, Int> {
-    let data: Vec<i64> = rows
-        .iter()
-        .flat_map(|row| row.iter().map(|&v| v as i64))
-        .collect();
-    Tensor::<B, 1, Int>::from_data(data.as_slice(), device).reshape([rows.len(), n])
-}
-
-fn to_rows<B: Backend>(assignments: &Tensor<B, 2, Int>, p: usize, n: usize) -> Vec<Vec<isize>> {
-    let flat: Vec<i64> = assignments
-        .clone()
-        .into_data()
-        .to_vec::<B::IntElem>()
-        .expect("assignment tensor should be integer")
-        .into_iter()
-        .map(|v| v.elem::<i64>())
-        .collect();
-    (0..p)
-        .map(|i| {
-            flat[i * n..(i + 1) * n]
-                .iter()
-                .map(|&v| v as isize)
-                .collect()
-        })
-        .collect()
 }

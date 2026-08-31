@@ -1,7 +1,8 @@
+pub mod solve;
+
 use crate::mdd::Mdd;
 use crate::modelling::{ValueIndex, VariableIndex};
 
-use rand::seq::SliceRandom;
 use rand::RngExt;
 
 const LOG_ZERO: f64 = -745.0;
@@ -14,7 +15,7 @@ fn safe_ln(p: f64) -> f64 {
     }
 }
 
-/// How `GibbsSampler::sweep` turns a variable's combined conditional distribution into a value.
+/// How a variable's combined distribution turns into a value: `sample_categorical` or `argmax`.
 #[derive(Clone, Copy, Debug)]
 pub enum DecodeMode {
     /// Draw a value proportionally to the combined distribution
@@ -23,114 +24,109 @@ pub enum DecodeMode {
     Greedy,
 }
 
-/// Runs the forward (WMC computation) pass over the MDD until a target layer.
-/// The forward pass must be consistent with the given assignment; computing the WMC flow only
-/// through the edges associated with the assignment.
-/// This correspond to a path from the root to the target layer because each node has exactly one
-/// outgoing edge per label. Hence, only one node in target_layer has a non-zero forward
-/// probability mass.
-///
-/// Returns: A vector of the same size as the target layer. Each entry correspond to the
-///          probability of reaching the associated node from the root, consistently with the assignment.
-fn clamped_alpha_at(
+/// Generalises the forward (WMC) pass over `mdd` up to `target_layer`: at a layer whose variable
+/// is `decided`, follows only the edge matching `assignment`'s current value for it. At a layer
+/// whose variable is not yet `decided`, sums over every outgoing edge instead.
+fn partial_alpha_at(
     mdd: &Mdd,
     target_layer: usize,
     probs: &[Vec<f64>],
     assignment: &[ValueIndex],
+    decided: &[bool],
 ) -> Vec<f64> {
-    let n = mdd.number_nodes_in_layer(target_layer);
-    let mut alpha: Vec<f64> = vec![0.0; n];
-    let mut path_probability = 1.0;
-    let mut current_node = mdd.root();
+    let mut alpha: Vec<f64> = vec![1.0];
 
     for layer in 0..target_layer {
         let variable = mdd.decision_at_layer(layer);
-        let clamp_value = assignment[variable.0];
-
-        for edge in mdd[current_node].iter_children() {
-            let value = mdd[edge].assignment();
-            if value == clamp_value {
-                // We found the edge, we follow it
-                path_probability *= probs[variable.0][value.0];
-                current_node = mdd[edge].to();
-                break;
+        let mut next_alpha = vec![0.0; mdd.number_nodes_in_layer(layer + 1)];
+        for node in mdd.nodes_in_layer(layer) {
+            let mass = alpha[node.1];
+            if mass == 0.0 {
+                continue;
+            }
+            if decided[variable.0] {
+                let clamp_value = assignment[variable.0];
+                for edge in mdd[node].iter_children() {
+                    let value = mdd[edge].assignment();
+                    if value == clamp_value {
+                        let prob = probs[variable.0][value.0];
+                        next_alpha[mdd[edge].to().1] += mass * prob;
+                        break;
+                    }
+                }
+            } else {
+                for edge in mdd[node].iter_children() {
+                    let value = mdd[edge].assignment();
+                    let prob = probs[variable.0][value.0];
+                    next_alpha[mdd[edge].to().1] += mass * prob;
+                }
             }
         }
-        // If the current_node has not been updated it is still on the current_layer. That means
-        // that no paths exist consistent with the current assignment, forward pass is 0.0
-        if current_node.0 == layer {
-            path_probability = 0.0;
-            break;
-        }
-    }
-    if current_node.0 == target_layer {
-        alpha[current_node.1] = path_probability;
+        alpha = next_alpha;
     }
 
     alpha
 }
 
-/// Runs the backward (WMC computation, in reverse order) pass over the MDD until a target layer.
-/// The backward pass must be consistent with the given assignment; computing the WMC flow only
-/// through the edges associated with the assignment.
-///
-/// Returns: A vector of the same size as the target layer. Each entry correspond to the
-///          probability of reaching the associated node from the sink, consistently with the assignment.
-fn clamped_beta_at(
+/// The backward counterpart of `partial_alpha_at`: generalises the backward (WMC) pass over `mdd`
+/// down to `target_layer`, clamping a `decided` layer's variable to its assigned value and summing
+/// over every edge at an undecided one.
+fn partial_beta_at(
     mdd: &Mdd,
     target_layer: usize,
     probs: &[Vec<f64>],
     assignment: &[ValueIndex],
+    decided: &[bool],
 ) -> Vec<f64> {
-    // Sink node has always a probability of 1.0 being reached
-    let mut beta: Vec<f64> = vec![1.0];
     let last_layer = mdd.sink().0;
+    let mut beta: Vec<f64> = vec![1.0; mdd.number_nodes_in_layer(last_layer)];
 
-    // Iterates from the sink layer up to the target layer
-    for layer in ((target_layer + 1)..last_layer + 1).rev() {
-        // Compute the backward WMC from the prev_layer by iterating on the children
-        let prev_layer = layer - 1;
-        let variable = mdd.decision_at_layer(prev_layer);
-        let clamp_value = assignment[variable.0];
-
-        let mut prev_beta = vec![0.0; mdd.number_nodes_in_layer(prev_layer)];
-        for node in mdd.nodes_in_layer(prev_layer) {
+    for layer in (target_layer..last_layer).rev() {
+        let variable = mdd.decision_at_layer(layer);
+        let mut prev_beta = vec![0.0; mdd.number_nodes_in_layer(layer)];
+        for node in mdd.nodes_in_layer(layer) {
             let mut mass = 0.0;
-            for edge in mdd[node].iter_children() {
-                let value = mdd[edge].assignment();
-                // Skip edges inconsistent with the assignment
-                if value != clamp_value {
-                    continue;
+            if decided[variable.0] {
+                let clamp_value = assignment[variable.0];
+                for edge in mdd[node].iter_children() {
+                    let value = mdd[edge].assignment();
+                    if value == clamp_value {
+                        let prob = probs[variable.0][value.0];
+                        mass += prob * beta[mdd[edge].to().1];
+                        break;
+                    }
                 }
-                let prob = probs[variable.0][value.0];
-                // Multiply the edge probability with the backward WMC of the child
-                mass += prob * beta[mdd[edge].to().1];
+            } else {
+                for edge in mdd[node].iter_children() {
+                    let value = mdd[edge].assignment();
+                    let prob = probs[variable.0][value.0];
+                    mass += prob * beta[mdd[edge].to().1];
+                }
             }
             prev_beta[node.1] = mass;
         }
         beta = prev_beta;
     }
+
     beta
 }
 
-/// Computes the distribution of the variable at target_layer conditionned on the MDD structure and
-/// the assignment.
-pub fn clamped_conditional(
+/// Computes the distribution of the variable at `target_layer`, conditioned on the MDD structure
+/// and whichever evidence `decided` supplies from `assignment` -- an undecided variable elsewhere
+/// in the MDD's scope is marginalised out.
+fn partial_conditional(
     mdd: &Mdd,
     target_layer: usize,
     probs: &[Vec<f64>],
     assignment: &[ValueIndex],
+    decided: &[bool],
 ) -> Vec<f64> {
     let variable = mdd.decision_at_layer(target_layer);
     let domain_size = probs[variable.0].len();
 
-    // Computes both forward and backward probability mass of the nodes in the layer.
-    // The alpha vector gives for each node its probability of reaching it from the source
-    // The beta vector gives for each node its probability of reaching it from the sink
-    let alpha = clamped_alpha_at(mdd, target_layer, probs, assignment);
-    let beta = clamped_beta_at(mdd, target_layer + 1, probs, assignment);
+    let alpha = partial_alpha_at(mdd, target_layer, probs, assignment, decided);
+    let beta = partial_beta_at(mdd, target_layer + 1, probs, assignment, decided);
 
-    // Probability distribution over the domain
     let mut weights = vec![0.0; domain_size];
     for node in mdd.nodes_in_layer(target_layer) {
         let mass = alpha[node.1];
@@ -140,8 +136,6 @@ pub fn clamped_conditional(
         for edge in mdd[node].iter_children() {
             let value = mdd[edge].assignment();
             let prob = probs[variable.0][value.0];
-            // We accumulate the probability of reaching the node, selecting the edge, and
-            // extending the partial assignment (with the edge) into a full solution
             weights[value.0] += mass * prob * beta[mdd[edge].to().1];
         }
     }
@@ -162,83 +156,9 @@ fn normalize_or_uniform(mut weights: Vec<f64>, domain_size: usize) -> Vec<f64> {
     weights
 }
 
-/// Unconditional (i.e. not clamped to any assignment) forward/backward WMC pass over `mdd`, given
-/// only `probs`. `alpha[layer][node]`/`beta[layer][node]` are indexed the same way
-/// `mdd.nodes_in_layer(layer)` enumerates that layer's nodes.
-fn unconditional_alpha_beta(mdd: &Mdd, probs: &[Vec<f64>]) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
-    let last_layer = mdd.sink().0;
-
-    let mut alpha: Vec<Vec<f64>> = Vec::with_capacity(last_layer + 1);
-    alpha.push(vec![1.0; mdd.number_nodes_in_layer(0)]);
-    for layer in 0..last_layer {
-        let variable = mdd.decision_at_layer(layer);
-        let mut next_alpha = vec![0.0; mdd.number_nodes_in_layer(layer + 1)];
-        for node in mdd.nodes_in_layer(layer) {
-            let mass = alpha[layer][node.1];
-            if mass == 0.0 {
-                continue;
-            }
-            for edge in mdd[node].iter_children() {
-                let value = mdd[edge].assignment();
-                let prob = probs[variable.0][value.0];
-                next_alpha[mdd[edge].to().1] += mass * prob;
-            }
-        }
-        alpha.push(next_alpha);
-    }
-
-    let mut beta: Vec<Vec<f64>> = vec![Vec::new(); last_layer + 1];
-    beta[last_layer] = vec![1.0; mdd.number_nodes_in_layer(last_layer)];
-    for layer in (0..last_layer).rev() {
-        let variable = mdd.decision_at_layer(layer);
-        let mut prev_beta = vec![0.0; mdd.number_nodes_in_layer(layer)];
-        for node in mdd.nodes_in_layer(layer) {
-            let mut mass = 0.0;
-            for edge in mdd[node].iter_children() {
-                let value = mdd[edge].assignment();
-                let prob = probs[variable.0][value.0];
-                mass += prob * beta[layer + 1][mdd[edge].to().1];
-            }
-            prev_beta[node.1] = mass;
-        }
-        beta[layer] = prev_beta;
-    }
-
-    (alpha, beta)
-}
-
-/// Unconditional per-value marginal of every decision layer of `mdd`, given only `probs` -- no
-/// assignment is clamped anywhere, so this can't be blinded by an inconsistency elsewhere in the
-/// MDD's scope the way `clamped_conditional` can. Returned in layer order, `result[layer]` has
-/// length `probs[mdd.decision_at_layer(layer).0].len()`.
-fn mdd_marginals(mdd: &Mdd, probs: &[Vec<f64>]) -> Vec<Vec<f64>> {
-    let last_layer = mdd.sink().0;
-    let (alpha, beta) = unconditional_alpha_beta(mdd, probs);
-
-    (0..last_layer)
-        .map(|layer| {
-            let variable = mdd.decision_at_layer(layer);
-            let domain_size = probs[variable.0].len();
-            let mut weights = vec![0.0; domain_size];
-            for node in mdd.nodes_in_layer(layer) {
-                let mass = alpha[layer][node.1];
-                if mass == 0.0 {
-                    continue;
-                }
-                for edge in mdd[node].iter_children() {
-                    let value = mdd[edge].assignment();
-                    let prob = probs[variable.0][value.0];
-                    weights[value.0] += mass * prob * beta[layer + 1][mdd[edge].to().1];
-                }
-            }
-            normalize_or_uniform(weights, domain_size)
-        })
-        .collect()
-}
-
 /// Sampler used for generating a new assignment given a set of MDDs; aggregate multiple MDDs
 /// opinion about variables update
-pub struct GibbsSampler<'a> {
+pub struct MddSampler<'a> {
     mdds: &'a [Mdd],
     /// Scaling factor for each MDD choice, default to 1.0 (each MDD has equal voting power)
     weights: Vec<f64>,
@@ -247,7 +167,7 @@ pub struct GibbsSampler<'a> {
     var_to_mdds: Vec<Vec<(usize, usize)>>,
 }
 
-impl<'a> GibbsSampler<'a> {
+impl<'a> MddSampler<'a> {
     pub fn new(mdds: &'a [Mdd]) -> Self {
         let num_vars = mdds
             .first()
@@ -274,129 +194,57 @@ impl<'a> GibbsSampler<'a> {
         self.weights[mdd_index] = weight;
     }
 
+    /// Number of variables this sampler knows about (the shared scope of its MDDs).
+    pub fn number_variables(&self) -> usize {
+        self.var_to_mdds.len()
+    }
+
     pub fn members_of(&self, var: VariableIndex) -> &[(usize, usize)] {
         let members = &self.var_to_mdds[var.0];
         assert!(
             !members.is_empty(),
             "variable {} is not in the scope of any MDD -- every variable must appear in at \
-             least one for GibbsSampler to have anything to decode it from",
+             least one for MddSampler to have anything to decode it from",
             var.0
         );
         members
     }
 
-    /// Combines the all probability distribution for a given variable. These probability
-    /// distribution are conditionned on the MDDs and the current assignment. The combination is a
-    /// weighted sum of each MDD conditional distribution, renormalised to sum to 1.0
-    pub fn combined_conditional(
+    /// Combines every MDD's `partial_conditional` for `var`, given `decided` evidence from
+    /// `assignment` -- a weighted product of experts in log-space, dividing out the network's own
+    /// belief once per MDD so it isn't double-counted when several MDDs share `var`. An all-`false`
+    /// `decided` gives `var`'s plain unconditional marginal under every MDD combined -- there's no
+    /// separate "nothing decided yet" path; this handles it for free via `partial_conditional`.
+    ///
+    /// Per MDD, whether a `decided` variable other than `var` clamps that MDD's forward or
+    /// backward pass depends purely on that MDD's own layer order relative to `var` -- there is no
+    /// requirement that `decided`, or any other MDD, agree on an order at all. An undecided
+    /// variable is marginalised out in every MDD, regardless of which side of `var`'s layer it
+    /// sits on in that MDD.
+    pub fn combined_partial_conditional(
         &self,
         var: VariableIndex,
         probs: &[Vec<f64>],
         assignment: &[ValueIndex],
+        decided: &[bool],
     ) -> Vec<f64> {
         let members = self.members_of(var);
         let network_log: Vec<f64> = probs[var.0].iter().map(|&p| safe_ln(p)).collect();
         let mut log_combined = network_log.clone();
         for &(mdd_index, layer) in members {
             let weight = self.weights[mdd_index];
-            let conditional = clamped_conditional(&self.mdds[mdd_index], layer, probs, assignment);
+            let conditional =
+                partial_conditional(&self.mdds[mdd_index], layer, probs, assignment, decided);
             for (d, log_d) in log_combined.iter_mut().enumerate() {
-                // For each MDD, we devide (in log-space) by the network own belief. Otherwise,
-                // combining multiple MDDs over the same variable introduce multiple times the
-                // network belief into the marginal, which is fine when there are few constraints,
+                // For each MDD, we divide (in log-space) by the network's own belief. Otherwise,
+                // combining multiple MDDs over the same variable introduces the network belief
+                // multiple times into the marginal, which is fine when there are few constraints,
                 // but gives degenerate results when the number of MDDs increases (e.g., graph
-                // colouring)
+                // colouring).
                 *log_d += weight * (safe_ln(conditional[d]) - network_log[d]);
             }
         }
         log_combine_and_normalize(log_combined)
-    }
-
-    /// Same combination as `combined_conditional`, but every MDD's contribution is its
-    /// unconditional marginal (`mdd_marginals`) rather than a conditional clamped to `assignment`
-    pub fn combined_marginal(
-        &self,
-        var: VariableIndex,
-        probs: &[Vec<f64>],
-        marginals: &[Vec<Vec<f64>>],
-    ) -> Vec<f64> {
-        let members = self.members_of(var);
-        let network_log: Vec<f64> = probs[var.0].iter().map(|&p| safe_ln(p)).collect();
-        let mut log_combined = network_log.clone();
-        for &(mdd_index, layer) in members {
-            let weight = self.weights[mdd_index];
-            let marginal = &marginals[mdd_index][layer];
-            for (d, log_d) in log_combined.iter_mut().enumerate() {
-                *log_d += weight * (safe_ln(marginal[d]) - network_log[d]);
-            }
-        }
-        log_combine_and_normalize(log_combined)
-    }
-
-    /// `mdd_marginals` for every MDD this sampler holds, given `probs`. Computed once per call
-    /// (each MDD is a single forward+backward pass over every layer at once) rather than per
-    /// queried variable, since -- unlike `clamped_conditional` -- the result doesn't depend on any
-    /// assignment.
-    pub fn unconditional_marginals(&self, probs: &[Vec<f64>]) -> Vec<Vec<Vec<f64>>> {
-        self.mdds
-            .iter()
-            .map(|mdd| mdd_marginals(mdd, probs))
-            .collect()
-    }
-
-    /// Perform a number of gibbs sampling given the probability and assignment. From an initial
-    /// assignment and a number of variable to update, perform `rounds` sampling steps. Each
-    /// sampling step, variables are considered in a random order. Each variable is then sampled
-    /// from its combined probability distribution conditioned on the current assignment (including
-    /// replaced variables) and the MDD it appears in.
-    pub fn sweep(
-        &self,
-        probs: &[Vec<f64>],
-        assignment: &mut [ValueIndex],
-        order: &[VariableIndex],
-        rounds: usize,
-        mode: DecodeMode,
-    ) {
-        let mut round_order: Vec<VariableIndex> = order.to_vec();
-        for _ in 0..rounds {
-            crate::utils::with_rng(|rng| round_order.shuffle(rng));
-            for &var in &round_order {
-                let combined = self.combined_conditional(var, probs, assignment);
-                assignment[var.0] = ValueIndex(match mode {
-                    DecodeMode::Greedy => argmax(&combined),
-                    DecodeMode::Sample => sample_categorical(&combined),
-                });
-            }
-        }
-    }
-
-    /// Resamples `block` (typically the scope of a small set of destroyed constraints) in two
-    /// stages: every variable in `block` is first drawn independently from `combined_marginal`
-    /// (unconditional, so a stale/inconsistent value elsewhere in `assignment` can't blind it),
-    /// then -- if `cleanup_rounds > 0` -- `sweep` runs `cleanup_rounds` clamped rounds restricted
-    /// to `block`, seeded from that draw, to resolve any joint inconsistency the independent draw
-    /// left behind (two block variables of the same MDD can still collide, since marginals don't
-    /// carry the joint's correlations the way a clamped conditional does).
-    pub fn resample_block(
-        &self,
-        probs: &[Vec<f64>],
-        assignment: &mut [ValueIndex],
-        block: &[VariableIndex],
-        mode: DecodeMode,
-        cleanup_rounds: usize,
-    ) {
-        let marginals = self.unconditional_marginals(probs);
-        for &var in block {
-            let combined = self.combined_marginal(var, probs, &marginals);
-            assignment[var.0] = ValueIndex(match mode {
-                DecodeMode::Greedy => argmax(&combined),
-                DecodeMode::Sample => sample_categorical(&combined),
-            });
-        }
-
-        if cleanup_rounds > 0 {
-            self.sweep(probs, assignment, block, cleanup_rounds, mode);
-        }
     }
 }
 
@@ -484,10 +332,11 @@ mod tests {
     }
 
     #[test]
-    fn clamped_conditional_matches_uniform_marginal_on_free_variable() {
-        // x != y over {0,1} x {0,1}: only 2 of the 4 combinations are valid. Clamping y=0 should
-        // put all conditional mass on x=1 (the only value making x != y hold), regardless of the
-        // (uniform) input probabilities.
+    fn partial_conditional_with_everything_decided_matches_uniform_marginal_on_free_variable() {
+        // x != y over {0,1} x {0,1}: only 2 of the 4 combinations are valid. Clamping y=0 (fully
+        // decided) should put all conditional mass on x=1 (the only value making x != y hold),
+        // regardless of the (uniform) input probabilities -- same behaviour the old, always-fully-
+        // clamped `clamped_conditional` had, since `decided = [true, true]` recovers it exactly.
         let mut problem = Problem::default();
         let x = problem.add_variable(vec![0, 1], None);
         let y = problem.add_variable(vec![0, 1], None);
@@ -498,38 +347,74 @@ mod tests {
         let mdd = build_mdd(problem.clone(), &constraints);
         let probs = uniform_probs(&problem);
 
-        // Find which layer decides y, clamp it to value 0, and query x's layer.
-        let y_layer = (0..mdd.number_layers() - 1)
-            .find(|&l| mdd.decision_at_layer(l) == y)
-            .expect("y must be in the MDD's scope");
         let x_layer = (0..mdd.number_layers() - 1)
             .find(|&l| mdd.decision_at_layer(l) == x)
             .expect("x must be in the MDD's scope");
 
         let mut assignment = vec![ValueIndex(0); problem.number_variables()];
         assignment[y.0] = ValueIndex(0);
+        let decided = vec![true; problem.number_variables()];
 
-        let conditional = clamped_conditional(&mdd, x_layer, &probs, &assignment);
+        let conditional = partial_conditional(&mdd, x_layer, &probs, &assignment, &decided);
         assert_eq!(conditional.len(), 2);
         assert!((conditional[0] - 0.0).abs() < 1e-9, "{conditional:?}");
         assert!((conditional[1] - 1.0).abs() < 1e-9, "{conditional:?}");
-
-        // And the reverse: clamping x should push all mass onto the layer deciding y.
-        let mut assignment2 = vec![ValueIndex(0); problem.number_variables()];
-        assignment2[x.0] = ValueIndex(1);
-        let conditional_y = clamped_conditional(&mdd, y_layer, &probs, &assignment2);
-        assert!((conditional_y[0] - 1.0).abs() < 1e-9, "{conditional_y:?}");
-        assert!((conditional_y[1] - 0.0).abs() < 1e-9, "{conditional_y:?}");
     }
 
     #[test]
-    fn clamped_conditional_abstains_uniformly_when_locally_infeasible() {
-        // x != y, y != z, clamped so that x and y are pinned to the same (infeasible) value: no
-        // path through the MDD survives, so the conditional over z's layer should come back
-        // uniform rather than panicking or returning all-zero.
+    fn partial_conditional_with_nothing_decided_matches_brute_force_marginal_for_not_equals() {
+        // decided = all-false should recover the plain unconditional marginal, since there's no
+        // evidence left to clamp on anywhere in the MDD -- checked here against a hand-computed
+        // value rather than a second implementation.
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1], None);
+        let y = problem.add_variable(vec![0, 1], None);
+        not_equals(&mut problem, x, y);
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mdd = build_mdd(problem.clone(), &constraints);
+        let probs = vec![vec![0.9, 0.1], vec![0.3, 0.7]];
+
+        let x_layer = (0..mdd.number_layers() - 1)
+            .find(|&l| mdd.decision_at_layer(l) == x)
+            .unwrap();
+        let y_layer = (0..mdd.number_layers() - 1)
+            .find(|&l| mdd.decision_at_layer(l) == y)
+            .unwrap();
+
+        let assignment = vec![ValueIndex(0); problem.number_variables()];
+        let decided = vec![false; problem.number_variables()];
+        let conditional_x = partial_conditional(&mdd, x_layer, &probs, &assignment, &decided);
+        let conditional_y = partial_conditional(&mdd, y_layer, &probs, &assignment, &decided);
+
+        // P(x=0) ~ probs_x[0]*probs_y[1], P(x=1) ~ probs_x[1]*probs_y[0], normalised; and
+        // symmetrically for y. Hand-computed from probs = [[0.9, 0.1], [0.3, 0.7]].
+        assert!(
+            (conditional_x[0] - 21.0 / 22.0).abs() < 1e-9,
+            "{conditional_x:?}"
+        );
+        assert!(
+            (conditional_x[1] - 1.0 / 22.0).abs() < 1e-9,
+            "{conditional_x:?}"
+        );
+        assert!(
+            (conditional_y[0] - 1.0 / 22.0).abs() < 1e-9,
+            "{conditional_y:?}"
+        );
+        assert!(
+            (conditional_y[1] - 21.0 / 22.0).abs() < 1e-9,
+            "{conditional_y:?}"
+        );
+    }
+
+    #[test]
+    fn partial_conditional_abstains_uniformly_when_locally_infeasible() {
+        // x != y, y != z, both x and y decided and pinned to the same (infeasible) value: no path
+        // through the MDD survives, so the conditional over z's layer should come back uniform
+        // rather than panicking or returning all-zero.
         //
         // All three variables share the same domain here (unlike the pairwise-not_equals trio in
-        // `gibbs_sampler_single_mdd_greedy_sweep_is_deterministic_and_feasible`, which mirrors
+        // `sequential_walk_over_a_single_mdd_is_always_feasible`, which mirrors
         // `mdd::mdd::tests::mdd_refine`'s specific domain choice): `NotEquals`'s per-constraint
         // `val_to_bit` map only covers the union of *its own* two variables' domains, and
         // `Mdd::fold_property_over_parents` unconditionally looks up every layer's assigned value
@@ -558,9 +443,11 @@ mod tests {
         let mut assignment = vec![ValueIndex(0); problem.number_variables()];
         assignment[x.0] = ValueIndex(0);
         assignment[y.0] = ValueIndex(0);
-        assignment[z.0] = ValueIndex(0);
+        let mut decided = vec![false; problem.number_variables()];
+        decided[x.0] = true;
+        decided[y.0] = true;
 
-        let conditional = clamped_conditional(&mdd, z_layer, &probs, &assignment);
+        let conditional = partial_conditional(&mdd, z_layer, &probs, &assignment, &decided);
         assert_eq!(conditional.len(), 3);
         for p in &conditional {
             assert!((p - 1.0 / 3.0).abs() < 1e-9, "{conditional:?}");
@@ -568,11 +455,47 @@ mod tests {
     }
 
     #[test]
-    fn gibbs_sampler_single_mdd_greedy_sweep_is_feasible_regardless_of_round_count() {
-        // A single MDD spanning all variables: greedy sweeps (with `sweep` free to shuffle the
-        // visiting order every round) should always land on a feasible assignment (no constraint
-        // violated), since only edges that exist in the MDD are ever chosen, regardless of how
-        // many rounds run or what order each round visits variables in.
+    fn partial_conditional_marginalises_undecided_evidence_regardless_of_mdd_layer_order() {
+        // x != y != z (all-different chain, all sharing domain {0,1,2}, uniform probs). Deciding
+        // only y (leaving x and z undecided, whichever side of y's layer they happen to fall on in
+        // this MDD) must sum x and z out rather than silently treating them as fixed at their
+        // placeholder ValueIndex(0). Every value of y forbids exactly one value each for x and z
+        // (2 choices left for each, independently, regardless of which value y takes), so the
+        // correct marginal is exactly uniform -- hand-derivable, no second implementation needed as
+        // an oracle.
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1, 2], None);
+        let y = problem.add_variable(vec![0, 1, 2], None);
+        let z = problem.add_variable(vec![0, 1, 2], None);
+        not_equals(&mut problem, x, y);
+        not_equals(&mut problem, y, z);
+
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mdd = build_mdd(problem.clone(), &constraints);
+        let probs = uniform_probs(&problem);
+
+        let y_layer = (0..mdd.number_layers() - 1)
+            .find(|&l| mdd.decision_at_layer(l) == y)
+            .unwrap();
+
+        // Placeholder ValueIndex(0) for x and z everywhere -- decided says they must be ignored.
+        let assignment = vec![ValueIndex(0); problem.number_variables()];
+        let decided = vec![false; problem.number_variables()];
+
+        let conditional = partial_conditional(&mdd, y_layer, &probs, &assignment, &decided);
+        assert_eq!(conditional.len(), 3);
+        for p in &conditional {
+            assert!((p - 1.0 / 3.0).abs() < 1e-9, "{conditional:?}");
+        }
+    }
+
+    #[test]
+    fn sequential_walk_over_a_single_mdd_is_always_feasible() {
+        // A single MDD spanning all variables: visiting every variable once, in any order, each
+        // time sampling from `combined_partial_conditional` (greedy) given only the variables
+        // already visited, should always land on a feasible assignment -- only edges that exist in
+        // the MDD are ever chosen, regardless of what order the walk visits variables in.
         let mut problem = Problem::default();
         let x = problem.add_variable(vec![0, 1], None);
         let y = problem.add_variable(vec![0, 1, 2], None);
@@ -586,58 +509,37 @@ mod tests {
         let mdd = build_mdd(problem.clone(), &constraints);
         let probs = uniform_probs(&problem);
         let mdds = vec![mdd];
+        let sampler = MddSampler::new(&mdds);
 
-        let sampler = GibbsSampler::new(&mdds);
-        let order: Vec<VariableIndex> = (0..mdds[0].number_layers() - 1)
-            .map(|l| mdds[0].decision_at_layer(l))
-            .collect();
-
-        for rounds in [1, 4, 10] {
+        for order in [vec![x, y, z], vec![z, x, y], vec![y, z, x]] {
             let mut assignment = vec![ValueIndex(0); problem.number_variables()];
-            sampler.sweep(&probs, &mut assignment, &order, rounds, DecodeMode::Greedy);
+            let mut decided = vec![false; problem.number_variables()];
 
-            // Feasibility check: every solution the MDD encodes satisfies all three not_equals
-            // constraints by construction, and `sweep` only ever follows existing MDD edges, so
-            // the resulting assignment must too, no matter how many (shuffled) rounds ran.
+            for &var in &order {
+                // decided starts all-false, so the first variable in the order is automatically
+                // drawn from its plain marginal -- no separate "nothing decided yet" case needed.
+                let combined =
+                    sampler.combined_partial_conditional(var, &probs, &assignment, &decided);
+                assignment[var.0] = ValueIndex(argmax(&combined));
+                decided[var.0] = true;
+            }
+
             let xv = problem[x].value(assignment[x.0]);
             let yv = problem[y].value(assignment[y.0]);
             let zv = problem[z].value(assignment[z.0]);
-            assert_ne!(xv, yv, "rounds={rounds}");
-            assert_ne!(yv, zv, "rounds={rounds}");
-            assert_ne!(xv, zv, "rounds={rounds}");
+            assert_ne!(xv, yv, "order={order:?}");
+            assert_ne!(yv, zv, "order={order:?}");
+            assert_ne!(xv, zv, "order={order:?}");
         }
     }
 
     #[test]
-    fn sweep_with_zero_rounds_is_a_no_op() {
-        let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1], None);
-        let y = problem.add_variable(vec![0, 1], None);
-        not_equals(&mut problem, x, y);
-
-        let problem = Arc::new(problem);
-        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
-        let mdd = build_mdd(problem.clone(), &constraints);
-        let probs = uniform_probs(&problem);
-        let mdds = vec![mdd];
-        let sampler = GibbsSampler::new(&mdds);
-
-        let order = vec![x, y];
-        let mut assignment = vec![ValueIndex(1); problem.number_variables()];
-        let before = assignment.clone();
-        sampler.sweep(&probs, &mut assignment, &order, 0, DecodeMode::Greedy);
-        assert_eq!(assignment, before);
-    }
-
-    #[test]
     fn gibbs_sampler_combines_multiple_mdds_via_product_of_experts() {
-        // Two single-constraint MDDs over the same 2 variables, deliberately with opposite
-        // "orders" (each only has one decision layer, so order isn't the point here -- the point
-        // is that neither MDD alone determines y, but their conjunction does): x != y and,
-        // separately, y != 0 encoded as a gcc bound. Combined, the only valid combos are the ones
-        // satisfying both, so a greedy sweep starting from x should pick a y consistent with both.
+        // Two single-constraint MDDs over the same 2 variables: x != y and, separately, y != 0
+        // encoded as a gcc bound. Combined, the only valid combos are the ones satisfying both, so
+        // deciding x should push y's partial conditional onto the value consistent with both.
         // Two independently-built `Problem`s over the same variable layout (`Problem` isn't
-        // `Clone`, and each `Mdd` owns its own `Arc<Problem>` anyway -- `GibbsSampler` only
+        // `Clone`, and each `Mdd` owns its own `Arc<Problem>` anyway -- `MddSampler` only
         // requires that every MDD passed to it agree on what a `VariableIndex` means, not that
         // they share the same `Arc`).
         let mut problem_a = Problem::default();
@@ -661,11 +563,13 @@ mod tests {
 
         let probs = uniform_probs(&problem_a);
         let mdds = vec![mdd_a, mdd_b];
-        let sampler = GibbsSampler::new(&mdds);
+        let sampler = MddSampler::new(&mdds);
 
         let mut assignment = vec![ValueIndex(0); problem_a.number_variables()];
         assignment[x.0] = ValueIndex(1);
-        let combined = sampler.combined_conditional(y, &probs, &assignment);
+        let mut decided = vec![false; problem_a.number_variables()];
+        decided[x.0] = true;
+        let combined = sampler.combined_partial_conditional(y, &probs, &assignment, &decided);
         // Only not_equals(x, y) actually constrains y here; with x=1, y=0 is the only option.
         // `mdd_b`'s unbound gcc contributes a uniform (non-opinionated) conditional. `safe_ln`
         // means y=1's genuinely-zero conditional no longer gets floored up to a fixed MIN_PROB, so
@@ -678,8 +582,8 @@ mod tests {
     /// Builds `count` independent, mutually uninformative MDDs over a single variable `x` (each
     /// one an unbound gcc, same trick as `gibbs_sampler_combines_multiple_mdds_via_product_of_experts`
     /// -- a real scope, but zero actual restriction). `x` belongs to all of them, so
-    /// `var_to_mdds[x]` has `count` entries: exactly the fan-in situation `combined_marginal`/
-    /// `combined_conditional` need to not double-count the network's own belief about `x`.
+    /// `var_to_mdds[x]` has `count` entries: exactly the fan-in situation `combined_partial_conditional`
+    /// needs to not double-count the network's own belief about `x`.
     fn uninformative_mdds_over_one_variable(
         count: usize,
     ) -> (Arc<Problem>, VariableIndex, Vec<Mdd>) {
@@ -702,44 +606,25 @@ mod tests {
     }
 
     #[test]
-    fn combined_marginal_does_not_multiply_the_networks_own_belief_once_per_mdd_membership() {
-        // Regression test for the fan-in over-counting bug: previously, `combined_marginal` summed
+    fn combined_partial_conditional_does_not_multiply_the_networks_own_belief_once_per_mdd_membership(
+    ) {
+        // Regression test for the fan-in over-counting bug: previously, the marginal path summed
         // each member MDD's log-marginal as-is, and since every MDD's own marginal already bakes
         // in the network's belief about `x` (`probs[x]`), a variable belonging to `count`
         // uninformative MDDs would have that same belief effectively raised to the `count`-th
         // power -- sharpening the combined distribution even though none of the MDDs contribute
         // any actual constraint information. With the fix, the network's belief must be applied
-        // exactly once, so the combined marginal should stay close to `probs[x]` itself regardless
-        // of how many (uninformative) MDDs `x` is a member of.
-        let probs = vec![vec![0.7, 0.2, 0.1]];
-
-        for count in [1, 5, 20] {
-            let (_problem, x, mdds) = uninformative_mdds_over_one_variable(count);
-            let sampler = GibbsSampler::new(&mdds);
-            let marginals = sampler.unconditional_marginals(&probs);
-            let combined = sampler.combined_marginal(x, &probs, &marginals);
-
-            for d in 0..3 {
-                assert!(
-                    (combined[d] - probs[0][d]).abs() < 1e-6,
-                    "count={count}, d={d}, combined={combined:?}, expected={:?}",
-                    probs[0]
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn combined_conditional_does_not_multiply_the_networks_own_belief_once_per_mdd_membership() {
-        // Same regression as `combined_marginal_does_not_multiply_the_networks_own_belief_once_per_mdd_membership`,
-        // but through the clamped-conditional path (`combined_conditional`) used by `sweep`.
+        // exactly once, so the combined distribution should stay close to `probs[x]` itself
+        // regardless of how many (uninformative) MDDs `x` is a member of. Exercised through
+        // `combined_partial_conditional` with nothing decided, which is the "no evidence" case.
         let probs = vec![vec![0.7, 0.2, 0.1]];
 
         for count in [1, 5, 20] {
             let (problem, x, mdds) = uninformative_mdds_over_one_variable(count);
-            let sampler = GibbsSampler::new(&mdds);
+            let sampler = MddSampler::new(&mdds);
             let assignment = vec![ValueIndex(0); problem.number_variables()];
-            let combined = sampler.combined_conditional(x, &probs, &assignment);
+            let decided = vec![false; problem.number_variables()];
+            let combined = sampler.combined_partial_conditional(x, &probs, &assignment, &decided);
 
             for d in 0..3 {
                 assert!(
@@ -752,22 +637,26 @@ mod tests {
     }
 
     #[test]
-    fn combined_marginal_preserves_network_confidence_far_below_the_old_min_prob_floor() {
+    fn combined_partial_conditional_preserves_network_confidence_far_below_the_old_min_prob_floor()
+    {
         // Regression test for the entropy-floor bug: the old `MIN_PROB = 1e-9` clamp was applied
         // to `probs` itself before it ever reached the combination math, so no matter how sharp the
         // network's real output was, the combined distribution could never read as more confident
-        // than that floor allowed -- observed as `combined_marginal`'s output plateauing at a fixed
+        // than that floor allowed -- observed as the combination's output plateauing at a fixed
         // entropy regardless of how much further the raw network kept sharpening, identically for
         // every problem type and grouping (even `size_bound = 0`, i.e. plain per-constraint MDDs
         // with no merging at all), since the floor sat upstream of any MDD-specific computation.
         // With `safe_ln`, a probability well below the old floor (here 1e-15, six orders of
         // magnitude past where `MIN_PROB` used to clamp) must survive combination with a set of
         // uninformative MDDs essentially unchanged, instead of being floored up to ~1e-9.
+        // Exercised through `combined_partial_conditional` with nothing decided, which is the "no
+        // evidence" case.
         let probs = vec![vec![1.0 - 2e-15, 1e-15, 1e-15]];
-        let (_problem, x, mdds) = uninformative_mdds_over_one_variable(5);
-        let sampler = GibbsSampler::new(&mdds);
-        let marginals = sampler.unconditional_marginals(&probs);
-        let combined = sampler.combined_marginal(x, &probs, &marginals);
+        let (problem, x, mdds) = uninformative_mdds_over_one_variable(5);
+        let sampler = MddSampler::new(&mdds);
+        let assignment = vec![ValueIndex(0); problem.number_variables()];
+        let decided = vec![false; problem.number_variables()];
+        let combined = sampler.combined_partial_conditional(x, &probs, &assignment, &decided);
 
         // The old MIN_PROB=1e-9 floor would have left combined[1]/combined[2] at roughly 1e-9;
         // asserting well below that (and consistent with the true ~1e-15 input) catches a
@@ -776,111 +665,6 @@ mod tests {
         assert!(combined[1] < 1e-12, "combined={combined:?}");
         assert!(combined[2] < 1e-12, "combined={combined:?}");
         assert!((combined[0] - 1.0).abs() < 1e-9, "combined={combined:?}");
-    }
-
-    #[test]
-    fn mdd_marginals_matches_brute_force_marginal_for_not_equals() {
-        let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1], None);
-        let y = problem.add_variable(vec![0, 1], None);
-        not_equals(&mut problem, x, y);
-        let problem = Arc::new(problem);
-        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
-        let mdd = build_mdd(problem.clone(), &constraints);
-
-        let probs = vec![vec![0.9, 0.1], vec![0.3, 0.7]];
-        let marginals = mdd_marginals(&mdd, &probs);
-
-        let x_layer = (0..mdd.number_layers() - 1)
-            .find(|&l| mdd.decision_at_layer(l) == x)
-            .unwrap();
-        let y_layer = (0..mdd.number_layers() - 1)
-            .find(|&l| mdd.decision_at_layer(l) == y)
-            .unwrap();
-
-        // P(x=0) ~ probs_x[0]*probs_y[1], P(x=1) ~ probs_x[1]*probs_y[0], normalised; and
-        // symmetrically for y. Hand-computed from probs = [[0.9, 0.1], [0.3, 0.7]].
-        assert!(
-            (marginals[x_layer][0] - 21.0 / 22.0).abs() < 1e-9,
-            "{marginals:?}"
-        );
-        assert!(
-            (marginals[x_layer][1] - 1.0 / 22.0).abs() < 1e-9,
-            "{marginals:?}"
-        );
-        assert!(
-            (marginals[y_layer][0] - 1.0 / 22.0).abs() < 1e-9,
-            "{marginals:?}"
-        );
-        assert!(
-            (marginals[y_layer][1] - 21.0 / 22.0).abs() < 1e-9,
-            "{marginals:?}"
-        );
-    }
-
-    #[test]
-    fn resample_block_with_zero_cleanup_rounds_only_samples_from_marginals() {
-        let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1], None);
-        let y = problem.add_variable(vec![0, 1], None);
-        not_equals(&mut problem, x, y);
-        let problem = Arc::new(problem);
-        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
-        let mdd = build_mdd(problem.clone(), &constraints);
-        let probs = uniform_probs(&problem);
-        let mdds = vec![mdd];
-        let sampler = GibbsSampler::new(&mdds);
-
-        let block = vec![x, y];
-        let marginals = sampler.unconditional_marginals(&probs);
-        let expected_x = argmax(&sampler.combined_marginal(x, &probs, &marginals));
-        let expected_y = argmax(&sampler.combined_marginal(y, &probs, &marginals));
-
-        let mut assignment = vec![ValueIndex(0); problem.number_variables()];
-        sampler.resample_block(&probs, &mut assignment, &block, DecodeMode::Greedy, 0);
-
-        assert_eq!(assignment[x.0], ValueIndex(expected_x));
-        assert_eq!(assignment[y.0], ValueIndex(expected_y));
-    }
-
-    #[test]
-    fn resample_block_with_cleanup_rounds_is_feasible_from_a_colliding_start() {
-        let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1], None);
-        let y = problem.add_variable(vec![0, 1, 2], None);
-        let z = problem.add_variable(vec![1, 2], None);
-        not_equals(&mut problem, x, y);
-        not_equals(&mut problem, y, z);
-        not_equals(&mut problem, x, z);
-
-        let problem = Arc::new(problem);
-        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
-        let mdd = build_mdd(problem.clone(), &constraints);
-        let probs = uniform_probs(&problem);
-        let mdds = vec![mdd];
-        let sampler = GibbsSampler::new(&mdds);
-
-        let block: Vec<VariableIndex> = (0..mdds[0].number_layers() - 1)
-            .map(|l| mdds[0].decision_at_layer(l))
-            .collect();
-
-        for cleanup_rounds in [1, 4] {
-            let mut assignment = vec![ValueIndex(0); problem.number_variables()];
-            sampler.resample_block(
-                &probs,
-                &mut assignment,
-                &block,
-                DecodeMode::Greedy,
-                cleanup_rounds,
-            );
-
-            let xv = problem[x].value(assignment[x.0]);
-            let yv = problem[y].value(assignment[y.0]);
-            let zv = problem[z].value(assignment[z.0]);
-            assert_ne!(xv, yv, "cleanup_rounds={cleanup_rounds}");
-            assert_ne!(yv, zv, "cleanup_rounds={cleanup_rounds}");
-            assert_ne!(xv, zv, "cleanup_rounds={cleanup_rounds}");
-        }
     }
 
     #[test]

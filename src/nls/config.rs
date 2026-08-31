@@ -29,25 +29,12 @@ pub struct SolveConfig {
     /// Number of epochs during which the destroy ratio goes from its maximum to minimum value
     #[config(default = 0)]
     pub mask_schedule_epochs: usize,
-    /// If true, combine each variable's logits with the problem's MDDs (marginal
-    /// product-of-experts) before decoding, instead of decoding each variable's logits
-    /// independently
-    #[config(default = false)]
-    pub mdd_decode: bool,
-    /// If true, decode the (possibly MDD-combined) logits stochastically
+    /// If true, decode the logits stochastically
     #[config(default = false)]
     pub stochastic_decode: bool,
     /// Temperature scaling for stochastic decoding
     #[config(default = 1.0)]
     pub temperature: f64,
-    /// In mdd decoding, perform gibbs sampling after block sampling
-    #[config(default = true)]
-    pub mdd_gibbs_cleanup: bool,
-    /// If gibbs sampling is applied in mdd-decoding, how many sampling round
-    #[config(default = 4)]
-    pub gibbs_round: usize,
-    #[config(default = 0)]
-    pub mdd_grouping_size_bound: usize,
 }
 
 impl SolveConfig {
@@ -104,12 +91,8 @@ impl Default for SolveConfig {
             destroy_fraction_max: 1.0,
             destroy_fraction_min: 1.0,
             mask_schedule_epochs: 0,
-            mdd_decode: false,
             stochastic_decode: false,
             temperature: 1.0,
-            mdd_gibbs_cleanup: true,
-            gibbs_round: 4,
-            mdd_grouping_size_bound: 0,
         }
     }
 }
@@ -125,11 +108,7 @@ mod tests {
         assert_eq!(config.destroy_kind, "random");
         assert_eq!(config.destroy_fraction_max, 1.0);
         assert_eq!(config.destroy_fraction_min, 1.0);
-        assert!(!config.mdd_decode);
         assert!(!config.stochastic_decode);
-        assert_eq!(config.gibbs_round, 4);
-        assert!(config.mdd_gibbs_cleanup);
-        assert_eq!(config.mdd_grouping_size_bound, 0);
         assert!(config.validate().is_ok());
     }
 
@@ -165,7 +144,7 @@ mod tests {
         assert_eq!(loaded.destroy_kind, "related");
         assert_eq!(loaded.mask_schedule_epochs, 20);
         // Field(s) left at their default should still round-trip correctly.
-        assert!(!loaded.mdd_decode);
+        assert!(!loaded.stochastic_decode);
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -182,7 +161,7 @@ mod tests {
 
         let loaded = SolveConfig::load_lenient(&path).expect("load should succeed");
         assert_eq!(loaded.destroy_kind, "worst");
-        assert!(!loaded.mdd_decode);
+        assert!(!loaded.stochastic_decode);
         assert_eq!(loaded.batch_size, None);
 
         std::fs::remove_dir_all(&dir).ok();
