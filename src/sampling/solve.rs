@@ -1,9 +1,13 @@
 //! Sequential-imputation solving: builds a full assignment by resampling only the variables of
 //! whichever MDDs `MddSampler::destroyed_variables` picks under its `DestroyRule` (see that method
 //! and enum's docs), in a freshly shuffled order, from their exact per-MDD conditional given the
-//! rest of the variables. This is repeated for up to a fixed number of steps, re-deriving the guiding
-//! probabilities and re-selecting which MDDs to destroy from the previous step's assignment, until
-//! one attempt satisfies the problem or the step budget runs out.
+//! rest of the board -- both the variables held fixed this step and any resampled variable already
+//! decided earlier in *that same* attempt. This is repeated for up to a fixed number of steps,
+//! re-deriving the guiding probabilities (typically a network forward pass) and re-selecting which
+//! MDDs to destroy from the previous step's assignment, until one attempt satisfies the problem or
+//! the step budget runs out. No fraction knob -- what gets resampled each step is entirely
+//! `DestroyRule`'s call, not a target proportion of the board -- and should naturally shrink as the
+//! assignment converges toward one that satisfies more of the problem's constraints.
 //!
 //! See "Sequential Imputations and Bayesian Missing Data Problem" (Kong, Liu & Wong, 1994) for reference
 //! on sequential imputation.
@@ -23,9 +27,7 @@ use crate::learning::{Batch, Network};
 use crate::modelling::{Problem, ValueIndex, VariableIndex};
 use crate::utils::tensor::rows_to_tensor;
 
-use super::{
-    argmax, entropy, min_max_mean, sample_categorical, DecodeMode, DestroyRule, MddSampler,
-};
+use super::{argmax, entropy, min_max_mean, sample_categorical, DecodeMode, DestroyRule, MddSampler};
 
 /// Outcome of `solve`/`solve_batch` for one problem.
 pub struct ImputationResult {
@@ -42,7 +44,11 @@ pub struct ImputationResult {
 
 /// One sequential-imputation attempt: resamples the `destroyed` variables, visited in a freshly
 /// shuffled order, each drawn from `sampler`'s combined per-MDD conditional given the growing set
-/// of decided evidence.
+/// of decided evidence. That evidence starts as every *non*-destroyed variable, clamped to its
+/// `base_assignment` value -- so a destroyed variable's conditional is genuinely informed by its
+/// unchanged neighbours, not only by other destroyed variables decided earlier in this same
+/// attempt. An all-`true` `destroyed` recovers a full-board reconstruction from scratch (nothing
+/// clamped to begin with), same as before this had a destroyed/fixed split at all.
 fn sequential_imputation(
     sampler: &MddSampler,
     probs: &[Vec<f64>],
@@ -109,7 +115,7 @@ fn sequential_imputation(
 /// Finds `value`'s index in `variable`'s domain -- the inverse of `Variable::value`, needed to
 /// turn a raw sampled/network value back into the `ValueIndex` the MDD/imputation machinery works
 /// in.
-fn value_to_index(problem: &Problem, variable: VariableIndex, value: isize) -> ValueIndex {
+pub(crate) fn value_to_index(problem: &Problem, variable: VariableIndex, value: isize) -> ValueIndex {
     let index = problem[variable]
         .iter_domain()
         .position(|v| v == value)
@@ -249,15 +255,9 @@ where
             // the count is what matters (e.g. when following a single instance, `active` is just
             // `[0]` every step; for a large batch it would otherwise flood the log).
             if active.len() <= 20 {
-                log::debug!(
-                    "step {steps_run}/{max_steps}: {} active: {active:?}",
-                    active.len()
-                );
+                log::debug!("step {steps_run}/{max_steps}: {} active: {active:?}", active.len());
             } else {
-                log::debug!(
-                    "step {steps_run}/{max_steps}: {} problem(s) still active",
-                    active.len()
-                );
+                log::debug!("step {steps_run}/{max_steps}: {} problem(s) still active", active.len());
             }
 
             let active_assignments: Vec<Vec<ValueIndex>> =
@@ -315,7 +315,11 @@ where
                 assignments[i] = new_assignment;
             }
 
-            if steps_run.is_multiple_of(100) {
+            // Mirrors `nls::StoppingCriterion::log`'s periodic progress report, just at a smaller
+            // interval -- `max_steps` here is typically tens, not the effectively-unbounded
+            // iteration counts NLS runs with, so logging every 100 steps the way NLS does would
+            // rarely fire at all.
+            if steps_run.is_multiple_of(10) {
                 let solved = solved_at.iter().filter(|s| s.is_some()).count();
                 log::info!(
                     "Step {steps_run}/{max_steps}, elapsed: {} seconds. Number solved {solved}/{num_problems}",

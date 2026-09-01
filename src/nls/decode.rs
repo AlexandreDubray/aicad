@@ -2,14 +2,25 @@
 //! The following decoding strategies are implemented:
 //!     - Use an argmax: Always select the value associated with the highest logit
 //!     - Use a softmax: sample proportionnaly to the logits
-//!     - Use mdd-based gibbs sampling
+//!     - Use belief propagation over the problem's compiled MDDs to turn the network's raw,
+//!       per-position logits into constraint-propagated marginals before decoding
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
+use burn::tensor::activation::softmax;
 use burn::tensor::backend::Backend;
 use burn::tensor::{Distribution, Int, Tensor};
 
-use crate::modelling::Problem;
+use rayon::prelude::*;
+
+use crate::learning::consformer::MddCompilationConfig;
+use crate::mdd::Mdd;
+use crate::modelling::{Problem, ValueIndex, VariableIndex};
+use crate::sampling::bp::belief_propagation;
+use crate::sampling::solve::value_to_index;
+use crate::sampling::{DecodeMode, argmax, sample_categorical};
+use crate::utils::tensor::to_rows;
 
 /// Turns this iteration's logits into the next assignment. Only positions
 /// flagged in `destroy_mask` may change; everywhere else the current value
@@ -65,5 +76,176 @@ impl<B: Backend> DecodingOperator<B> for Sampling {
         let scaled = logits.div_scalar(self.temperature) + gumbel;
         let proposed: Tensor<B, 2, Int> = scaled.argmax(2).squeeze_dim(2);
         current.mask_where(destroy_mask.equal_elem(1), proposed)
+    }
+}
+
+/// Compiles one MDD per group `compilation.grouping` puts `problem`'s constraints into, refining
+/// each to full exactness -- mirrors `pyaicad::sequential_imputation::compile_problem_mdds`, kept
+/// as its own small copy here rather than shared, the same way `sampling::bp`'s tests duplicate
+/// `sampling`'s `build_mdd` helper: this module has no reason to depend on `pyaicad`.
+fn compile_mdds_for(problem: &Arc<Problem>, compilation: &MddCompilationConfig) -> Vec<Mdd> {
+    compilation
+        .grouping
+        .groups(problem)
+        .into_iter()
+        .map(|constraints| {
+            let mut mdd = Mdd::new(
+                Arc::clone(problem),
+                compilation.ordering.clone(),
+                compilation.merge,
+                compilation.select,
+                &constraints,
+            );
+            mdd.refine(usize::MAX);
+            mdd
+        })
+        .collect()
+}
+
+/// Decodes destroyed positions from constraint-propagated marginals instead of the network's raw,
+/// per-position logits: `Argmax`/`Sampling` decide each position independently, so two individually
+/// plausible values can both get committed even though committing both together violates a
+/// constraint they share. This runs `sampling::bp::belief_propagation` per row instead -- seeded
+/// from that row's softmax probabilities, with every position `destroy_mask` doesn't cover clamped
+/// to its current value as hard evidence (the same `decided` convention `partial_alpha_at` uses) --
+/// and decodes the resulting marginals at the destroyed positions only.
+///
+/// MDDs are compiled once per distinct `Problem` (keyed by its `Arc` pointer) and cached for the
+/// life of this operator, since `NeuralLocalSearch::run` calls `decode` every iteration on the same
+/// handful of problems -- recompiling them from scratch each time would be repeated, non-negligible
+/// work for no benefit (the problem's constraints don't change between iterations).
+pub struct BeliefPropagationDecode {
+    compilation: MddCompilationConfig,
+    /// How many belief-propagation rounds to run per row, per iteration -- kept low, per
+    /// `belief_propagation`'s own doc: a handful of rounds captures most of the benefit, and this
+    /// runs inside every step of the outer destroy/repair loop besides.
+    iterations: usize,
+    /// How to turn each destroyed position's resulting marginal into a value -- greedy (argmax) or
+    /// sampled.
+    mode: DecodeMode,
+    cache: Mutex<HashMap<usize, Arc<Vec<Mdd>>>>,
+}
+
+impl BeliefPropagationDecode {
+    pub fn new(compilation: MddCompilationConfig, iterations: usize, mode: DecodeMode) -> Self {
+        Self {
+            compilation,
+            iterations,
+            mode,
+            cache: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// MDDs for `problem`, compiling and caching them on first sight -- keyed by the `Arc`'s
+    /// pointer, which stays stable across `NeuralLocalSearch::run`'s whole call for any problem
+    /// that hasn't been compacted out (`run`'s compaction step only ever clones the same `Arc`, it
+    /// never rebuilds a `Problem`).
+    ///
+    /// `decode` calls this from every row in parallel (see its doc), so the lock is only ever held
+    /// for the cache lookup/insert itself, not across the compile -- two rows racing on the very
+    /// first sight of a problem can both miss the cache and both compile it once, but that's a rare
+    /// one-time duplicate cost, not a correctness issue (whichever insert loses just has its result
+    /// discarded in favour of the other's, both being equivalent). Serialising every problem's
+    /// first compile behind one held lock instead would be worse across a whole batch of distinct
+    /// problems.
+    fn mdds_for(&self, problem: &Arc<Problem>) -> Arc<Vec<Mdd>> {
+        let key = Arc::as_ptr(problem) as usize;
+        {
+            let cache = self.cache.lock().expect("mdd cache lock poisoned");
+            if let Some(mdds) = cache.get(&key) {
+                return Arc::clone(mdds);
+            }
+        }
+        let mdds = Arc::new(compile_mdds_for(problem, &self.compilation));
+        self.cache
+            .lock()
+            .expect("mdd cache lock poisoned")
+            .insert(key, Arc::clone(&mdds));
+        mdds
+    }
+}
+
+impl<B: Backend> DecodingOperator<B> for BeliefPropagationDecode {
+    fn decode(
+        &self,
+        logits: Tensor<B, 3>,
+        destroy_mask: Tensor<B, 2, Int>,
+        current: Tensor<B, 2, Int>,
+        problems: &[Arc<Problem>],
+        population_size: usize,
+    ) -> Tensor<B, 2, Int> {
+        let device = logits.device();
+        let dims = current.dims();
+        let (rows, n) = (dims[0], dims[1]);
+        // The padded per-variable output width -- the network's vocabulary index for a value is
+        // that raw value itself (see `crate::utils::tensor`'s doc), so this is exactly the stride
+        // needed to slice one row's one variable's distribution out of the flattened softmax
+        // output, same as `SequentialImputationSolver::probs_for` does for its own network pass.
+        let domain_width = logits.dims()[2];
+
+        let probs_flat: Vec<f32> = softmax(logits, 2)
+            .into_data()
+            .to_vec::<f32>()
+            .expect("softmax output should be f32-convertible");
+        let current_rows = to_rows(&current, rows, n);
+        let mask_rows = to_rows(&destroy_mask, rows, n);
+
+        // Every row's belief-propagation run is independent of every other row's, so rows are
+        // decoded in parallel across CPU cores -- but each row's own `belief_propagation` call
+        // stays single-threaded (see that function's doc): parallelising *both* levels at once
+        // would oversubscribe the available cores, so only one of the two is parallel, and it's
+        // this one -- with `population_size` copies per problem, a batch typically has far more
+        // rows than `belief_propagation` has MDDs to loop over internally, so this is the layer
+        // with more independent work to spread across cores.
+        let mut next_data = vec![0i64; rows * n];
+        next_data
+            .par_chunks_mut(n)
+            .enumerate()
+            .for_each(|(row, next_row)| {
+                let problem = &problems[row / population_size];
+                let mdds = self.mdds_for(problem);
+
+                let mut assignment = vec![ValueIndex(0); n];
+                let mut decided = vec![false; n];
+                let mut probs: Vec<Vec<f64>> = Vec::with_capacity(n);
+                for v in 0..n {
+                    let variable = VariableIndex(v);
+                    assignment[v] = value_to_index(problem, variable, current_rows[row][v]);
+                    // `destroy_mask == 1` marks a position as free to change this iteration --
+                    // `decided` here is its opposite: everything the destroy/repair loop is
+                    // holding fixed this round.
+                    decided[v] = mask_rows[row][v] == 0;
+
+                    let domain_size = problem[variable].domain_size();
+                    let probs_v: Vec<f64> = (0..domain_size)
+                        .map(|d| {
+                            let value = problem[variable].value(ValueIndex(d));
+                            let offset =
+                                row * n * domain_width + v * domain_width + value as usize;
+                            probs_flat[offset] as f64
+                        })
+                        .collect();
+                    probs.push(probs_v);
+                }
+
+                let marginals =
+                    belief_propagation(&mdds, &probs, &assignment, &decided, self.iterations);
+
+                for v in 0..n {
+                    if mask_rows[row][v] == 0 {
+                        // Untouched position -- keep the current value exactly, same contract
+                        // `Argmax`/`Sampling` honour via `mask_where`.
+                        next_row[v] = current_rows[row][v] as i64;
+                        continue;
+                    }
+                    let chosen = match self.mode {
+                        DecodeMode::Greedy => argmax(&marginals[v]),
+                        DecodeMode::Sample => sample_categorical(&marginals[v]),
+                    };
+                    next_row[v] = problem[VariableIndex(v)].value(ValueIndex(chosen)) as i64;
+                }
+            });
+
+        Tensor::<B, 1, Int>::from_data(next_data.as_slice(), &device).reshape([rows, n])
     }
 }

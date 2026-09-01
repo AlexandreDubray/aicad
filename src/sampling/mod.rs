@@ -1,3 +1,4 @@
+pub mod bp;
 pub mod solve;
 
 use crate::mdd::Mdd;
@@ -143,9 +144,15 @@ fn partial_conditional(
     normalize_or_uniform(weights, domain_size)
 }
 
-/// Walks the mdd following edges imposed by `assignment`. If the current assignments does not
-/// respect the constraints, returns None. Otherwise, returns the assignments projected onto the
-/// constraint's scope.
+/// Walks the single path `assignment` traces through `mdd` (root to sink, following `assignment`'s
+/// value at each layer), returning the `(variable, value)` decisions actually taken if that path
+/// exists, or `None` the moment some layer has no edge matching `assignment`'s value there -- i.e.
+/// `assignment` violates the constraint(s) `mdd` represents. `Mdd::refine` builds an *exact* MDD
+/// (see `compile_problem_mdds`), so this agrees exactly with checking every one of
+/// `mdd.iter_constraints()` against the raw assignment; it's simply cheaper, walking the compiled
+/// structure directly instead of needing `assignment` converted back to raw domain values first.
+/// Shared by `mdd_accepts` (does the path exist at all) and `mdd_satisfaction_probability` (how
+/// much does the network endorse it), so the walk itself isn't duplicated between them.
 fn mdd_walk(mdd: &Mdd, assignment: &[ValueIndex]) -> Option<Vec<(VariableIndex, ValueIndex)>> {
     let mut node = mdd.root();
     let mut path = Vec::with_capacity(mdd.sink().0);
@@ -169,6 +176,28 @@ fn mdd_accepts(mdd: &Mdd, assignment: &[ValueIndex]) -> bool {
     mdd_walk(mdd, assignment).is_some()
 }
 
+/// How much the network's own beliefs endorse `assignment`'s current values for `mdd`'s scope:
+/// `mdd_walk`'s path, if it exists, weighted by the *geometric* mean of `probs[var][value]` over
+/// the (variable, value) pairs on it -- 1.0 only if the network is fully confident in every one of
+/// those specific choices, pulled down by any variable whose chosen value it isn't sure about, even
+/// though the assignment is satisfying overall. Exactly 0 if the path doesn't exist at all, i.e.
+/// `assignment` violates the constraint(s) `mdd` represents. Used by `DestroyRule::Probabilistic`.
+///
+/// Geometric mean, not the raw product (equivalent to `partial_alpha_at`'s `alpha[sink]` with
+/// `decided` all-true, which is what an earlier version of this function returned): the *raw,
+/// unconditioned* `probs` this runs on come from a single network pass with nothing decided yet
+/// (`probs_for` always feeds an all-ones mask), so no individual variable's marginal is likely to be
+/// sharply peaked on its own -- that only happens once evidence from decided neighbours narrows
+/// things down, which `combined_partial_conditional` (used during the actual resampling walk) has
+/// and this doesn't. A plain product multiplies that per-variable uncertainty together once per
+/// scope variable, so it collapses toward 0 purely from scope width -- a 9-variable Sudoku
+/// row/column/box needs each variable's raw marginal to average above roughly 0.36 confidence just
+/// to clear 0.0001, which single-pass raw marginals routinely don't -- regardless of whether
+/// `assignment` actually satisfies the constraint. That was an earlier failure mode observed in
+/// practice: every MDD read back ~0 every step no matter how many constraints the current
+/// assignment actually satisfied. The geometric mean is scale-invariant with scope width -- it
+/// reflects the *average* per-variable confidence along the accepted path rather than their
+/// compounded joint probability -- while still returning exactly 0 whenever the path doesn't exist.
 fn mdd_satisfaction_probability(mdd: &Mdd, probs: &[Vec<f64>], assignment: &[ValueIndex]) -> f64 {
     let Some(path) = mdd_walk(mdd, assignment) else {
         return 0.0;
@@ -183,15 +212,33 @@ fn mdd_satisfaction_probability(mdd: &Mdd, probs: &[Vec<f64>], assignment: &[Val
     (log_sum / path.len() as f64).exp()
 }
 
+/// Extra softening applied to `DestroyRule::Probabilistic`'s WMC before turning it into a destroy
+/// probability -- matches `ConsFormerConfig::tau`, the logit-scaling temperature already used when
+/// training this network (see `learning::consformer::architecture::ConsFormer::forward`), on the
+/// theory that whatever softening scale the model was trained around is a reasonable default here
+/// too, rather than introducing a fresh, unrelated number. Fixed, not exposed as a knob -- see
+/// `DestroyRule::Probabilistic`'s doc for why plain `wmc` alone isn't enough.
 const DESTROY_TEMPERATURE: f64 = 5.0;
 
 /// Which rule decides whether an MDD's scope gets resampled this step -- see
 /// `MddSampler::destroyed_variables`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DestroyRule {
-    /// Destroy each non-satisfied constraints
+    /// Destroy exactly the MDDs `assignment` currently violates (`mdd_accepts`), deterministically
+    /// -- no randomness, no partial credit for a "confident but violated" or "unsure but satisfied"
+    /// constraint. Cheap (no network probabilities needed at all) and, in practice, close to what
+    /// `Probabilistic` degenerates to whenever the network's raw per-variable beliefs are already
+    /// close to one-hot -- which they usually are (see `Probabilistic`'s doc).
     Deterministic,
-    /// Randomly destroy constraints proportionally to its WMC
+    /// Destroy each MDD independently with probability `1 - wmc.powf(1.0 / DESTROY_TEMPERATURE)`,
+    /// `wmc` being `mdd_satisfaction_probability`'s geometric-mean confidence in `assignment`'s
+    /// current values. A violated MDD is still destroyed unconditionally -- WMC 0 stays 0 whatever
+    /// the exponent. For a satisfied one, this softens `wmc` toward 1 before turning it into a
+    /// destroy probability, which matters because the plain `wmc` on its own tends to already sit
+    /// very close to 0 or very close to 1: the network's raw, single-pass marginals are usually
+    /// sharp rather than smoothly uncertain, so without this softening `Probabilistic` mostly just
+    /// reduces to `Deterministic` anyway. `DESTROY_TEMPERATURE` restores genuine gradation between
+    /// "clearly fine" and "technically fine but the network isn't very sure" MDDs.
     Probabilistic,
 }
 
@@ -208,6 +255,26 @@ fn normalize_or_uniform(mut weights: Vec<f64>, domain_size: usize) -> Vec<f64> {
     weights
 }
 
+/// For each global variable, every `(mdd_index, layer)` pair where that MDD has this variable in
+/// its scope, at that layer. Shared by `MddSampler::new` (per-step destroy/resample decoding) and
+/// `bp::belief_propagation` (multi-round marginal aggregation) -- both need the same "which MDDs
+/// does this variable belong to, and at what layer in each" index.
+fn build_var_to_mdds(mdds: &[Mdd]) -> Vec<Vec<(usize, usize)>> {
+    let num_vars = mdds
+        .first()
+        .map(|mdd| mdd.problem().number_variables())
+        .unwrap_or(0);
+
+    let mut var_to_mdds: Vec<Vec<(usize, usize)>> = vec![Vec::new(); num_vars];
+    for (mdd_index, mdd) in mdds.iter().enumerate() {
+        for layer in 0..mdd.number_layers() - 1 {
+            let variable = mdd.decision_at_layer(layer);
+            var_to_mdds[variable.0].push((mdd_index, layer));
+        }
+    }
+    var_to_mdds
+}
+
 /// Sampler used for generating a new assignment given a set of MDDs; aggregate multiple MDDs
 /// opinion about variables update
 pub struct MddSampler<'a> {
@@ -221,23 +288,10 @@ pub struct MddSampler<'a> {
 
 impl<'a> MddSampler<'a> {
     pub fn new(mdds: &'a [Mdd]) -> Self {
-        let num_vars = mdds
-            .first()
-            .map(|mdd| mdd.problem().number_variables())
-            .unwrap_or(0);
-
-        let mut var_to_mdds: Vec<Vec<(usize, usize)>> = vec![Vec::new(); num_vars];
-        for (mdd_index, mdd) in mdds.iter().enumerate() {
-            for layer in 0..mdd.number_layers() - 1 {
-                let variable = mdd.decision_at_layer(layer);
-                var_to_mdds[variable.0].push((mdd_index, layer));
-            }
-        }
-
         Self {
             mdds,
             weights: vec![1.0; mdds.len()],
-            var_to_mdds,
+            var_to_mdds: build_var_to_mdds(mdds),
         }
     }
 
@@ -301,7 +355,9 @@ impl<'a> MddSampler<'a> {
 
     /// Picks which variables sequential imputation should resample this step, driven by `probs`
     /// (this step's network output), `assignment` (the current, pre-step assignment), and `rule`
-    /// (see `DestroyRule`). A destroyed MDD's whole scope gets resampled.
+    /// (see `DestroyRule`) -- no fraction. A destroyed MDD's whole scope gets resampled -- resampling
+    /// only part of an MDD's variables would just leave the same unsatisfied structure half-fixed.
+    /// The returned mask covers every variable belonging to at least one destroyed MDD.
     pub fn destroyed_variables(
         &self,
         probs: &[Vec<f64>],
@@ -394,7 +450,7 @@ fn log_combine_and_normalize(log_combined: Vec<f64>) -> Vec<f64> {
     combined
 }
 
-fn argmax(weights: &[f64]) -> usize {
+pub(crate) fn argmax(weights: &[f64]) -> usize {
     weights
         .iter()
         .enumerate()
@@ -403,7 +459,7 @@ fn argmax(weights: &[f64]) -> usize {
         .expect("weights should not be empty")
 }
 
-fn sample_categorical(weights: &[f64]) -> usize {
+pub(crate) fn sample_categorical(weights: &[f64]) -> usize {
     crate::utils::with_rng(|rng| {
         let total: f64 = weights.iter().sum();
         let mut target = rng.random_range(0.0..total);
@@ -877,10 +933,7 @@ mod tests {
         // x=0, y=1 satisfies not_equals, with probs[x][0] = 0.6 and probs[y][1] = 0.6.
         let satisfied = vec![ValueIndex(0), ValueIndex(1)];
         let wmc = mdd_satisfaction_probability(&mdd, &probs, &satisfied);
-        assert!(
-            (wmc - 0.6).abs() < 1e-9,
-            "wmc={wmc}, expected the geometric mean 0.6, not the product 0.36"
-        );
+        assert!((wmc - 0.6).abs() < 1e-9, "wmc={wmc}, expected the geometric mean 0.6, not the product 0.36");
     }
 
     #[test]

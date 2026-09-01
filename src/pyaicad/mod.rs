@@ -19,7 +19,8 @@ pub use logging::{
     set_verbosity_warning,
 };
 pub use nls::{
-    PyDestroyKind, PyNetworkKind, PySolution, PySolveConfig, PyStatus, neural_local_search,
+    PyDecodeKind, PyDestroyKind, PyNetworkKind, PySolution, PySolveConfig, PyStatus,
+    neural_local_search,
 };
 pub use problem::PyProblem;
 pub use sequential_imputation::{
@@ -60,6 +61,7 @@ fn pyaicad(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTrainingConfig>()?;
     m.add_class::<PyNetworkKind>()?;
     m.add_class::<PyDestroyKind>()?;
+    m.add_class::<PyDecodeKind>()?;
     m.add_class::<PySolveConfig>()?;
     m.add_class::<PySolution>()?;
     m.add_class::<PyStatus>()?;

@@ -29,12 +29,31 @@ pub struct SolveConfig {
     /// Number of epochs during which the destroy ratio goes from its maximum to minimum value
     #[config(default = 0)]
     pub mask_schedule_epochs: usize,
-    /// If true, decode the logits stochastically
+    /// If true, decode the logits stochastically -- only relevant when `decode_kind == "logits"`
+    /// (see that field's doc).
     #[config(default = false)]
     pub stochastic_decode: bool,
     /// Temperature scaling for stochastic decoding
     #[config(default = 1.0)]
     pub temperature: f64,
+    /// How to turn the network's per-step output into a decoded assignment at the destroyed
+    /// positions: `"logits"` decodes each position independently from the raw network output
+    /// (`stochastic_decode`/`temperature` pick greedy vs. sampled), `"belief_propagation"` first
+    /// runs a few rounds of belief propagation over the problem's compiled MDDs (seeded from those
+    /// same logits, with every position *not* being resampled this round clamped as hard evidence)
+    /// to get constraint-aware marginals before decoding from those instead.
+    #[config(default = "String::from(\"logits\")")]
+    pub decode_kind: String,
+    /// Number of belief-propagation rounds per row, per destroy/repair step -- only used when
+    /// `decode_kind == "belief_propagation"`. Kept low by design (see `sampling::bp::belief_propagation`'s
+    /// doc): this runs inside every iteration of the outer search loop.
+    #[config(default = 5)]
+    pub bp_iterations: usize,
+    /// How the problem's constraints are grouped into MDDs before compilation, for
+    /// `decode_kind == "belief_propagation"` -- 0 means one MDD per constraint; see
+    /// `EliminationOrdering::buckets`'s doc for what a larger bound buys.
+    #[config(default = 0)]
+    pub mdd_grouping_size_bound: usize,
 }
 
 impl SolveConfig {
@@ -75,6 +94,12 @@ impl SolveConfig {
                 self.destroy_fraction_max, self.destroy_fraction_min
             ));
         }
+        if self.decode_kind != "logits" && self.decode_kind != "belief_propagation" {
+            return Err(format!(
+                "decode_kind must be \"logits\" or \"belief_propagation\", got {:?}",
+                self.decode_kind
+            ));
+        }
         Ok(())
     }
 }
@@ -93,6 +118,9 @@ impl Default for SolveConfig {
             mask_schedule_epochs: 0,
             stochastic_decode: false,
             temperature: 1.0,
+            decode_kind: String::from("logits"),
+            bp_iterations: 5,
+            mdd_grouping_size_bound: 0,
         }
     }
 }
@@ -109,7 +137,16 @@ mod tests {
         assert_eq!(config.destroy_fraction_max, 1.0);
         assert_eq!(config.destroy_fraction_min, 1.0);
         assert!(!config.stochastic_decode);
+        assert_eq!(config.decode_kind, "logits");
+        assert_eq!(config.bp_iterations, 5);
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_unknown_decode_kind() {
+        let mut config = SolveConfig::default();
+        config.decode_kind = String::from("not_a_real_kind");
+        assert!(config.validate().is_err());
     }
 
     #[test]

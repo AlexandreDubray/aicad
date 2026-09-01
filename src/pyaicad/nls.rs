@@ -13,14 +13,18 @@ use burn::tensor::backend::Backend;
 
 use rand::RngExt;
 
-use crate::learning::consformer::{ConsFormer, ConsFormerBatch, ConsFormerConfig};
+use crate::learning::consformer::{
+    ConsFormer, ConsFormerBatch, ConsFormerConfig, MddCompilationConfig,
+};
 use crate::learning::Network;
+use crate::mdd::heuristics::ConstraintGrouping;
 use crate::modelling::Problem;
-use crate::nls::decode::{Argmax, DecodingOperator, Sampling};
+use crate::nls::decode::{Argmax, BeliefPropagationDecode, DecodingOperator, Sampling};
 use crate::nls::destroy::{DestroyOperator, RandomDestroy, RelatedDestroy, WorstDestroy};
 use crate::nls::{
     load_network, Budget, MaskSchedule, NeuralLocalSearch, Solution, SolveConfig, Status,
 };
+use crate::sampling::DecodeMode;
 
 use super::learn::cuda_available;
 use super::problem::PyProblem;
@@ -127,16 +131,73 @@ impl PyDestroyKind {
     }
 }
 
-/// Builds the decode operator for neural local search: `stochastic_decode`
-/// picks greedy (`Argmax`) vs. stochastic (`Sampling`) decoding of the network's logits.
+/// Which of `nls::decode`'s operators to build -- see `SolveConfig::decode_kind`'s doc.
+#[pyclass(from_py_object)]
+#[derive(Clone)]
+pub enum PyDecodeKind {
+    Logits,
+    BeliefPropagation,
+}
+
+impl PyDecodeKind {
+    fn tag(&self) -> &'static str {
+        match self {
+            PyDecodeKind::Logits => "logits",
+            PyDecodeKind::BeliefPropagation => "belief_propagation",
+        }
+    }
+
+    fn parse(tag: &str) -> PyResult<Self> {
+        match tag {
+            "logits" => Ok(PyDecodeKind::Logits),
+            "belief_propagation" => Ok(PyDecodeKind::BeliefPropagation),
+            other => Err(PyValueError::new_err(format!(
+                "unknown decode_kind {other:?}"
+            ))),
+        }
+    }
+}
+
+/// Builds the decode operator for neural local search. `decode_kind == "logits"` picks greedy
+/// (`Argmax`) vs. stochastic (`Sampling`) decoding of the network's raw logits, per
+/// `stochastic_decode`; `decode_kind == "belief_propagation"` instead refines those same logits
+/// through a few rounds of `sampling::bp::belief_propagation` over the problem's compiled MDDs
+/// before decoding -- see `BeliefPropagationDecode`'s doc.
+#[allow(clippy::too_many_arguments)]
 fn build_decode_op<B: Backend>(
+    decode_kind: &PyDecodeKind,
     stochastic_decode: bool,
     temperature: f64,
+    bp_iterations: usize,
+    mdd_grouping_size_bound: usize,
 ) -> Box<dyn DecodingOperator<B>> {
-    if stochastic_decode {
-        Box::new(Sampling { temperature })
-    } else {
-        Box::new(Argmax)
+    match decode_kind {
+        PyDecodeKind::Logits => {
+            if stochastic_decode {
+                Box::new(Sampling { temperature })
+            } else {
+                Box::new(Argmax)
+            }
+        }
+        PyDecodeKind::BeliefPropagation => {
+            let compilation = MddCompilationConfig {
+                grouping: ConstraintGrouping {
+                    size_bound: mdd_grouping_size_bound,
+                    ..ConstraintGrouping::PER_CONSTRAINT
+                },
+                ..MddCompilationConfig::default()
+            };
+            let mode = if stochastic_decode {
+                DecodeMode::Sample
+            } else {
+                DecodeMode::Greedy
+            };
+            Box::new(BeliefPropagationDecode::new(
+                compilation,
+                bp_iterations,
+                mode,
+            ))
+        }
     }
 }
 
@@ -168,6 +229,17 @@ pub struct PySolveConfig {
     pub stochastic_decode: bool,
     #[pyo3(get, set)]
     pub temperature: f64,
+    /// Which decode operator to use -- see `PyDecodeKind`/`SolveConfig::decode_kind`'s doc.
+    #[pyo3(get, set)]
+    pub decode_kind: PyDecodeKind,
+    /// Number of belief-propagation rounds per row, per step -- only used when
+    /// `decode_kind == BeliefPropagation`.
+    #[pyo3(get, set)]
+    pub bp_iterations: usize,
+    /// How the problem's constraints are grouped into MDDs before compilation -- only used when
+    /// `decode_kind == BeliefPropagation`. 0 means one MDD per constraint.
+    #[pyo3(get, set)]
+    pub mdd_grouping_size_bound: usize,
     #[pyo3(get, set)]
     pub time_limit: Option<u64>,
     #[pyo3(get, set)]
@@ -188,6 +260,9 @@ impl PySolveConfig {
         mask_schedule_epochs=0,
         stochastic_decode=false,
         temperature=1.0,
+        decode_kind=PyDecodeKind::Logits,
+        bp_iterations=5,
+        mdd_grouping_size_bound=0,
         time_limit=None,
         iteration_limit=None,
         seed=None,
@@ -202,6 +277,9 @@ impl PySolveConfig {
         mask_schedule_epochs: usize,
         stochastic_decode: bool,
         temperature: f64,
+        decode_kind: PyDecodeKind,
+        bp_iterations: usize,
+        mdd_grouping_size_bound: usize,
         time_limit: Option<u64>,
         iteration_limit: Option<usize>,
         seed: Option<u64>,
@@ -215,6 +293,9 @@ impl PySolveConfig {
             mask_schedule_epochs,
             stochastic_decode,
             temperature,
+            decode_kind,
+            bp_iterations,
+            mdd_grouping_size_bound,
             time_limit,
             iteration_limit,
             seed,
@@ -251,6 +332,9 @@ impl From<&PySolveConfig> for SolveConfig {
             mask_schedule_epochs: c.mask_schedule_epochs,
             stochastic_decode: c.stochastic_decode,
             temperature: c.temperature,
+            decode_kind: c.decode_kind.tag().to_string(),
+            bp_iterations: c.bp_iterations,
+            mdd_grouping_size_bound: c.mdd_grouping_size_bound,
             time_limit: c.time_limit,
             iteration_limit: c.iteration_limit,
             seed: c.seed,
@@ -271,6 +355,9 @@ impl TryFrom<&SolveConfig> for PySolveConfig {
             mask_schedule_epochs: c.mask_schedule_epochs,
             stochastic_decode: c.stochastic_decode,
             temperature: c.temperature,
+            decode_kind: PyDecodeKind::parse(&c.decode_kind)?,
+            bp_iterations: c.bp_iterations,
+            mdd_grouping_size_bound: c.mdd_grouping_size_bound,
             time_limit: c.time_limit,
             iteration_limit: c.iteration_limit,
             seed: c.seed,
@@ -412,7 +499,14 @@ fn run<B: Backend>(
                 epochs: config.mask_schedule_epochs,
             };
             let destroy_op = destroy_kind.build();
-            let decode_op = build_decode_op::<B>(config.stochastic_decode, config.temperature);
+            let decode_kind = PyDecodeKind::parse(&config.decode_kind)?;
+            let decode_op = build_decode_op::<B>(
+                &decode_kind,
+                config.stochastic_decode,
+                config.temperature,
+                config.bp_iterations,
+                config.mdd_grouping_size_bound,
+            );
 
             let nls = NeuralLocalSearch::<B, ConsFormer<B>, ConsFormerBatch<B>>::new(
                 network,
