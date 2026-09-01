@@ -1,9 +1,9 @@
-//! Sequential-imputation solving: builds a full assignment by sampling every variable once, in a
-//! freshly shuffled order, from its exact per-MDD conditional given only the variables already
-//! imputed earlier in *that same* attempt -- every variable not yet decided is marginalised out
-//! entirely. This is repeated for up to a fixed number of steps, re-deriving the guiding probabilities
-//! (typically a network forward pass) from the previous step's assignment, until one attempt
-//! satisfies the problem or the step budget runs out.
+//! Sequential-imputation solving: builds a full assignment by resampling only the variables of
+//! whichever MDDs `MddSampler::destroyed_variables` picks under its `DestroyRule` (see that method
+//! and enum's docs), in a freshly shuffled order, from their exact per-MDD conditional given the
+//! rest of the variables This is repeated for up to a fixed number of steps, re-deriving the guiding
+//! probabilities and re-selecting which MDDs to destroy from the previous step's assignment, until
+//! one attempt satisfies the problem or the step budget runs out.
 //!
 //! See "Sequential Imputations and Bayesian Missing Data Problem" (Kong, Liu & Wong, 1994) for reference
 //! on sequential imputation.
@@ -23,7 +23,9 @@ use crate::learning::{Batch, Network};
 use crate::modelling::{Problem, ValueIndex, VariableIndex};
 use crate::utils::tensor::rows_to_tensor;
 
-use super::{argmax, sample_categorical, DecodeMode, MddSampler};
+use super::{
+    argmax, entropy, min_max_mean, sample_categorical, DecodeMode, DestroyRule, MddSampler,
+};
 
 /// Outcome of `solve`/`solve_batch` for one problem.
 pub struct ImputationResult {
@@ -38,29 +40,67 @@ pub struct ImputationResult {
     pub elapsed: Duration,
 }
 
-/// One sequential-imputation attempt: visits every variable exactly once, in a freshly shuffled
-/// order, sampling each from `sampler`'s combined per-MDD conditional given only the variables
-/// visited earlier in this same call. `decided` starts all-false, so the first variable in the
-/// order is automatically drawn from its plain marginal.
+/// One sequential-imputation attempt: resamples the `destroyed` variables, visited in a freshly
+/// shuffled order, each drawn from `sampler`'s combined per-MDD conditional given the growing set
+/// of decided evidence.
 fn sequential_imputation(
     sampler: &MddSampler,
     probs: &[Vec<f64>],
     mode: DecodeMode,
+    base_assignment: &[ValueIndex],
+    destroyed: &[bool],
 ) -> Vec<ValueIndex> {
-    let n = sampler.number_variables();
-    let mut order: Vec<VariableIndex> = (0..n).map(VariableIndex).collect();
+    let mut order: Vec<VariableIndex> = destroyed
+        .iter()
+        .enumerate()
+        .filter(|&(_, &d)| d)
+        .map(|(v, _)| VariableIndex(v))
+        .collect();
     crate::utils::with_rng(|rng| order.shuffle(rng));
 
-    let mut assignment: Vec<ValueIndex> = vec![ValueIndex(0); n];
-    let mut decided = vec![false; n];
+    let mut assignment: Vec<ValueIndex> = base_assignment.to_vec();
+    let mut decided: Vec<bool> = destroyed.iter().map(|&d| !d).collect();
+    let log_enabled = log::log_enabled!(log::Level::Debug);
+    let mut entropies: Vec<f64> = Vec::with_capacity(if log_enabled { order.len() } else { 0 });
 
-    for &var in &order {
+    for (visit_index, &var) in order.iter().enumerate() {
         let combined = sampler.combined_partial_conditional(var, probs, &assignment, &decided);
-        assignment[var.0] = ValueIndex(match mode {
+        let chosen = match mode {
             DecodeMode::Greedy => argmax(&combined),
             DecodeMode::Sample => sample_categorical(&combined),
-        });
+        };
+        if log_enabled {
+            // `entropy` here is the combined distribution's own entropy -- how spread out it is
+            // over the remaining domain -- not to be confused with `combined[chosen]`, the
+            // probability mass actually landed on. A distribution can be low-entropy (confident)
+            // yet still pick a value with mediocre probability if the domain is small; both
+            // numbers together are what show whether the evidence gathered so far (the growing
+            // `decided` set) is actually narrowing things down, or whether the walk is flying
+            // increasingly blind the further it gets from the variables held fixed this step.
+            let h = entropy(&combined);
+            entropies.push(h);
+            log::debug!(
+                "sequential_imputation: [{}/{}] var {} -> domain_size={}, entropy={h:.4}, \
+                 chosen=value_index {chosen} (p={:.4})",
+                visit_index + 1,
+                order.len(),
+                var.0,
+                combined.len(),
+                combined[chosen]
+            );
+        }
+        assignment[var.0] = ValueIndex(chosen);
         decided[var.0] = true;
+    }
+
+    if log_enabled {
+        let (min_h, max_h, mean_h) = min_max_mean(&entropies);
+        log::debug!(
+            "sequential_imputation: resampled {} variable(s) -- entropy min={min_h:.4}, \
+             max={max_h:.4}, mean={mean_h:.4} (visit order: first-visited variables are\
+             conditioned on the least evidence, so their entropy is typically the highest)",
+            order.len()
+        );
     }
 
     assignment
@@ -95,6 +135,8 @@ pub struct SequentialImputationSolver<B: Backend, N, Ba> {
     /// problem the network was trained on) -- needed to slice each problem's own domain out of
     /// the shared-width logits.
     domain_size: usize,
+    /// Which rule decides whether an MDD's scope gets resampled this step -- see `DestroyRule`.
+    rule: DestroyRule,
     device: B::Device,
     _batch: PhantomData<Ba>,
 }
@@ -104,10 +146,11 @@ where
     Ba: Batch<B>,
     N: Network<B, Ba>,
 {
-    pub fn new(network: N, domain_size: usize, device: B::Device) -> Self {
+    pub fn new(network: N, domain_size: usize, rule: DestroyRule, device: B::Device) -> Self {
         Self {
             network,
             domain_size,
+            rule,
             device,
             _batch: PhantomData,
         }
@@ -185,8 +228,13 @@ where
         let start = Instant::now();
         let mut steps_run = 0;
 
+        log::debug!(
+            "solve_batch: {num_problems} problem(s), max_steps={max_steps}, time_limit={time_limit:?}"
+        );
+
         for step in 0..max_steps {
             if time_limit.is_some_and(|limit| start.elapsed() >= limit) {
+                log::debug!("solve_batch: time_limit reached after {step} step(s)");
                 break;
             }
             let active: Vec<usize> = (0..num_problems)
@@ -197,6 +245,21 @@ where
             }
             steps_run = step + 1;
 
+            // Listing every active index is only readable for a handful of problems -- past that,
+            // the count is what matters (e.g. when following a single instance, `active` is just
+            // `[0]` every step; for a large batch it would otherwise flood the log).
+            if active.len() <= 20 {
+                log::debug!(
+                    "step {steps_run}/{max_steps}: {} active: {active:?}",
+                    active.len()
+                );
+            } else {
+                log::debug!(
+                    "step {steps_run}/{max_steps}: {} problem(s) still active",
+                    active.len()
+                );
+            }
+
             let active_assignments: Vec<Vec<ValueIndex>> =
                 active.iter().map(|&i| assignments[i].clone()).collect();
             let probs_batch = probs_fn(&active, &active_assignments);
@@ -206,18 +269,48 @@ where
                 "probs_fn must return exactly one distribution set per active problem"
             );
 
+            // Copied out of `self` before the closure (rather than reading `self.rule` inside it)
+            // so the closure only captures a plain `DestroyRule`, not `self` itself -- capturing
+            // `self` here would require `N: Sync` (the whole solver, network included, would need
+            // to cross threads) just to read one `Copy` field.
+            let rule = self.rule;
             let updated: Vec<(usize, Vec<ValueIndex>)> = active
                 .par_iter()
                 .zip(probs_batch.par_iter())
-                .map(|(&i, probs)| (i, sequential_imputation(&samplers[i], probs, mode)))
+                .map(|(&i, probs)| {
+                    let destroyed = samplers[i].destroyed_variables(probs, &assignments[i], rule);
+                    let new_assignment = sequential_imputation(
+                        &samplers[i],
+                        probs,
+                        mode,
+                        &assignments[i],
+                        &destroyed,
+                    );
+                    (i, new_assignment)
+                })
                 .collect();
 
             for (i, new_assignment) in updated {
                 let raw: Vec<isize> = (0..problems[i].number_variables())
                     .map(|v| problems[i][VariableIndex(v)].value(new_assignment[v]))
                     .collect();
-                if problems[i].is_solution(&raw) {
+                let satisfied = problems[i].is_solution(&raw);
+                if satisfied {
                     solved_at[i] = Some((steps_run, start.elapsed()));
+                }
+                // Counting violated constraints is only done when debug logging is actually on --
+                // it's an extra full pass over every constraint, on top of `is_solution`'s own
+                // pass, so it'd be wasted work at the default log level.
+                if log::log_enabled!(log::Level::Debug) {
+                    let violated = problems[i]
+                        .iter_constraints()
+                        .filter(|&c| !problems[i][c].is_satisfied(&raw))
+                        .count();
+                    log::debug!(
+                        "problem {i}: step {steps_run} attempt -> satisfied={satisfied}, \
+                         violated_constraints={violated}/{}",
+                        problems[i].number_constraints()
+                    );
                 }
                 assignments[i] = new_assignment;
             }
@@ -225,13 +318,21 @@ where
 
         let total_elapsed = start.elapsed();
         (0..num_problems)
-            .map(|i| ImputationResult {
-                assignment: assignments[i].clone(),
-                steps: solved_at[i].map(|(step, _)| step).unwrap_or(steps_run),
-                satisfied: solved_at[i].is_some(),
-                elapsed: solved_at[i]
+            .map(|i| {
+                let satisfied = solved_at[i].is_some();
+                let steps = solved_at[i].map(|(step, _)| step).unwrap_or(steps_run);
+                let elapsed = solved_at[i]
                     .map(|(_, elapsed)| elapsed)
-                    .unwrap_or(total_elapsed),
+                    .unwrap_or(total_elapsed);
+                log::debug!(
+                    "problem {i}: finished -- satisfied={satisfied}, steps={steps}, elapsed={elapsed:?}"
+                );
+                ImputationResult {
+                    assignment: assignments[i].clone(),
+                    steps,
+                    satisfied,
+                    elapsed,
+                }
             })
             .collect()
     }

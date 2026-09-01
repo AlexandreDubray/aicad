@@ -38,16 +38,36 @@ use crate::mdd::Mdd;
 use crate::modelling::{Problem, VariableIndex};
 use crate::nls::{load_network, Solution, Status};
 use crate::sampling::solve::SequentialImputationSolver;
-use crate::sampling::{DecodeMode, MddSampler};
+use crate::sampling::{DecodeMode, DestroyRule, MddSampler};
 
 use super::learn::cuda_available;
 use super::nls::{PyNetworkKind, PyProblemsArg, PySolution};
+
+/// Which of `sampling::DestroyRule`'s variants to use -- see that type's doc.
+#[pyclass(from_py_object)]
+#[derive(Clone)]
+pub enum PyDestroyRule {
+    Deterministic,
+    Probabilistic,
+}
+
+impl From<&PyDestroyRule> for DestroyRule {
+    fn from(rule: &PyDestroyRule) -> Self {
+        match rule {
+            PyDestroyRule::Deterministic => DestroyRule::Deterministic,
+            PyDestroyRule::Probabilistic => DestroyRule::Probabilistic,
+        }
+    }
+}
 
 #[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct PySequentialImputationConfig {
     #[pyo3(get, set)]
     pub network_kind: PyNetworkKind,
+    /// Which rule decides whether an MDD's scope gets resampled each step -- see `DestroyRule`.
+    #[pyo3(get, set)]
+    pub destroy_rule: PyDestroyRule,
     /// K in the sequential-imputation loop: how many full-assignment attempts a still-unsolved
     /// problem gets before giving up on it.
     #[pyo3(get, set)]
@@ -79,6 +99,7 @@ impl PySequentialImputationConfig {
     #[new]
     #[pyo3(signature = (
         network_kind=PyNetworkKind::ConsFormer,
+        destroy_rule=PyDestroyRule::Probabilistic,
         max_steps=50,
         stochastic_decode=false,
         mdd_grouping_size_bound=0,
@@ -88,6 +109,7 @@ impl PySequentialImputationConfig {
     #[allow(clippy::too_many_arguments)]
     fn new(
         network_kind: PyNetworkKind,
+        destroy_rule: PyDestroyRule,
         max_steps: usize,
         stochastic_decode: bool,
         mdd_grouping_size_bound: usize,
@@ -96,6 +118,7 @@ impl PySequentialImputationConfig {
     ) -> Self {
         Self {
             network_kind,
+            destroy_rule,
             max_steps,
             stochastic_decode,
             mdd_grouping_size_bound,
@@ -237,6 +260,7 @@ fn run<B: Backend>(
             let solver = SequentialImputationSolver::<B, ConsFormer<B>, ConsFormerBatch<B>>::new(
                 network,
                 network_config.domain_size,
+                DestroyRule::from(&config.destroy_rule),
                 device,
             );
 
@@ -306,7 +330,15 @@ pub fn sequential_imputation_solve(
 
     let checkpoint_dir = PathBuf::from(checkpoint_dir);
     let config = config.unwrap_or_else(|| {
-        PySequentialImputationConfig::new(PyNetworkKind::ConsFormer, 50, false, 0, None, None)
+        PySequentialImputationConfig::new(
+            PyNetworkKind::ConsFormer,
+            PyDestroyRule::Probabilistic,
+            50,
+            false,
+            0,
+            None,
+            None,
+        )
     });
 
     let solutions = py.detach(move || {

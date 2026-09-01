@@ -143,6 +143,58 @@ fn partial_conditional(
     normalize_or_uniform(weights, domain_size)
 }
 
+/// Walks the mdd following edges imposed by `assignment`. If the current assignments does not
+/// respect the constraints, returns None. Otherwise, returns the assignments projected onto the
+/// constraint's scope.
+fn mdd_walk(mdd: &Mdd, assignment: &[ValueIndex]) -> Option<Vec<(VariableIndex, ValueIndex)>> {
+    let mut node = mdd.root();
+    let mut path = Vec::with_capacity(mdd.sink().0);
+
+    for layer in 0..mdd.sink().0 {
+        let variable = mdd.decision_at_layer(layer);
+        let clamp_value = assignment[variable.0];
+        let edge = mdd[node]
+            .iter_children()
+            .find(|&edge| mdd[edge].assignment() == clamp_value)?;
+        path.push((variable, clamp_value));
+        node = mdd[edge].to();
+    }
+
+    Some(path)
+}
+
+/// Whether `assignment` satisfies the constraint(s) `mdd` represents -- see `mdd_walk`. Used by
+/// `DestroyRule::Deterministic`.
+fn mdd_accepts(mdd: &Mdd, assignment: &[ValueIndex]) -> bool {
+    mdd_walk(mdd, assignment).is_some()
+}
+
+fn mdd_satisfaction_probability(mdd: &Mdd, probs: &[Vec<f64>], assignment: &[ValueIndex]) -> f64 {
+    let Some(path) = mdd_walk(mdd, assignment) else {
+        return 0.0;
+    };
+    if path.is_empty() {
+        return 1.0;
+    }
+    let log_sum: f64 = path
+        .iter()
+        .map(|&(var, val)| safe_ln(probs[var.0][val.0]))
+        .sum();
+    (log_sum / path.len() as f64).exp()
+}
+
+const DESTROY_TEMPERATURE: f64 = 5.0;
+
+/// Which rule decides whether an MDD's scope gets resampled this step -- see
+/// `MddSampler::destroyed_variables`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DestroyRule {
+    /// Destroy each non-satisfied constraints
+    Deterministic,
+    /// Randomly destroy constraints proportionally to its WMC
+    Probabilistic,
+}
+
 /// Normalises a categorical probability distribution if at least one element has non-zero weight,
 /// otherwise returns a uniform distribution
 fn normalize_or_uniform(mut weights: Vec<f64>, domain_size: usize) -> Vec<f64> {
@@ -246,6 +298,87 @@ impl<'a> MddSampler<'a> {
         }
         log_combine_and_normalize(log_combined)
     }
+
+    /// Picks which variables sequential imputation should resample this step, driven by `probs`
+    /// (this step's network output), `assignment` (the current, pre-step assignment), and `rule`
+    /// (see `DestroyRule`). A destroyed MDD's whole scope gets resampled.
+    pub fn destroyed_variables(
+        &self,
+        probs: &[Vec<f64>],
+        assignment: &[ValueIndex],
+        rule: DestroyRule,
+    ) -> Vec<bool> {
+        let mut destroyed = vec![false; self.number_variables()];
+        let mut destroyed_mdds = 0usize;
+        // Only collected when debug logging is on and `rule` is `Probabilistic` -- cheap (the WMC
+        // is already computed either way) but no reason to allocate/format it otherwise.
+        let mut wmcs: Vec<f64> = Vec::new();
+        let log_enabled = log::log_enabled!(log::Level::Debug);
+
+        crate::utils::with_rng(|rng| {
+            for mdd in self.mdds {
+                let destroy = match rule {
+                    DestroyRule::Deterministic => !mdd_accepts(mdd, assignment),
+                    DestroyRule::Probabilistic => {
+                        let wmc = mdd_satisfaction_probability(mdd, probs, assignment)
+                            .powf(1.0 / DESTROY_TEMPERATURE);
+                        if log_enabled {
+                            wmcs.push(wmc);
+                        }
+                        rng.random_bool((1.0 - wmc).clamp(0.0, 1.0))
+                    }
+                };
+                if destroy {
+                    destroyed_mdds += 1;
+                    for layer in 0..mdd.number_layers() - 1 {
+                        let var = mdd.decision_at_layer(layer);
+                        destroyed[var.0] = true;
+                    }
+                }
+            }
+        });
+
+        if log_enabled {
+            let destroyed_vars = destroyed.iter().filter(|&&d| d).count();
+            // Scientific notation, not `{:.4}`: WMC legitimately spans many orders of magnitude
+            // (an exactly-0.0 violated MDD next to a satisfied one at, say, 3e-5), and a fixed
+            // 4-decimal format displays both ends of that range as an indistinguishable "0.0000" --
+            // which is exactly what made an earlier, since-fixed bug (every MDD reading back ~0
+            // regardless of whether the assignment satisfied it) look identical to this heuristic
+            // actually working as intended, in the log alone, for a while.
+            let wmc_summary = match rule {
+                DestroyRule::Deterministic => String::new(),
+                DestroyRule::Probabilistic => {
+                    let (min_wmc, max_wmc, mean_wmc) = min_max_mean(&wmcs);
+                    format!(
+                        " -- WMC (post-temperature) min={min_wmc:.3e}, max={max_wmc:.3e}, \
+                         mean={mean_wmc:.3e}"
+                    )
+                }
+            };
+            log::debug!(
+                "destroyed_variables[{rule:?}]: {destroyed_mdds}/{} MDD(s)/constraint group(s) \
+                 destroyed, covering {destroyed_vars}/{} variable(s){wmc_summary}",
+                self.mdds.len(),
+                destroyed.len()
+            );
+        }
+
+        destroyed
+    }
+}
+
+/// `(min, max, mean)` of `values`, or all-zero for an empty slice -- only ever called behind a
+/// debug-logging check, so a degenerate empty input is just displayed as zeros rather than
+/// meriting an `Option`.
+fn min_max_mean(values: &[f64]) -> (f64, f64, f64) {
+    if values.is_empty() {
+        return (0.0, 0.0, 0.0);
+    }
+    let min = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    (min, max, mean)
 }
 
 fn log_combine_and_normalize(log_combined: Vec<f64>) -> Vec<f64> {
@@ -693,5 +826,85 @@ mod tests {
     fn entropy_of_a_uniform_distribution_matches_ln_n() {
         let dist = vec![0.25; 4];
         assert!((entropy(&dist) - 4.0f64.ln()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn mdd_satisfaction_probability_is_zero_for_a_violated_assignment_and_positive_for_a_satisfied_one(
+    ) {
+        // Regression test for the destroy-step bug: an earlier version of this function ignored
+        // the current assignment entirely (marginalised over every possible one instead of
+        // conditioning on this one), so it returned ~0 regardless of whether the assignment
+        // actually satisfied the constraint -- destroying every MDD every step no matter how many
+        // constraints were already satisfied. x != y over {0,1}: x=y=0 has no accepting path (the
+        // constraint is violated), x=0,y=1 does.
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1], None);
+        let y = problem.add_variable(vec![0, 1], None);
+        not_equals(&mut problem, x, y);
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mdd = build_mdd(problem.clone(), &constraints);
+        let probs = uniform_probs(&problem);
+
+        let violated = vec![ValueIndex(0), ValueIndex(0)];
+        let satisfied = vec![ValueIndex(0), ValueIndex(1)];
+
+        assert_eq!(mdd_satisfaction_probability(&mdd, &probs, &violated), 0.0);
+        assert!(mdd_satisfaction_probability(&mdd, &probs, &satisfied) > 0.0);
+    }
+
+    #[test]
+    fn mdd_satisfaction_probability_is_the_geometric_mean_not_the_product_along_the_path() {
+        // Regression test for a second, related bug: the first fix conditioned on the assignment
+        // (previous test) but still returned the raw *product* of per-variable probabilities along
+        // the path, same as WMC does. That's scale-sensitive with scope width for reasons that have
+        // nothing to do with whether the assignment is actually satisfying -- moderately confident
+        // per-variable beliefs still crush toward 0 once there are enough of them to multiply
+        // together, which is exactly what was observed in practice (every MDD reading back ~0.0000
+        // regardless of how many constraints were satisfied, because Sudoku's row/column/box scopes
+        // are 9 variables wide). The geometric mean is scale-invariant instead: with both terms
+        // equal (0.6 here), it should land exactly on that shared value, not on their product
+        // (0.36).
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1], None);
+        let y = problem.add_variable(vec![0, 1], None);
+        not_equals(&mut problem, x, y);
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mdd = build_mdd(problem.clone(), &constraints);
+        let probs = vec![vec![0.6, 0.4], vec![0.4, 0.6]];
+
+        // x=0, y=1 satisfies not_equals, with probs[x][0] = 0.6 and probs[y][1] = 0.6.
+        let satisfied = vec![ValueIndex(0), ValueIndex(1)];
+        let wmc = mdd_satisfaction_probability(&mdd, &probs, &satisfied);
+        assert!(
+            (wmc - 0.6).abs() < 1e-9,
+            "wmc={wmc}, expected the geometric mean 0.6, not the product 0.36"
+        );
+    }
+
+    #[test]
+    fn destroyed_variables_with_deterministic_rule_destroys_exactly_the_violated_mdds() {
+        // One MDD, not_equals(x, y), over a 3-variable problem where w is free but appears in no
+        // constraint at all -- so it belongs to no MDD's scope and `destroyed_variables` can never
+        // touch it, regardless of what x and y are assigned. x=y=0 violates not_equals, so
+        // `Deterministic` should destroy exactly x and y, leaving w alone.
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1], None);
+        let y = problem.add_variable(vec![0, 1], None);
+        let _w = problem.add_variable(vec![0, 1], None);
+        not_equals(&mut problem, x, y);
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mdd = build_mdd(problem.clone(), &constraints);
+
+        let mdds = vec![mdd];
+        let sampler = MddSampler::new(&mdds);
+        let probs = uniform_probs(&problem);
+        let assignment = vec![ValueIndex(0), ValueIndex(0), ValueIndex(0)];
+
+        let destroyed =
+            sampler.destroyed_variables(&probs, &assignment, DestroyRule::Deterministic);
+        assert_eq!(destroyed, vec![true, true, false]);
     }
 }
