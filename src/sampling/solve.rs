@@ -1,7 +1,7 @@
 //! Sequential-imputation solving: builds a full assignment by resampling only the variables of
 //! whichever MDDs `MddSampler::destroyed_variables` picks under its `DestroyRule` (see that method
 //! and enum's docs), in a freshly shuffled order, from their exact per-MDD conditional given the
-//! rest of the variables This is repeated for up to a fixed number of steps, re-deriving the guiding
+//! rest of the variables. This is repeated for up to a fixed number of steps, re-deriving the guiding
 //! probabilities and re-selecting which MDDs to destroy from the previous step's assignment, until
 //! one attempt satisfies the problem or the step budget runs out.
 //!
@@ -313,6 +313,14 @@ where
                     );
                 }
                 assignments[i] = new_assignment;
+            }
+
+            if steps_run.is_multiple_of(100) {
+                let solved = solved_at.iter().filter(|s| s.is_some()).count();
+                log::info!(
+                    "Step {steps_run}/{max_steps}, elapsed: {} seconds. Number solved {solved}/{num_problems}",
+                    start.elapsed().as_secs()
+                );
             }
         }
 
