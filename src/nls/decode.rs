@@ -34,6 +34,22 @@ pub trait DecodingOperator<B: Backend>: Send + Sync {
         problems: &[Arc<Problem>],
         population_size: usize,
     ) -> Tensor<B, 2, Int>;
+
+    /// Whether `problem` is already known to be unsatisfiable, independent of anything a
+    /// destroy/repair loop could ever decode -- e.g. a bucket-grouped clique of constraints
+    /// (`BeliefPropagationDecode`'s compiled MDDs) with no accepting path at all, detected once
+    /// during MDD compilation rather than left for the search to burn its whole budget failing to
+    /// converge on. `NeuralLocalSearch::run` calls this once per problem, up front, and reports
+    /// `Status::Unsatisfiable` immediately for any that answer `true`, instead of ever destroying,
+    /// decoding, or checking `is_solution` on them.
+    ///
+    /// Default `false`: an operator with no static UNSAT-detection mechanism of its own (`Argmax`,
+    /// `Sampling` -- neither one looks at the problem's constraints at all, only at logits) just
+    /// defers to the search itself, which reports `Status::Unknown` if it never finds a solution
+    /// within budget, same as before this existed.
+    fn detect_unsat(&self, _problem: &Arc<Problem>) -> bool {
+        false
+    }
 }
 
 /// Greedy / MAP decoding: takes the most likely value per variable.
@@ -247,5 +263,69 @@ impl<B: Backend> DecodingOperator<B> for BeliefPropagationDecode {
             });
 
         Tensor::<B, 1, Int>::from_data(next_data.as_slice(), &device).reshape([rows, n])
+    }
+
+    /// `true` if any of `problem`'s compiled MDDs (see `compile_mdds_for`) has no accepting path
+    /// at all (`Mdd::is_unsat`) -- e.g. `mdd_grouping_size_bound` bucketed a clique of constraints
+    /// too tight to ever be satisfied together, such as a 6-clique in a 5-colouring problem's
+    /// bucket. Reuses `mdds_for`'s cache, so calling this before the first `decode` doesn't cost a
+    /// second compilation -- whichever call happens first compiles and caches, the other just
+    /// reads the cache.
+    fn detect_unsat(&self, problem: &Arc<Problem>) -> bool {
+        self.mdds_for(problem).iter().any(Mdd::is_unsat)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modelling::all_different;
+    use burn::backend::ndarray::NdArray;
+
+    /// A `size`-clique modelled directly as one `all_different` constraint over `colours` values --
+    /// exactly the "clique too tight for the number of colours" scenario the user described (a
+    /// 6-clique needing 6 colours in a 5-colouring problem). Modelled as a single constraint
+    /// (rather than `size * (size - 1) / 2` pairwise `not_equals`) so it always compiles to its own
+    /// one MDD regardless of `compilation.grouping` -- a set of pairwise `not_equals` constraints
+    /// covering the same clique can end up split across several buckets by
+    /// `ConstraintGrouping`'s elimination-order-driven bucketing (each bucket keyed by its
+    /// *earliest-eliminated* scope variable, so two edges that don't share an "earliest" variable
+    /// never land in the same bucket even at a large `size_bound`), in which case no single
+    /// compiled MDD would ever see the whole clique and `detect_unsat` would miss it -- `1 <=
+    /// colours < size` makes the clique itself unsatisfiable no matter how it's grouped, so using
+    /// `all_different` sidesteps that entirely.
+    fn clique_problem(size: usize, colours: usize) -> Arc<Problem> {
+        let mut problem = Problem::default();
+        let domain: Vec<isize> = (0..colours as isize).collect();
+        let vars: Vec<VariableIndex> = (0..size)
+            .map(|_| problem.add_variable(domain.clone(), None))
+            .collect();
+        all_different(&mut problem, vars);
+        Arc::new(problem)
+    }
+
+    #[test]
+    fn detect_unsat_is_true_when_a_clique_has_fewer_colours_than_variables() {
+        let op = BeliefPropagationDecode::new(MddCompilationConfig::default(), 5, DecodeMode::Greedy);
+        let problem = clique_problem(6, 5);
+        assert!(DecodingOperator::<NdArray>::detect_unsat(&op, &problem));
+    }
+
+    #[test]
+    fn detect_unsat_is_false_when_a_clique_has_enough_colours() {
+        let op = BeliefPropagationDecode::new(MddCompilationConfig::default(), 5, DecodeMode::Greedy);
+        let problem = clique_problem(6, 6);
+        assert!(!DecodingOperator::<NdArray>::detect_unsat(&op, &problem));
+    }
+
+    #[test]
+    fn detect_unsat_caches_so_a_second_call_does_not_recompile() {
+        let op = BeliefPropagationDecode::new(MddCompilationConfig::default(), 5, DecodeMode::Greedy);
+        let problem = clique_problem(6, 5);
+        assert!(DecodingOperator::<NdArray>::detect_unsat(&op, &problem));
+        // Second call must read back the same (cached) UNSAT MDDs, not silently recompute
+        // something different.
+        assert!(DecodingOperator::<NdArray>::detect_unsat(&op, &problem));
+        assert_eq!(op.cache.lock().unwrap().len(), 1);
     }
 }

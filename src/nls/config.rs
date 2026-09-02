@@ -50,10 +50,19 @@ pub struct SolveConfig {
     #[config(default = 5)]
     pub bp_iterations: usize,
     /// How the problem's constraints are grouped into MDDs before compilation, for
-    /// `decode_kind == "belief_propagation"` -- 0 means one MDD per constraint; see
-    /// `EliminationOrdering::buckets`'s doc for what a larger bound buys.
+    /// `decode_kind == "belief_propagation"` -- only used when `mdd_grouping_window_size == 0`; 0
+    /// means one MDD per constraint. See `EliminationOrdering::buckets`'s doc for what a larger
+    /// bound buys.
     #[config(default = 0)]
     pub mdd_grouping_size_bound: usize,
+    /// If non-zero, selects overlapping rolling-window constraint grouping instead of (disjoint)
+    /// bucket grouping, for `decode_kind == "belief_propagation"` -- see
+    /// `EliminationOrdering::rolling_window_groups`'s doc. Trades exact per-constraint evidence
+    /// counting (a constraint in more than one window is double-counted in belief propagation's
+    /// marginals) for catching UNSAT cliques that disjoint bucket grouping can structurally never
+    /// merge into one MDD.
+    #[config(default = 0)]
+    pub mdd_grouping_window_size: usize,
 }
 
 impl SolveConfig {
@@ -121,6 +130,7 @@ impl Default for SolveConfig {
             decode_kind: String::from("logits"),
             bp_iterations: 5,
             mdd_grouping_size_bound: 0,
+            mdd_grouping_window_size: 0,
         }
     }
 }
@@ -139,6 +149,8 @@ mod tests {
         assert!(!config.stochastic_decode);
         assert_eq!(config.decode_kind, "logits");
         assert_eq!(config.bp_iterations, 5);
+        assert_eq!(config.mdd_grouping_size_bound, 0);
+        assert_eq!(config.mdd_grouping_window_size, 0);
         assert!(config.validate().is_ok());
     }
 

@@ -32,6 +32,62 @@ impl EliminationOrdering {
             Self::GreedyMinFill => greedy_min_fill_buckets(problem, size_bound),
         }
     }
+
+    /// Sorts every constraint by the elimination position (under this heuristic's order) of the
+    /// earliest-eliminated variable in its scope, then slides a stride-1 window of `window_size`
+    /// constraints across that sorted list, producing one (generally overlapping) group per window
+    /// position -- `[0, window_size)`, `[1, window_size + 1)`, and so on.
+    ///
+    /// Unlike `buckets`, groups here are **not** disjoint: a constraint can appear in up to
+    /// `window_size` different groups (once per window it falls in), so compiling one MDD per group
+    /// and reusing all of them for e.g. belief propagation double-counts that constraint's evidence
+    /// once per extra membership. This is a deliberate accuracy/completeness tradeoff: because a
+    /// good elimination order tends to place a tightly-connected clique's variables close together,
+    /// a clique's constraints usually end up sharing at least one window even when no single
+    /// variable is the earliest-eliminated endpoint of all of them (the structural gap `buckets`
+    /// has for e.g. odd cycles), without requiring true bucket-elimination message passing.
+    ///
+    /// `window_size <= 1` degenerates to one singleton group per constraint (no overlap, same as
+    /// `buckets` with `size_bound == 0`). A `window_size` at or above the number of constraints
+    /// yields a single group containing everything.
+    pub fn rolling_window_groups(
+        &self,
+        problem: &Problem,
+        window_size: usize,
+    ) -> Vec<Vec<ConstraintIndex>> {
+        if window_size <= 1 {
+            return problem.iter_constraints().map(|c| vec![c]).collect();
+        }
+
+        let order = match self {
+            Self::GreedyMinFill => min_fill_order(problem),
+        };
+        let position: FxHashMap<VariableIndex, usize> = order
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(i, v)| (v, i))
+            .collect();
+
+        let mut sorted: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        sorted.sort_by_key(|&c| {
+            let earliest = problem[c]
+                .iter_scope()
+                .map(|v| position[&v])
+                .min()
+                .expect("a compiled constraint must have a non-empty scope");
+            (earliest, c.0)
+        });
+
+        let n = sorted.len();
+        if n == 0 {
+            return Vec::new();
+        }
+        let window_size = window_size.min(n);
+        (0..=(n - window_size))
+            .map(|start| sorted[start..start + window_size].to_vec())
+            .collect()
+    }
 }
 
 fn greedy_min_fill_buckets(problem: &Problem, size_bound: usize) -> Vec<Vec<ConstraintIndex>> {
@@ -221,6 +277,90 @@ mod tests {
     }
 
     #[test]
+    fn window_size_at_most_one_gives_one_singleton_group_per_constraint() {
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1], None);
+        let y = problem.add_variable(vec![0, 1], None);
+        let z = problem.add_variable(vec![0, 1], None);
+        not_equals(&mut problem, x, y);
+        not_equals(&mut problem, y, z);
+
+        for window_size in [0, 1] {
+            let groups = EliminationOrdering::GreedyMinFill.rolling_window_groups(&problem, window_size);
+            assert_eq!(groups.len(), 2);
+            for group in &groups {
+                assert_eq!(group.len(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn window_size_covering_everything_yields_a_single_group() {
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1], None);
+        let y = problem.add_variable(vec![0, 1], None);
+        let z = problem.add_variable(vec![0, 1], None);
+        not_equals(&mut problem, x, y);
+        not_equals(&mut problem, y, z);
+        not_equals(&mut problem, x, z);
+
+        for window_size in [3, 4, 100] {
+            let groups =
+                EliminationOrdering::GreedyMinFill.rolling_window_groups(&problem, window_size);
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].len(), 3);
+        }
+    }
+
+    #[test]
+    fn windows_overlap_by_window_size_minus_one() {
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1, 2, 3], None);
+        let y = problem.add_variable(vec![0, 1, 2, 3], None);
+        let z = problem.add_variable(vec![0, 1, 2, 3], None);
+        let w = problem.add_variable(vec![0, 1, 2, 3], None);
+        not_equals(&mut problem, x, y);
+        not_equals(&mut problem, y, z);
+        not_equals(&mut problem, z, w);
+        not_equals(&mut problem, w, x);
+
+        let groups = EliminationOrdering::GreedyMinFill.rolling_window_groups(&problem, 2);
+        // 4 constraints, window_size 2 -> 3 sliding windows, each of size 2.
+        assert_eq!(groups.len(), 3);
+        for group in &groups {
+            assert_eq!(group.len(), 2);
+        }
+        // Consecutive windows share exactly one constraint (the overlap), a hallmark of a
+        // stride-1 sliding window rather than disjoint chunking.
+        for pair in groups.windows(2) {
+            let shared = pair[0].iter().filter(|c| pair[1].contains(c)).count();
+            assert_eq!(shared, 1);
+        }
+    }
+
+    #[test]
+    fn a_triangle_shares_a_window_even_though_no_single_bucket_can_hold_it() {
+        // A 3-cycle of pairwise not_equals constraints can never land in the same *bucket* (see
+        // `triangle_gets_merged_into_one_bucket_when_the_bound_allows_it`'s sibling limitation:
+        // that only holds because min-fill happens to eliminate a triangle vertex first; for an
+        // odd cycle in general, no single earliest-eliminated variable covers every edge). A
+        // rolling window with the same width as the triangle's constraint count doesn't have that
+        // restriction: sorted by elimination position, the 3 edges are all close together, so a
+        // window of size 3 over 3 total constraints simply contains all of them.
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1], None);
+        let y = problem.add_variable(vec![0, 1], None);
+        let z = problem.add_variable(vec![0, 1], None);
+        not_equals(&mut problem, x, y);
+        not_equals(&mut problem, y, z);
+        not_equals(&mut problem, x, z);
+
+        let groups = EliminationOrdering::GreedyMinFill.rolling_window_groups(&problem, 3);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].len(), 3);
+    }
+
+    #[test]
     fn every_constraint_is_covered_exactly_once() {
         let mut problem = Problem::default();
         let x = problem.add_variable(vec![0, 1, 2], None);
@@ -238,6 +378,29 @@ mod tests {
             seen.sort_by_key(|c| c.0);
             let expected: Vec<ConstraintIndex> = problem.iter_constraints().collect();
             assert_eq!(seen, expected, "bound={bound}");
+        }
+    }
+
+    #[test]
+    fn rolling_window_groups_cover_every_constraint_at_least_once() {
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1, 2], None);
+        let y = problem.add_variable(vec![0, 1, 2], None);
+        let z = problem.add_variable(vec![0, 1, 2], None);
+        let w = problem.add_variable(vec![0, 1, 2], None);
+        not_equals(&mut problem, x, y);
+        not_equals(&mut problem, y, z);
+        not_equals(&mut problem, z, w);
+        not_equals(&mut problem, w, x);
+
+        for window_size in [0, 1, 2, 3, 4, 8] {
+            let groups =
+                EliminationOrdering::GreedyMinFill.rolling_window_groups(&problem, window_size);
+            let mut seen: Vec<ConstraintIndex> = groups.into_iter().flatten().collect();
+            seen.sort_by_key(|c| c.0);
+            seen.dedup();
+            let expected: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+            assert_eq!(seen, expected, "window_size={window_size}");
         }
     }
 }

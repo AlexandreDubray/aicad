@@ -170,6 +170,7 @@ fn build_decode_op<B: Backend>(
     temperature: f64,
     bp_iterations: usize,
     mdd_grouping_size_bound: usize,
+    mdd_grouping_window_size: usize,
 ) -> Box<dyn DecodingOperator<B>> {
     match decode_kind {
         PyDecodeKind::Logits => {
@@ -181,10 +182,10 @@ fn build_decode_op<B: Backend>(
         }
         PyDecodeKind::BeliefPropagation => {
             let compilation = MddCompilationConfig {
-                grouping: ConstraintGrouping {
-                    size_bound: mdd_grouping_size_bound,
-                    ..ConstraintGrouping::PER_CONSTRAINT
-                },
+                grouping: ConstraintGrouping::from_config(
+                    mdd_grouping_size_bound,
+                    mdd_grouping_window_size,
+                ),
                 ..MddCompilationConfig::default()
             };
             let mode = if stochastic_decode {
@@ -237,9 +238,19 @@ pub struct PySolveConfig {
     #[pyo3(get, set)]
     pub bp_iterations: usize,
     /// How the problem's constraints are grouped into MDDs before compilation -- only used when
-    /// `decode_kind == BeliefPropagation`. 0 means one MDD per constraint.
+    /// `decode_kind == BeliefPropagation`, and only when `mdd_grouping_window_size == 0`. 0 means
+    /// one MDD per constraint; see `EliminationOrdering::buckets`'s doc for what a larger bound
+    /// buys.
     #[pyo3(get, set)]
     pub mdd_grouping_size_bound: usize,
+    /// If non-zero, selects overlapping rolling-window grouping instead of (disjoint) bucket
+    /// grouping -- only used when `decode_kind == BeliefPropagation`. See
+    /// `EliminationOrdering::rolling_window_groups`'s doc: a constraint can end up compiled into
+    /// more than one MDD, which double-counts its evidence in belief propagation's marginals once
+    /// per extra membership, in exchange for catching UNSAT cliques that disjoint bucket grouping
+    /// structurally cannot merge into one MDD.
+    #[pyo3(get, set)]
+    pub mdd_grouping_window_size: usize,
     #[pyo3(get, set)]
     pub time_limit: Option<u64>,
     #[pyo3(get, set)]
@@ -263,6 +274,7 @@ impl PySolveConfig {
         decode_kind=PyDecodeKind::Logits,
         bp_iterations=5,
         mdd_grouping_size_bound=0,
+        mdd_grouping_window_size=0,
         time_limit=None,
         iteration_limit=None,
         seed=None,
@@ -280,6 +292,7 @@ impl PySolveConfig {
         decode_kind: PyDecodeKind,
         bp_iterations: usize,
         mdd_grouping_size_bound: usize,
+        mdd_grouping_window_size: usize,
         time_limit: Option<u64>,
         iteration_limit: Option<usize>,
         seed: Option<u64>,
@@ -296,6 +309,7 @@ impl PySolveConfig {
             decode_kind,
             bp_iterations,
             mdd_grouping_size_bound,
+            mdd_grouping_window_size,
             time_limit,
             iteration_limit,
             seed,
@@ -335,6 +349,7 @@ impl From<&PySolveConfig> for SolveConfig {
             decode_kind: c.decode_kind.tag().to_string(),
             bp_iterations: c.bp_iterations,
             mdd_grouping_size_bound: c.mdd_grouping_size_bound,
+            mdd_grouping_window_size: c.mdd_grouping_window_size,
             time_limit: c.time_limit,
             iteration_limit: c.iteration_limit,
             seed: c.seed,
@@ -358,6 +373,7 @@ impl TryFrom<&SolveConfig> for PySolveConfig {
             decode_kind: PyDecodeKind::parse(&c.decode_kind)?,
             bp_iterations: c.bp_iterations,
             mdd_grouping_size_bound: c.mdd_grouping_size_bound,
+            mdd_grouping_window_size: c.mdd_grouping_window_size,
             time_limit: c.time_limit,
             iteration_limit: c.iteration_limit,
             seed: c.seed,
@@ -506,6 +522,7 @@ fn run<B: Backend>(
                 config.temperature,
                 config.bp_iterations,
                 config.mdd_grouping_size_bound,
+                config.mdd_grouping_window_size,
             );
 
             let nls = NeuralLocalSearch::<B, ConsFormer<B>, ConsFormerBatch<B>>::new(

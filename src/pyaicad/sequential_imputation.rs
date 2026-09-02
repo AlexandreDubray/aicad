@@ -76,10 +76,20 @@ pub struct PySequentialImputationConfig {
     /// most likely value (greedy).
     #[pyo3(get, set)]
     pub stochastic_decode: bool,
-    /// How the problem's constraints are grouped into MDDs before compilation -- 0 means one MDD
-    /// per constraint; see `EliminationOrdering::buckets`'s doc for what a larger bound buys.
+    /// How the problem's constraints are grouped into MDDs before compilation -- only used when
+    /// `mdd_grouping_window_size == 0`. 0 means one MDD per constraint; see
+    /// `EliminationOrdering::buckets`'s doc for what a larger bound buys.
     #[pyo3(get, set)]
     pub mdd_grouping_size_bound: usize,
+    /// If non-zero, selects overlapping rolling-window grouping instead of (disjoint) bucket
+    /// grouping -- see `EliminationOrdering::rolling_window_groups`'s doc. A constraint can end up
+    /// compiled into more than one MDD, which the sequential-imputation solver treats as extra,
+    /// independent evidence each time it conditions on that constraint's MDD -- the same
+    /// marginal-biasing tradeoff this makes for belief propagation (`PySolveConfig`'s doc), in
+    /// exchange for catching UNSAT cliques disjoint bucket grouping structurally cannot merge into
+    /// one MDD.
+    #[pyo3(get, set)]
+    pub mdd_grouping_window_size: usize,
     /// How many problems are ever loaded onto the device and stepped together at once. Left unset,
     /// every problem is batched together in a single run. Problems are still solved independently
     /// within a batch -- a solved one drops out of later steps' network calls -- this only bounds
@@ -103,6 +113,7 @@ impl PySequentialImputationConfig {
         max_steps=50,
         stochastic_decode=false,
         mdd_grouping_size_bound=0,
+        mdd_grouping_window_size=0,
         batch_size=None,
         time_limit=None,
     ))]
@@ -113,6 +124,7 @@ impl PySequentialImputationConfig {
         max_steps: usize,
         stochastic_decode: bool,
         mdd_grouping_size_bound: usize,
+        mdd_grouping_window_size: usize,
         batch_size: Option<usize>,
         time_limit: Option<u64>,
     ) -> Self {
@@ -122,6 +134,7 @@ impl PySequentialImputationConfig {
             max_steps,
             stochastic_decode,
             mdd_grouping_size_bound,
+            mdd_grouping_window_size,
             batch_size,
             time_limit,
         }
@@ -248,10 +261,10 @@ fn run<B: Backend>(
                 DecodeMode::Greedy
             };
             let compilation = MddCompilationConfig {
-                grouping: ConstraintGrouping {
-                    size_bound: config.mdd_grouping_size_bound,
-                    ..ConstraintGrouping::PER_CONSTRAINT
-                },
+                grouping: ConstraintGrouping::from_config(
+                    config.mdd_grouping_size_bound,
+                    config.mdd_grouping_window_size,
+                ),
                 ..MddCompilationConfig::default()
             };
             let time_limit = config.time_limit.map(Duration::from_secs);
@@ -335,6 +348,7 @@ pub fn sequential_imputation_solve(
             PyDestroyRule::Probabilistic,
             50,
             false,
+            0,
             0,
             None,
             None,

@@ -155,6 +155,42 @@ where
     Ok((config, network))
 }
 
+/// Splits `problems` into the ones `decode_op` already knows are unsatisfiable (see
+/// `DecodingOperator::detect_unsat`'s doc) and the ones that still need actual search. Returns
+/// `(active, solutions)`: `active` lists the indices (into `problems`) of problems that still need
+/// solving, in their original relative order; `solutions[i]` is `Some(...)` -- reporting
+/// `Status::Unsatisfiable`, with `start` as its runtime baseline -- for exactly the problems
+/// `detect_unsat` flagged, and `None` for every index also listed in `active`.
+///
+/// A free function, deliberately not a `NeuralLocalSearch` method: it only touches the decode
+/// operator, not the network or destroy operator, so it doesn't need `N`/`Ba` at all -- which also
+/// makes it directly testable with a bare `DecodingOperator` and no network/batch machinery.
+fn partition_unsat<B: Backend>(
+    decode_op: &dyn DecodingOperator<B>,
+    problems: &[Arc<Problem>],
+    start: Instant,
+) -> (Vec<usize>, Vec<Option<Solution>>) {
+    let mut solutions: Vec<Option<Solution>> = vec![None; problems.len()];
+    let mut active = Vec::with_capacity(problems.len());
+    for (i, problem) in problems.iter().enumerate() {
+        if decode_op.detect_unsat(problem) {
+            log::info!(
+                "problem {i}: UNSAT detected during MDD compilation (a bucket-grouped set of \
+                 constraints has no accepting path at all)"
+            );
+            solutions[i] = Some(Solution {
+                runtime: start.elapsed().as_secs(),
+                iterations: 0,
+                solution: None,
+                status: Status::Unsatisfiable,
+            });
+        } else {
+            active.push(i);
+        }
+    }
+    (active, solutions)
+}
+
 pub struct NeuralLocalSearch<B: Backend, N, Ba> {
     /// Neural network used to guide the local search
     network: N,
@@ -228,17 +264,29 @@ where
         let mut rng = StdRng::seed_from_u64(seed);
         let mut stop = StoppingCriterion::new(budget);
 
-        let num_problems = problems.len();
         let n = problems[0].number_variables();
         let p = self.population_size;
 
-        let mut solutions: Vec<Option<Solution>> = vec![None; num_problems];
+        // UNSAT is a static property of a problem's compiled MDDs -- e.g. a bucket-grouped clique
+        // of constraints with no accepting path at all -- not something that changes as the
+        // destroy/repair loop runs, so it's checked once up front rather than left for the search
+        // to burn its whole budget failing to converge on. Only `BeliefPropagationDecode` can
+        // actually answer this (see `DecodingOperator::detect_unsat`'s doc); every other decode
+        // operator always says no, same as today's behaviour.
+        let (mut active, mut solutions) =
+            partition_unsat(self.decode_op.as_ref(), problems, stop.start);
+        if active.is_empty() {
+            return solutions
+                .into_iter()
+                .map(|s| s.expect("every problem was just marked Unsatisfiable above"))
+                .collect();
+        }
 
         // The problems whose rows are currently in `rows`/`assignments`, and `active[i]`'s index
         // back into `problems`/`solutions`. May include already-solved problems in between
         // compaction passes -- see `COMPACTION_INTERVAL` below.
-        let mut active: Vec<usize> = (0..num_problems).collect();
-        let mut active_problems: Vec<Arc<Problem>> = problems.to_vec();
+        let mut active_problems: Vec<Arc<Problem>> =
+            active.iter().map(|&i| Arc::clone(&problems[i])).collect();
 
         // Starts from a random assignment; note that each variable is sampled given its domain, so
         // assigned variables are taken into account
@@ -351,5 +399,90 @@ where
             .collect();
         Tensor::<B, 1, Int>::from_data(data.as_slice(), &self.device)
             .reshape([problems.len() * self.population_size, n])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use burn::backend::ndarray::NdArray;
+
+    /// A `DecodingOperator` whose `detect_unsat` is driven purely by a marker (a 1-variable
+    /// problem stands in for "flagged UNSAT during MDD compilation", any other variable count for
+    /// "still needs solving") -- exactly the shape `BeliefPropagationDecode::detect_unsat` has
+    /// (answerable from the problem alone, no tensors involved), without needing a real MDD
+    /// compilation to produce that answer. `decode` is intentionally `unreachable!()`: nothing in
+    /// these tests should ever call it.
+    struct MarkedUnsatDecode;
+
+    impl DecodingOperator<NdArray> for MarkedUnsatDecode {
+        fn decode(
+            &self,
+            _logits: Tensor<NdArray, 3>,
+            _destroy_mask: Tensor<NdArray, 2, Int>,
+            _current: Tensor<NdArray, 2, Int>,
+            _problems: &[Arc<Problem>],
+            _population_size: usize,
+        ) -> Tensor<NdArray, 2, Int> {
+            unreachable!("decode should never be called in these tests")
+        }
+
+        fn detect_unsat(&self, problem: &Arc<Problem>) -> bool {
+            problem.number_variables() == 1
+        }
+    }
+
+    fn marked_problem(unsat: bool) -> Arc<Problem> {
+        let mut problem = Problem::default();
+        problem.add_variable(vec![0, 1], None);
+        if !unsat {
+            problem.add_variable(vec![0, 1], None);
+        }
+        Arc::new(problem)
+    }
+
+    #[test]
+    fn partition_unsat_splits_out_flagged_problems_and_leaves_the_rest_active() {
+        let sat = marked_problem(false);
+        let unsat = marked_problem(true);
+        let problems = vec![sat.clone(), unsat.clone(), sat.clone()];
+
+        let op = MarkedUnsatDecode;
+        let (active, solutions) = partition_unsat::<NdArray>(&op, &problems, Instant::now());
+
+        assert_eq!(active, vec![0, 2]);
+        assert!(solutions[0].is_none());
+        assert!(solutions[2].is_none());
+
+        let flagged = solutions[1]
+            .as_ref()
+            .expect("problem 1 was marked unsat and should have a Solution already");
+        assert!(matches!(flagged.status, Status::Unsatisfiable));
+        assert!(flagged.solution.is_none());
+        assert_eq!(flagged.iterations, 0);
+    }
+
+    #[test]
+    fn partition_unsat_with_nothing_flagged_leaves_every_index_active() {
+        let problems = vec![marked_problem(false), marked_problem(false)];
+        let op = MarkedUnsatDecode;
+        let (active, solutions) = partition_unsat::<NdArray>(&op, &problems, Instant::now());
+
+        assert_eq!(active, vec![0, 1]);
+        assert!(solutions.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn partition_unsat_with_everything_flagged_leaves_active_empty() {
+        let problems = vec![marked_problem(true), marked_problem(true)];
+        let op = MarkedUnsatDecode;
+        let (active, solutions) = partition_unsat::<NdArray>(&op, &problems, Instant::now());
+
+        assert!(active.is_empty());
+        assert!(
+            solutions
+                .iter()
+                .all(|s| matches!(s.as_ref().map(|s| s.status), Some(Status::Unsatisfiable)))
+        );
     }
 }
