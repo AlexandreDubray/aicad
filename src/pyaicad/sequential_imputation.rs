@@ -28,6 +28,7 @@ use burn::backend::cuda::{Cuda, CudaDevice};
 use burn::backend::ndarray::{NdArray, NdArrayDevice};
 use burn::tensor::backend::Backend;
 
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
 use crate::learning::consformer::{
@@ -76,26 +77,10 @@ pub struct PySequentialImputationConfig {
     /// most likely value (greedy).
     #[pyo3(get, set)]
     pub stochastic_decode: bool,
-    /// dd_grouping_size_bound: usize,
-    /// If non-zero, selects overlapping rolling-window grouping instead of (disjoint) bucket
-    /// grouping -- see `EliminationOrdering::rolling_window_groups`'s doc. A constraint can end up
-    /// compiled into more than one MDD, which the sequential-imputation solver treats as extra,
-    /// independent evidence each time it conditions on that constraint's MDD -- the same
-    /// marginal-biasing tradeoff this makes for belief propagation (`PySolveConfig`'s doc), in
-    /// exchange for catching UNSAT cliques disjoint bucket grouping structurally cannot merge into
-    /// one MDD.
     #[pyo3(get, set)]
     pub mdd_grouping_window_size: usize,
-    /// How many problems are ever loaded onto the device and stepped together at once. Left unset,
-    /// every problem is batched together in a single run. Problems are still solved independently
-    /// within a batch -- a solved one drops out of later steps' network calls -- this only bounds
-    /// how many are ever live in memory/on the device simultaneously.
     #[pyo3(get, set)]
     pub batch_size: Option<usize>,
-    /// If present, caps how long *each batch* gets, in seconds -- matching the classical-CP
-    /// convention of a private timeout per instance, every batch gets its own full budget rather
-    /// than sharing one across the whole problem list. A problem still unsolved when its batch's
-    /// deadline passes is reported as `Unknown`, not an error.
     #[pyo3(get, set)]
     pub time_limit: Option<u64>,
 }
@@ -141,7 +126,7 @@ fn compile_problem_mdds(problem: &Arc<Problem>, compilation: &MddCompilationConf
     compilation
         .grouping
         .groups(problem)
-        .into_par_iter()
+        .into_iter()
         .map(|constraints| {
             let mut mdd = Mdd::new(
                 Arc::clone(problem),
@@ -150,7 +135,7 @@ fn compile_problem_mdds(problem: &Arc<Problem>, compilation: &MddCompilationConf
                 compilation.select,
                 &constraints,
             );
-            mdd.refine(usize::MAX);
+            mdd.refine(compilation.max_width);
             if mdd.is_unsat() {
                 let label = constraints
                     .iter()
@@ -182,12 +167,20 @@ fn solve_batch_chunk<B: Backend>(
     let n = chunk[0].number_variables();
     let start = Instant::now();
 
-    // MDD compilation is the expensive, embarrassingly parallel, per-problem one-time cost --
-    // spread it across cores rather than doing it one problem at a time.
+    let progress = ProgressBar::new(chunk.len() as u64);
+    progress.set_style(
+        ProgressStyle::with_template(
+            "{msg} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+        )
+        .expect("hard-coded progress bar template should always be valid"),
+    );
+    progress.set_message("Compiling MDDs");
     let mdds_per_problem: Vec<Vec<Mdd>> = chunk
         .par_iter()
+        .progress_with(progress.clone())
         .map(|problem| compile_problem_mdds(problem, compilation))
         .collect();
+    progress.finish_and_clear();
     let samplers: Vec<MddSampler> = mdds_per_problem
         .iter()
         .map(|mdds| MddSampler::new(mdds))

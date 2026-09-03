@@ -25,7 +25,7 @@ pub struct SolveConfig {
     pub decode_kind: String,
     #[config(default = 5)]
     pub bp_iterations: usize,
-    #[config(default = 0)]
+    #[config(default = 1)]
     pub mdd_grouping_window_size: usize,
 }
 

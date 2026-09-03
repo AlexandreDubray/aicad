@@ -147,6 +147,20 @@ where
     Ok((config, network))
 }
 
+fn resolve_status<B: Backend>(
+    decode_op: &dyn DecodingOperator<B>,
+    problem: &Arc<Problem>,
+    row: &[isize],
+) -> Option<(Status, Option<Vec<isize>>)> {
+    if problem.is_solution(row) {
+        Some((Status::Satisfiable, Some(row.to_owned())))
+    } else if decode_op.detect_unsat(problem) {
+        Some((Status::Unsatisfiable, None))
+    } else {
+        None
+    }
+}
+
 pub struct NeuralLocalSearch<B: Backend, N, Ba> {
     /// Neural network used to guide the local search
     network: N,
@@ -201,6 +215,8 @@ where
         let mut active_problems: Vec<Arc<Problem>> = problems.to_vec();
         let mut solutions: Vec<Option<Solution>> = vec![None; problems.len()];
 
+        self.decode_op.prepare(&active_problems);
+
         // Starts from a random assignment; note that each variable is sampled given its domain, so
         // assigned variables are taken into account
         let mut assignments = self.random_init(problems);
@@ -244,12 +260,14 @@ where
                 }
                 let problem = &active_problems[local_idx];
                 let row = &rows[local_idx];
-                if problem.is_solution(row) {
+                if let Some((status, solution)) =
+                    resolve_status(self.decode_op.as_ref(), problem, row)
+                {
                     solutions[problem_idx] = Some(Solution {
                         runtime: stop.start.elapsed().as_secs(),
                         iterations: stop.iters_done,
-                        solution: Some(row.to_owned()),
-                        status: Status::Satisfiable,
+                        solution,
+                        status,
                     });
                 }
             }
@@ -308,17 +326,16 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modelling::not_equals;
     use burn::backend::ndarray::NdArray;
 
-    /// A `DecodingOperator` whose `detect_unsat` is driven purely by a marker (a 1-variable
-    /// problem stands in for "flagged UNSAT during MDD compilation", any other variable count for
-    /// "still needs solving") -- exactly the shape `BeliefPropagationDecode::detect_unsat` has
-    /// (answerable from the problem alone, no tensors involved), without needing a real MDD
-    /// compilation to produce that answer. `decode` is intentionally `unreachable!()`: nothing in
-    /// these tests should ever call it.
-    struct MarkedUnsatDecode;
+    /// A `DecodingOperator` whose `detect_unsat` always answers a fixed value, regardless of which
+    /// problem is asked about -- `resolve_status` doesn't need a real MDD compilation (or even a
+    /// real decode) to be exercised, just something that answers `detect_unsat`. `decode` is
+    /// intentionally `unreachable!()`: `resolve_status` never calls it.
+    struct FixedUnsatDecode(bool);
 
-    impl DecodingOperator<NdArray> for MarkedUnsatDecode {
+    impl DecodingOperator<NdArray> for FixedUnsatDecode {
         fn decode(
             &self,
             _logits: Tensor<NdArray, 3>,
@@ -326,63 +343,49 @@ mod tests {
             _current: Tensor<NdArray, 2, Int>,
             _problems: &[Arc<Problem>],
         ) -> Tensor<NdArray, 2, Int> {
-            unreachable!("decode should never be called in these tests")
+            unreachable!("resolve_status never calls decode")
         }
 
-        fn detect_unsat(&self, problem: &Arc<Problem>) -> bool {
-            problem.number_variables() == 1
+        fn detect_unsat(&self, _problem: &Arc<Problem>) -> bool {
+            self.0
         }
     }
 
-    fn marked_problem(unsat: bool) -> Arc<Problem> {
+    /// `not_equals(x, y)` over `{0, 1}`: `[0, 1]`/`[1, 0]` solve it, `[0, 0]`/`[1, 1]` don't.
+    fn not_equals_problem() -> Arc<Problem> {
         let mut problem = Problem::default();
-        problem.add_variable(vec![0, 1], None);
-        if !unsat {
-            problem.add_variable(vec![0, 1], None);
-        }
+        let x = problem.add_variable(vec![0, 1], None);
+        let y = problem.add_variable(vec![0, 1], None);
+        not_equals(&mut problem, x, y);
         Arc::new(problem)
     }
 
     #[test]
-    fn partition_unsat_splits_out_flagged_problems_and_leaves_the_rest_active() {
-        let sat = marked_problem(false);
-        let unsat = marked_problem(true);
-        let problems = vec![sat.clone(), unsat.clone(), sat.clone()];
-
-        let op = MarkedUnsatDecode;
-        let (active, solutions) = partition_unsat::<NdArray>(&op, &problems, Instant::now());
-
-        assert_eq!(active, vec![0, 2]);
-        assert!(solutions[0].is_none());
-        assert!(solutions[2].is_none());
-
-        let flagged = solutions[1]
-            .as_ref()
-            .expect("problem 1 was marked unsat and should have a Solution already");
-        assert!(matches!(flagged.status, Status::Unsatisfiable));
-        assert!(flagged.solution.is_none());
-        assert_eq!(flagged.iterations, 0);
+    fn resolve_status_reports_satisfiable_for_a_solving_row_even_if_the_operator_would_flag_unsat()
+    {
+        let problem = not_equals_problem();
+        let op = FixedUnsatDecode(true);
+        let (status, solution) =
+            resolve_status(&op, &problem, &[0, 1]).expect("a solving row must resolve to a status");
+        assert!(matches!(status, Status::Satisfiable));
+        assert_eq!(solution, Some(vec![0, 1]));
     }
 
     #[test]
-    fn partition_unsat_with_nothing_flagged_leaves_every_index_active() {
-        let problems = vec![marked_problem(false), marked_problem(false)];
-        let op = MarkedUnsatDecode;
-        let (active, solutions) = partition_unsat::<NdArray>(&op, &problems, Instant::now());
-
-        assert_eq!(active, vec![0, 1]);
-        assert!(solutions.iter().all(Option::is_none));
+    fn resolve_status_reports_unsatisfiable_when_the_operator_flags_it_and_the_row_does_not_solve_it(
+    ) {
+        let problem = not_equals_problem();
+        let op = FixedUnsatDecode(true);
+        let (status, solution) = resolve_status(&op, &problem, &[0, 0])
+            .expect("an operator-flagged problem must resolve to a status");
+        assert!(matches!(status, Status::Unsatisfiable));
+        assert_eq!(solution, None);
     }
 
     #[test]
-    fn partition_unsat_with_everything_flagged_leaves_active_empty() {
-        let problems = vec![marked_problem(true), marked_problem(true)];
-        let op = MarkedUnsatDecode;
-        let (active, solutions) = partition_unsat::<NdArray>(&op, &problems, Instant::now());
-
-        assert!(active.is_empty());
-        assert!(solutions
-            .iter()
-            .all(|s| matches!(s.as_ref().map(|s| s.status), Some(Status::Unsatisfiable))));
+    fn resolve_status_returns_none_when_neither_solved_nor_flagged() {
+        let problem = not_equals_problem();
+        let op = FixedUnsatDecode(false);
+        assert!(resolve_status(&op, &problem, &[0, 0]).is_none());
     }
 }

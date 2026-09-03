@@ -134,7 +134,7 @@ fn compile_constraint_mdds(
 ) -> Vec<MddInstance> {
     let groups = compilation.grouping.groups(problem);
     groups
-        .into_par_iter()
+        .into_iter()
         .map(|constraints| {
             let mut mdd = Mdd::new(
                 Arc::clone(problem),
@@ -307,12 +307,6 @@ impl<B: Backend> ConsFormerMddDataset<B> {
         device: &B::Device,
     ) -> Self {
         let domain_size = data_config.domain_size;
-        // One tick per problem, not per constraint: `compile_constraint_mdds` parallelizes over a
-        // problem's own constraints too (e.g. Sudoku's ~27), so ticking at that finer grain would
-        // need passing a shared `ProgressBar` down into it, and per-problem is already the same
-        // granularity the Python ConsFormer extension's `tqdm(executor.map(get_mdd, ...))` uses.
-        // `ProgressBar` is internally `Arc`-backed, so cloning it into the parallel closure below
-        // (via `progress_with`) is cheap and thread-safe.
         let progress = ProgressBar::new(problems.len() as u64);
         progress.set_style(
             ProgressStyle::with_template(
@@ -322,16 +316,6 @@ impl<B: Backend> ConsFormerMddDataset<B> {
         );
         progress.set_message("Compiling MDDs");
 
-        // MDD compilation (the expensive part -- see `compile_constraint_mdds`) and mask
-        // construction are both independent per problem and touch no device state, so they run
-        // on a capped worker pool (see `utils::worker_pool`) rather than rayon's all-cores
-        // default -- this can run on a shared benchmarking machine, and even locally, saturating
-        // every core leaves no headroom to interrupt a training run. `compile_constraint_mdds`
-        // also parallelizes across a problem's own constraints; since it's called from within the
-        // `install` below, rayon runs that nested parallelism on this same capped pool rather than
-        // spilling onto the global one. Only the final `Tensor::from_data` calls stay
-        // single-threaded, to avoid any backend-specific assumptions about building tensors
-        // concurrently from multiple threads (e.g. around CUDA context handling).
         let per_problem: Vec<(ConsFormerMaskData, Vec<MddInstance>)> = crate::utils::worker_pool()
             .install(|| {
                 problems
