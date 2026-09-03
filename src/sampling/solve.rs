@@ -27,7 +27,9 @@ use crate::learning::{Batch, Network};
 use crate::modelling::{Problem, ValueIndex, VariableIndex};
 use crate::utils::tensor::rows_to_tensor;
 
-use super::{argmax, entropy, min_max_mean, sample_categorical, DecodeMode, DestroyRule, MddSampler};
+use super::{
+    argmax, entropy, min_max_mean, sample_categorical, DecodeMode, DestroyRule, MddSampler,
+};
 
 /// Outcome of `solve`/`solve_batch` for one problem.
 pub struct ImputationResult {
@@ -115,7 +117,11 @@ fn sequential_imputation(
 /// Finds `value`'s index in `variable`'s domain -- the inverse of `Variable::value`, needed to
 /// turn a raw sampled/network value back into the `ValueIndex` the MDD/imputation machinery works
 /// in.
-pub(crate) fn value_to_index(problem: &Problem, variable: VariableIndex, value: isize) -> ValueIndex {
+pub(crate) fn value_to_index(
+    problem: &Problem,
+    variable: VariableIndex,
+    value: isize,
+) -> ValueIndex {
     let index = problem[variable]
         .iter_domain()
         .position(|v| v == value)
@@ -255,9 +261,15 @@ where
             // the count is what matters (e.g. when following a single instance, `active` is just
             // `[0]` every step; for a large batch it would otherwise flood the log).
             if active.len() <= 20 {
-                log::debug!("step {steps_run}/{max_steps}: {} active: {active:?}", active.len());
+                log::debug!(
+                    "step {steps_run}/{max_steps}: {} active: {active:?}",
+                    active.len()
+                );
             } else {
-                log::debug!("step {steps_run}/{max_steps}: {} problem(s) still active", active.len());
+                log::debug!(
+                    "step {steps_run}/{max_steps}: {} problem(s) still active",
+                    active.len()
+                );
             }
 
             let active_assignments: Vec<Vec<ValueIndex>> =
@@ -393,8 +405,7 @@ where
         let destroy_mask: Tensor<B, 2, Int> =
             Tensor::<B, 1, Int>::from_data(vec![1i64; rows * n].as_slice(), &self.device)
                 .reshape([rows, n]);
-        let batch =
-            Ba::for_assignments(&active_problems, 1, assignments, destroy_mask, &self.device);
+        let batch = Ba::for_assignments(&active_problems, assignments, destroy_mask, &self.device);
         let logits = self.network.forward(&batch);
         let probs_flat: Vec<f32> = softmax(logits, 2)
             .into_data()

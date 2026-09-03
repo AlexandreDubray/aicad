@@ -19,7 +19,6 @@ pub trait Batch<B: Backend>:
 {
     fn for_assignments(
         problems: &[Arc<Problem>],
-        population_size: usize,
         assignments: Tensor<B, 2, Int>,
         destroy_mask: Tensor<B, 2, Int>,
         device: &B::Device,

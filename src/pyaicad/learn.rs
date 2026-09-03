@@ -352,7 +352,8 @@ pub fn train_consformer_mdd(
         ordering: pyordering.into(),
         merge: pymerge.into(),
         select: pyselect.into(),
-        grouping: crate::mdd::heuristics::ConstraintGrouping::PER_CONSTRAINT,
+        grouping: crate::mdd::heuristics::ConstraintGrouping::default(),
+        max_width: usize::MAX,
     };
 
     py.detach(move || {

@@ -12,42 +12,7 @@ use crate::modelling::Problem;
 /// Selects, for a single assignment row, the indices of variables to
 /// unassign ("destroy") this iteration.
 pub trait DestroyOperator: Send + Sync {
-    fn destroy(
-        &self,
-        problem: &Problem,
-        assignment: &[isize],
-        fraction: f64,
-        rng: &mut StdRng,
-    ) -> Vec<usize>;
-}
-
-/// How the fraction of destroy variable varies during the local search. The fraction is always in
-/// the interval [max, min] and linearly interpolated between the bounds every batch of `epochs`
-/// local search step. If epochs == 0, always return the minimum value (default behaviour in
-/// ConsFormer).
-#[derive(Clone, Copy, Debug)]
-pub struct MaskSchedule {
-    pub max: f64,
-    pub min: f64,
-    pub epochs: usize,
-}
-
-impl MaskSchedule {
-    pub fn constant(fraction: f64) -> Self {
-        Self {
-            max: fraction,
-            min: fraction,
-            epochs: 0,
-        }
-    }
-
-    pub fn fraction_at(&self, iteration: usize) -> f64 {
-        if self.epochs == 0 || iteration >= self.epochs {
-            return self.min;
-        }
-        let t = iteration as f64 / self.epochs as f64;
-        self.max + (self.min - self.max) * t
-    }
+    fn destroy(&self, problem: &Problem, assignment: &[isize], rng: &mut StdRng) -> Vec<usize>;
 }
 
 /// Hard-violation info for the current assignment: how many currently
@@ -73,22 +38,18 @@ impl ViolationInfo {
 
 /// Uniformly destroys a `fraction` of the free (domain size > 1) variables.
 /// Corresponds to the original ConsFormer's random subset selection.
-pub struct RandomDestroy;
+pub struct RandomDestroy {
+    pub fraction: f64,
+}
 
 impl DestroyOperator for RandomDestroy {
-    fn destroy(
-        &self,
-        problem: &Problem,
-        _assignment: &[isize],
-        fraction: f64,
-        rng: &mut StdRng,
-    ) -> Vec<usize> {
+    fn destroy(&self, problem: &Problem, _assignment: &[isize], rng: &mut StdRng) -> Vec<usize> {
         let mut free: Vec<usize> = free_variables(problem);
         if free.is_empty() {
             return free;
         }
         free.shuffle(rng);
-        let k = ((free.len() as f64 * fraction).round() as usize).clamp(1, free.len());
+        let k = ((free.len() as f64 * self.fraction).round() as usize).clamp(1, free.len());
         free.truncate(k);
         free
     }
@@ -97,18 +58,14 @@ impl DestroyOperator for RandomDestroy {
 /// Stochastic worst removal: destroys variables with probability
 /// proportional to how many currently-violated constraints they take part
 /// in, normalised so the expected fraction destroyed matches `fraction`.
-pub struct WorstDestroy;
+pub struct WorstDestroy {
+    pub fraction: f64,
+}
 
 impl DestroyOperator for WorstDestroy {
-    fn destroy(
-        &self,
-        problem: &Problem,
-        assignment: &[isize],
-        fraction: f64,
-        rng: &mut StdRng,
-    ) -> Vec<usize> {
+    fn destroy(&self, problem: &Problem, assignment: &[isize], rng: &mut StdRng) -> Vec<usize> {
         let info = ViolationInfo::compute(problem, assignment);
-        bernoulli_select(problem, &info.per_variable, fraction, rng)
+        bernoulli_select(problem, &info.per_variable, self.fraction, rng)
     }
 }
 
@@ -117,16 +74,12 @@ impl DestroyOperator for WorstDestroy {
 /// independently with a probability rescaled so the expected number of
 /// destroyed variables tracks `fraction * n`, regardless of how many
 /// constraints the problem has relative to its variables
-pub struct RelatedDestroy;
+pub struct RelatedDestroy {
+    pub fraction: f64,
+}
 
 impl DestroyOperator for RelatedDestroy {
-    fn destroy(
-        &self,
-        problem: &Problem,
-        _assignment: &[isize],
-        fraction: f64,
-        rng: &mut StdRng,
-    ) -> Vec<usize> {
+    fn destroy(&self, problem: &Problem, _assignment: &[isize], rng: &mut StdRng) -> Vec<usize> {
         let n = problem.number_variables().max(1);
         let m = problem.number_constraints();
         if m == 0 {
@@ -142,7 +95,7 @@ impl DestroyOperator for RelatedDestroy {
         // E[# destroyed] ~= p_constraint * m * avg_scope (upper bound, ignores
         // overlap between scopes) -- solve for p_constraint so this tracks
         // fraction * n.
-        let p_constraint = (fraction * n as f64 / (m as f64 * avg_scope)).clamp(0.0, 1.0);
+        let p_constraint = (self.fraction * n as f64 / (m as f64 * avg_scope)).clamp(0.0, 1.0);
 
         let mut destroyed = HashSet::new();
         for c in problem.iter_constraints() {
@@ -195,42 +148,4 @@ fn bernoulli_select(
             rng.random_bool(pi.clamp(0.0, 1.0))
         })
         .collect()
-}
-
-#[cfg(test)]
-mod mask_schedule_tests {
-    use super::*;
-
-    #[test]
-    fn constant_schedule_ignores_iteration() {
-        let schedule = MaskSchedule::constant(0.3);
-        for iteration in [0, 1, 100] {
-            assert_eq!(schedule.fraction_at(iteration), 0.3);
-        }
-    }
-
-    #[test]
-    fn schedule_interpolates_linearly_then_holds_at_min() {
-        let schedule = MaskSchedule {
-            max: 1.0,
-            min: 0.2,
-            epochs: 4,
-        };
-        assert_eq!(schedule.fraction_at(0), 1.0);
-        assert!((schedule.fraction_at(1) - 0.8).abs() < 1e-12);
-        assert!((schedule.fraction_at(2) - 0.6).abs() < 1e-12);
-        assert!((schedule.fraction_at(3) - 0.4).abs() < 1e-12);
-        assert_eq!(schedule.fraction_at(4), 0.2);
-        assert_eq!(schedule.fraction_at(100), 0.2);
-    }
-
-    #[test]
-    fn schedule_with_zero_epochs_holds_min_from_the_start() {
-        let schedule = MaskSchedule {
-            max: 1.0,
-            min: 0.2,
-            epochs: 0,
-        };
-        assert_eq!(schedule.fraction_at(0), 0.2);
-    }
 }

@@ -9,7 +9,7 @@ pub mod destroy;
 
 pub use config::SolveConfig;
 pub use decode::DecodingOperator;
-pub use destroy::{DestroyOperator, MaskSchedule};
+pub use destroy::DestroyOperator;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -127,15 +127,7 @@ impl StoppingCriterion {
 
 /// Loads a network's hyperparameters (JSON config) and trained weights from a checkpoint
 /// directory produced by `train_model`/`run_training`. Returns the config alongside the network
-/// (rather than just the network) so callers that also need a hyperparameter off the config --
-/// e.g. `mask_fraction`, to pick a default `destroy_fraction` -- don't have to load `config.json`
-/// a second time themselves.
-///
-/// Fallible rather than panicking: `checkpoint_dir` ultimately comes from a Python caller (a
-/// typo'd path, a directory that isn't actually a checkpoint, or a `weights` file left over from
-/// an incompatible config are all bad-input errors, not internal bugs), so this returns a boxed
-/// `std::error::Error` for the pyo3 layer to turn into a catchable `PyErr` instead of aborting the
-/// whole interpreter.
+/// (rather than just the network) so callers also have access to training hyperparameters.
 pub fn load_network<B, NC>(
     checkpoint_dir: &Path,
     problems: &[Arc<Problem>],
@@ -155,53 +147,13 @@ where
     Ok((config, network))
 }
 
-/// Splits `problems` into the ones `decode_op` already knows are unsatisfiable (see
-/// `DecodingOperator::detect_unsat`'s doc) and the ones that still need actual search. Returns
-/// `(active, solutions)`: `active` lists the indices (into `problems`) of problems that still need
-/// solving, in their original relative order; `solutions[i]` is `Some(...)` -- reporting
-/// `Status::Unsatisfiable`, with `start` as its runtime baseline -- for exactly the problems
-/// `detect_unsat` flagged, and `None` for every index also listed in `active`.
-///
-/// A free function, deliberately not a `NeuralLocalSearch` method: it only touches the decode
-/// operator, not the network or destroy operator, so it doesn't need `N`/`Ba` at all -- which also
-/// makes it directly testable with a bare `DecodingOperator` and no network/batch machinery.
-fn partition_unsat<B: Backend>(
-    decode_op: &dyn DecodingOperator<B>,
-    problems: &[Arc<Problem>],
-    start: Instant,
-) -> (Vec<usize>, Vec<Option<Solution>>) {
-    let mut solutions: Vec<Option<Solution>> = vec![None; problems.len()];
-    let mut active = Vec::with_capacity(problems.len());
-    for (i, problem) in problems.iter().enumerate() {
-        if decode_op.detect_unsat(problem) {
-            log::info!(
-                "problem {i}: UNSAT detected during MDD compilation (a bucket-grouped set of \
-                 constraints has no accepting path at all)"
-            );
-            solutions[i] = Some(Solution {
-                runtime: start.elapsed().as_secs(),
-                iterations: 0,
-                solution: None,
-                status: Status::Unsatisfiable,
-            });
-        } else {
-            active.push(i);
-        }
-    }
-    (active, solutions)
-}
-
 pub struct NeuralLocalSearch<B: Backend, N, Ba> {
     /// Neural network used to guide the local search
     network: N,
     /// Heuristic for the destroy operator
     destroy_op: Box<dyn DestroyOperator>,
-    /// How the destroy fraction evolves across a `run` call's iterations
-    mask_schedule: MaskSchedule,
     /// How to decode (arg-max or sample)
     decode_op: Box<dyn DecodingOperator<B>>,
-    /// Number of assignments ran in parallel, per problem
-    population_size: usize,
     /// Devices used (cpu or gpu)
     device: B::Device,
     /// Which batch type `N` is driven by at inference time. `NeuralLocalSearch` only ever needs
@@ -229,82 +181,42 @@ where
     pub fn new(
         network: N,
         destroy_op: Box<dyn DestroyOperator>,
-        mask_schedule: MaskSchedule,
         decode_op: Box<dyn DecodingOperator<B>>,
-        population_size: usize,
         device: B::Device,
     ) -> Self {
         Self {
             network,
             destroy_op,
-            mask_schedule,
             decode_op,
-            population_size,
             device,
             _batch: std::marker::PhantomData,
         }
     }
 
-    /// Runs the search on `problems`, batching every problem's population into
-    /// a single forward pass per iteration, until `budget` is exhausted or
-    /// every problem has found a feasible solution. `seed` controls the
-    /// destroy operator's randomness. All problems must share the same
-    /// `number_variables()`.
-    ///
-    /// A problem that finds a solution is frozen in place immediately (its rows stop being
-    /// destroyed, so its solution can't be overwritten by a later iteration), but is only
-    /// physically removed from the batch every `COMPACTION_INTERVAL` iterations -- rebuilding the
-    /// row/tensor bookkeeping on every single solve is itself non-negligible overhead at these
-    /// batch sizes, so it's amortised over a stretch of iterations instead. Either way,
-    /// `Solution::iterations` records the exact iteration a problem solved on, not the (later)
-    /// iteration it happened to be swept out of the batch on.
-    ///
-    /// Returns one `Solution` per problem, in the same order as `problems`.
     pub fn run(&self, problems: &[Arc<Problem>], budget: Budget, seed: u64) -> Vec<Solution> {
         let mut rng = StdRng::seed_from_u64(seed);
         let mut stop = StoppingCriterion::new(budget);
 
-        let n = problems[0].number_variables();
-        let p = self.population_size;
-
-        // UNSAT is a static property of a problem's compiled MDDs -- e.g. a bucket-grouped clique
-        // of constraints with no accepting path at all -- not something that changes as the
-        // destroy/repair loop runs, so it's checked once up front rather than left for the search
-        // to burn its whole budget failing to converge on. Only `BeliefPropagationDecode` can
-        // actually answer this (see `DecodingOperator::detect_unsat`'s doc); every other decode
-        // operator always says no, same as today's behaviour.
-        let (mut active, mut solutions) =
-            partition_unsat(self.decode_op.as_ref(), problems, stop.start);
-        if active.is_empty() {
-            return solutions
-                .into_iter()
-                .map(|s| s.expect("every problem was just marked Unsatisfiable above"))
-                .collect();
-        }
-
-        // The problems whose rows are currently in `rows`/`assignments`, and `active[i]`'s index
-        // back into `problems`/`solutions`. May include already-solved problems in between
-        // compaction passes -- see `COMPACTION_INTERVAL` below.
-        let mut active_problems: Vec<Arc<Problem>> =
-            active.iter().map(|&i| Arc::clone(&problems[i])).collect();
+        let mut active: Vec<usize> = (0..problems.len()).collect();
+        let mut active_problems: Vec<Arc<Problem>> = problems.to_vec();
+        let mut solutions: Vec<Option<Solution>> = vec![None; problems.len()];
 
         // Starts from a random assignment; note that each variable is sampled given its domain, so
         // assigned variables are taken into account
-        let mut assignments = self.random_init(&active_problems);
-        let mut rows = to_rows(&assignments, active_problems.len() * p, n);
+        let mut assignments = self.random_init(problems);
+        let n = problems[0].number_variables();
+        let mut rows = to_rows(&assignments, problems.len(), n);
 
         while !stop.is_exhausted() && solutions.iter().any(Option::is_none) {
-            let fraction = self.mask_schedule.fraction_at(stop.iters_done);
             let mut destroy_mask_data = vec![0i64; rows.len() * n];
             for (row_idx, row) in rows.iter().enumerate() {
-                let problem_idx = active[row_idx / p];
                 // Frozen: this problem already has a solution, leave its row untouched until it's
                 // compacted out.
-                if solutions[problem_idx].is_some() {
+                if solutions[row_idx].is_some() {
                     continue;
                 }
-                let problem = &active_problems[row_idx / p];
-                for var in self.destroy_op.destroy(problem, row, fraction, &mut rng) {
+                let problem = &active_problems[row_idx];
+                for var in self.destroy_op.destroy(problem, row, &mut rng) {
                     destroy_mask_data[row_idx * n + var] = 1;
                 }
             }
@@ -314,7 +226,6 @@ where
 
             let batch = Ba::for_assignments(
                 &active_problems,
-                p,
                 assignments.clone(),
                 destroy_mask.clone(),
                 &self.device,
@@ -322,8 +233,8 @@ where
             let logits = self.network.forward(&batch);
             assignments =
                 self.decode_op
-                    .decode(logits, destroy_mask, assignments, &active_problems, p);
-            rows = to_rows(&assignments, active_problems.len() * p, n);
+                    .decode(logits, destroy_mask, assignments, &active_problems);
+            rows = to_rows(&assignments, active_problems.len(), n);
 
             stop.tick();
 
@@ -332,11 +243,8 @@ where
                     continue;
                 }
                 let problem = &active_problems[local_idx];
-                let base = local_idx * p;
-                if let Some(row) = rows[base..base + p]
-                    .iter()
-                    .find(|row| problem.is_solution(row))
-                {
+                let row = &rows[local_idx];
+                if problem.is_solution(row) {
                     solutions[problem_idx] = Some(Solution {
                         runtime: stop.start.elapsed().as_secs(),
                         iterations: stop.iters_done,
@@ -357,8 +265,7 @@ where
                     }
                     still_active.push(problem_idx);
                     still_active_problems.push(active_problems[local_idx].clone());
-                    let base = local_idx * p;
-                    still_rows.extend_from_slice(&rows[base..base + p]);
+                    still_rows.push(rows[local_idx].clone());
                 }
                 if still_active.len() < before {
                     active = still_active;
@@ -392,13 +299,9 @@ where
         let n = problems[0].number_variables();
         let data: Vec<i64> = problems
             .iter()
-            .flat_map(|problem| {
-                (0..self.population_size)
-                    .flat_map(move |_| problem.iter_variables().map(|v| problem[v].sample() as i64))
-            })
+            .flat_map(|problem| problem.iter_variables().map(|v| problem[v].sample() as i64))
             .collect();
-        Tensor::<B, 1, Int>::from_data(data.as_slice(), &self.device)
-            .reshape([problems.len() * self.population_size, n])
+        Tensor::<B, 1, Int>::from_data(data.as_slice(), &self.device).reshape([problems.len(), n])
     }
 }
 
@@ -422,7 +325,6 @@ mod tests {
             _destroy_mask: Tensor<NdArray, 2, Int>,
             _current: Tensor<NdArray, 2, Int>,
             _problems: &[Arc<Problem>],
-            _population_size: usize,
         ) -> Tensor<NdArray, 2, Int> {
             unreachable!("decode should never be called in these tests")
         }
@@ -479,10 +381,8 @@ mod tests {
         let (active, solutions) = partition_unsat::<NdArray>(&op, &problems, Instant::now());
 
         assert!(active.is_empty());
-        assert!(
-            solutions
-                .iter()
-                .all(|s| matches!(s.as_ref().map(|s| s.status), Some(Status::Unsatisfiable)))
-        );
+        assert!(solutions
+            .iter()
+            .all(|s| matches!(s.as_ref().map(|s| s.status), Some(Status::Unsatisfiable))));
     }
 }

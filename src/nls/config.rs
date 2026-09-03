@@ -3,74 +3,33 @@ use burn::config::{Config, ConfigError};
 /// Cofniguration of the neural local search
 #[derive(Config, Debug)]
 pub struct SolveConfig {
-    /// If present, imposes a time limit in second
     #[config(default = "None")]
     pub time_limit: Option<u64>,
-    /// If present, imposes a limit number of local search step
     #[config(default = "None")]
     pub iteration_limit: Option<usize>,
     #[config(default = "None")]
     pub seed: Option<u64>,
-    /// Type of neural network used to produce the factorised distribution
     #[config(default = "String::from(\"consformer\")")]
     pub network_kind: String,
-    /// Batch size to handle benchmarks
     #[config(default = "None")]
     pub batch_size: Option<usize>,
-    /// Destroy operator
     #[config(default = "String::from(\"random\")")]
     pub destroy_kind: String,
-    /// Maximum percentage of the variables changed each iteration
     #[config(default = 1.0)]
-    pub destroy_fraction_max: f64,
-    /// Minimum percentage of the variables changed each iteration
-    #[config(default = 1.0)]
-    pub destroy_fraction_min: f64,
-    /// Number of epochs during which the destroy ratio goes from its maximum to minimum value
-    #[config(default = 0)]
-    pub mask_schedule_epochs: usize,
-    /// If true, decode the logits stochastically -- only relevant when `decode_kind == "logits"`
-    /// (see that field's doc).
+    pub destroy_fraction: f64,
     #[config(default = false)]
     pub stochastic_decode: bool,
-    /// Temperature scaling for stochastic decoding
     #[config(default = 1.0)]
     pub temperature: f64,
-    /// How to turn the network's per-step output into a decoded assignment at the destroyed
-    /// positions: `"logits"` decodes each position independently from the raw network output
-    /// (`stochastic_decode`/`temperature` pick greedy vs. sampled), `"belief_propagation"` first
-    /// runs a few rounds of belief propagation over the problem's compiled MDDs (seeded from those
-    /// same logits, with every position *not* being resampled this round clamped as hard evidence)
-    /// to get constraint-aware marginals before decoding from those instead.
     #[config(default = "String::from(\"logits\")")]
     pub decode_kind: String,
-    /// Number of belief-propagation rounds per row, per destroy/repair step -- only used when
-    /// `decode_kind == "belief_propagation"`. Kept low by design (see `sampling::bp::belief_propagation`'s
-    /// doc): this runs inside every iteration of the outer search loop.
     #[config(default = 5)]
     pub bp_iterations: usize,
-    /// How the problem's constraints are grouped into MDDs before compilation, for
-    /// `decode_kind == "belief_propagation"` -- only used when `mdd_grouping_window_size == 0`; 0
-    /// means one MDD per constraint. See `EliminationOrdering::buckets`'s doc for what a larger
-    /// bound buys.
-    #[config(default = 0)]
-    pub mdd_grouping_size_bound: usize,
-    /// If non-zero, selects overlapping rolling-window constraint grouping instead of (disjoint)
-    /// bucket grouping, for `decode_kind == "belief_propagation"` -- see
-    /// `EliminationOrdering::rolling_window_groups`'s doc. Trades exact per-constraint evidence
-    /// counting (a constraint in more than one window is double-counted in belief propagation's
-    /// marginals) for catching UNSAT cliques that disjoint bucket grouping can structurally never
-    /// merge into one MDD.
     #[config(default = 0)]
     pub mdd_grouping_window_size: usize,
 }
 
 impl SolveConfig {
-    /// Like `Config::load`, but a JSON file missing some fields (e.g. one saved before a field
-    /// existed) falls back to that field's default instead of failing. `#[config(default = ...)]`
-    /// only wires up `SolveConfig::new`'s optional arguments -- burn's generated `Deserialize` impl
-    /// still requires every field to be present -- so this merges the file's JSON object on top of
-    /// `SolveConfig::default()`'s JSON object before deserializing.
     pub fn load_lenient<P: AsRef<std::path::Path>>(path: P) -> Result<Self, ConfigError> {
         let path = path.as_ref();
         let content = std::fs::read_to_string(path)
@@ -93,24 +52,6 @@ impl SolveConfig {
 
         serde_json::from_value(merged).map_err(|err| ConfigError::InvalidFormat(format!("{err}")))
     }
-
-    /// `destroy_fraction_max` is the fraction used at iteration 0 of the mask schedule,
-    /// `destroy_fraction_min` is what it's annealed down to -- so `max < min` is never sensible.
-    pub fn validate(&self) -> Result<(), String> {
-        if self.destroy_fraction_max < self.destroy_fraction_min {
-            return Err(format!(
-                "destroy_fraction_max ({}) must be >= destroy_fraction_min ({})",
-                self.destroy_fraction_max, self.destroy_fraction_min
-            ));
-        }
-        if self.decode_kind != "logits" && self.decode_kind != "belief_propagation" {
-            return Err(format!(
-                "decode_kind must be \"logits\" or \"belief_propagation\", got {:?}",
-                self.decode_kind
-            ));
-        }
-        Ok(())
-    }
 }
 
 impl Default for SolveConfig {
@@ -122,97 +63,12 @@ impl Default for SolveConfig {
             network_kind: String::from("consformer"),
             batch_size: None,
             destroy_kind: String::from("random"),
-            destroy_fraction_max: 1.0,
-            destroy_fraction_min: 1.0,
-            mask_schedule_epochs: 0,
+            destroy_fraction: 1.0,
             stochastic_decode: false,
             temperature: 1.0,
             decode_kind: String::from("logits"),
             bp_iterations: 5,
-            mdd_grouping_size_bound: 0,
             mdd_grouping_window_size: 0,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_matches_the_documented_zero_config_defaults() {
-        let config = SolveConfig::default();
-        assert_eq!(config.network_kind, "consformer");
-        assert_eq!(config.destroy_kind, "random");
-        assert_eq!(config.destroy_fraction_max, 1.0);
-        assert_eq!(config.destroy_fraction_min, 1.0);
-        assert!(!config.stochastic_decode);
-        assert_eq!(config.decode_kind, "logits");
-        assert_eq!(config.bp_iterations, 5);
-        assert_eq!(config.mdd_grouping_size_bound, 0);
-        assert_eq!(config.mdd_grouping_window_size, 0);
-        assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn validate_rejects_unknown_decode_kind() {
-        let mut config = SolveConfig::default();
-        config.decode_kind = String::from("not_a_real_kind");
-        assert!(config.validate().is_err());
-    }
-
-    #[test]
-    fn validate_rejects_max_below_min() {
-        let mut config = SolveConfig::default();
-        config.destroy_fraction_max = 0.3;
-        config.destroy_fraction_min = 0.5;
-        assert!(config.validate().is_err());
-    }
-
-    #[test]
-    fn validate_accepts_max_equal_to_min() {
-        let mut config = SolveConfig::default();
-        config.destroy_fraction_max = 0.5;
-        config.destroy_fraction_min = 0.5;
-        assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn round_trips_through_json() {
-        let dir =
-            std::env::temp_dir().join(format!("aicad_solve_config_test_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("solve_config.json");
-
-        let mut config = SolveConfig::default();
-        config.destroy_kind = String::from("related");
-        config.mask_schedule_epochs = 20;
-        config.save(&path).expect("save should succeed");
-
-        let loaded = SolveConfig::load(&path).expect("load should succeed");
-        assert_eq!(loaded.destroy_kind, "related");
-        assert_eq!(loaded.mask_schedule_epochs, 20);
-        // Field(s) left at their default should still round-trip correctly.
-        assert!(!loaded.stochastic_decode);
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn missing_fields_fall_back_to_defaults() {
-        let dir = std::env::temp_dir().join(format!(
-            "aicad_solve_config_partial_test_{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("partial_solve_config.json");
-        std::fs::write(&path, r#"{"destroy_kind": "worst"}"#).unwrap();
-
-        let loaded = SolveConfig::load_lenient(&path).expect("load should succeed");
-        assert_eq!(loaded.destroy_kind, "worst");
-        assert!(!loaded.stochastic_decode);
-        assert_eq!(loaded.batch_size, None);
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

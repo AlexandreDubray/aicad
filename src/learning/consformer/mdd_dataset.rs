@@ -32,6 +32,7 @@ pub struct MddCompilationConfig {
     pub merge: MergeHeuristic,
     pub select: SelectHeuristic,
     pub grouping: ConstraintGrouping,
+    pub max_width: usize,
 }
 
 impl Default for MddCompilationConfig {
@@ -40,7 +41,8 @@ impl Default for MddCompilationConfig {
             ordering: OrderingHeuristic::MinDomMaxLinked,
             merge: MergeHeuristic::LessRelaxed,
             select: SelectHeuristic::Greedy,
-            grouping: ConstraintGrouping::PER_CONSTRAINT,
+            grouping: ConstraintGrouping::default(),
+            max_width: usize::MAX,
         }
     }
 }

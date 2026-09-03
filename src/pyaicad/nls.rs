@@ -21,9 +21,7 @@ use crate::mdd::heuristics::ConstraintGrouping;
 use crate::modelling::Problem;
 use crate::nls::decode::{Argmax, BeliefPropagationDecode, DecodingOperator, Sampling};
 use crate::nls::destroy::{DestroyOperator, RandomDestroy, RelatedDestroy, WorstDestroy};
-use crate::nls::{
-    load_network, Budget, MaskSchedule, NeuralLocalSearch, Solution, SolveConfig, Status,
-};
+use crate::nls::{load_network, Budget, NeuralLocalSearch, Solution, SolveConfig, Status};
 use crate::sampling::DecodeMode;
 
 use super::learn::cuda_available;
@@ -103,11 +101,11 @@ pub enum PyDestroyKind {
 }
 
 impl PyDestroyKind {
-    fn build(&self) -> Box<dyn DestroyOperator> {
+    fn build(&self, fraction: f64) -> Box<dyn DestroyOperator> {
         match self {
-            PyDestroyKind::Random => Box::new(RandomDestroy),
-            PyDestroyKind::Worst => Box::new(WorstDestroy),
-            PyDestroyKind::Related => Box::new(RelatedDestroy),
+            PyDestroyKind::Random => Box::new(RandomDestroy { fraction }),
+            PyDestroyKind::Worst => Box::new(WorstDestroy { fraction }),
+            PyDestroyKind::Related => Box::new(RelatedDestroy { fraction }),
         }
     }
 
@@ -169,7 +167,6 @@ fn build_decode_op<B: Backend>(
     stochastic_decode: bool,
     temperature: f64,
     bp_iterations: usize,
-    mdd_grouping_size_bound: usize,
     mdd_grouping_window_size: usize,
 ) -> Box<dyn DecodingOperator<B>> {
     match decode_kind {
@@ -182,10 +179,7 @@ fn build_decode_op<B: Backend>(
         }
         PyDecodeKind::BeliefPropagation => {
             let compilation = MddCompilationConfig {
-                grouping: ConstraintGrouping::from_config(
-                    mdd_grouping_size_bound,
-                    mdd_grouping_window_size,
-                ),
+                grouping: ConstraintGrouping::new_rolling(mdd_grouping_window_size),
                 ..MddCompilationConfig::default()
             };
             let mode = if stochastic_decode {
@@ -221,34 +215,16 @@ pub struct PySolveConfig {
     #[pyo3(get, set)]
     pub destroy_kind: PyDestroyKind,
     #[pyo3(get, set)]
-    pub destroy_fraction_max: f64,
-    #[pyo3(get, set)]
-    pub destroy_fraction_min: f64,
-    #[pyo3(get, set)]
-    pub mask_schedule_epochs: usize,
+    pub destroy_fraction: f64,
     #[pyo3(get, set)]
     pub stochastic_decode: bool,
     #[pyo3(get, set)]
     pub temperature: f64,
-    /// Which decode operator to use -- see `PyDecodeKind`/`SolveConfig::decode_kind`'s doc.
+    /// Which decode operator to use
     #[pyo3(get, set)]
     pub decode_kind: PyDecodeKind,
-    /// Number of belief-propagation rounds per row, per step -- only used when
-    /// `decode_kind == BeliefPropagation`.
     #[pyo3(get, set)]
     pub bp_iterations: usize,
-    /// How the problem's constraints are grouped into MDDs before compilation -- only used when
-    /// `decode_kind == BeliefPropagation`, and only when `mdd_grouping_window_size == 0`. 0 means
-    /// one MDD per constraint; see `EliminationOrdering::buckets`'s doc for what a larger bound
-    /// buys.
-    #[pyo3(get, set)]
-    pub mdd_grouping_size_bound: usize,
-    /// If non-zero, selects overlapping rolling-window grouping instead of (disjoint) bucket
-    /// grouping -- only used when `decode_kind == BeliefPropagation`. See
-    /// `EliminationOrdering::rolling_window_groups`'s doc: a constraint can end up compiled into
-    /// more than one MDD, which double-counts its evidence in belief propagation's marginals once
-    /// per extra membership, in exchange for catching UNSAT cliques that disjoint bucket grouping
-    /// structurally cannot merge into one MDD.
     #[pyo3(get, set)]
     pub mdd_grouping_window_size: usize,
     #[pyo3(get, set)]
@@ -266,15 +242,12 @@ impl PySolveConfig {
         network_kind=PyNetworkKind::ConsFormer,
         batch_size=None,
         destroy_kind=PyDestroyKind::Random,
-        destroy_fraction_max=1.0,
-        destroy_fraction_min=1.0,
-        mask_schedule_epochs=0,
+        destroy_fraction=1.0,
         stochastic_decode=false,
         temperature=1.0,
         decode_kind=PyDecodeKind::Logits,
-        bp_iterations=5,
-        mdd_grouping_size_bound=0,
-        mdd_grouping_window_size=0,
+        bp_iterations=1,
+        mdd_grouping_window_size=1,
         time_limit=None,
         iteration_limit=None,
         seed=None,
@@ -284,40 +257,30 @@ impl PySolveConfig {
         network_kind: PyNetworkKind,
         batch_size: Option<usize>,
         destroy_kind: PyDestroyKind,
-        destroy_fraction_max: f64,
-        destroy_fraction_min: f64,
-        mask_schedule_epochs: usize,
+        destroy_fraction: f64,
         stochastic_decode: bool,
         temperature: f64,
         decode_kind: PyDecodeKind,
         bp_iterations: usize,
-        mdd_grouping_size_bound: usize,
         mdd_grouping_window_size: usize,
         time_limit: Option<u64>,
         iteration_limit: Option<usize>,
         seed: Option<u64>,
     ) -> PyResult<Self> {
-        let config = PySolveConfig {
+        Ok(PySolveConfig {
             network_kind,
             batch_size,
             destroy_kind,
-            destroy_fraction_max,
-            destroy_fraction_min,
-            mask_schedule_epochs,
+            destroy_fraction,
             stochastic_decode,
             temperature,
             decode_kind,
             bp_iterations,
-            mdd_grouping_size_bound,
             mdd_grouping_window_size,
             time_limit,
             iteration_limit,
             seed,
-        };
-        SolveConfig::from(&config)
-            .validate()
-            .map_err(PyValueError::new_err)?;
-        Ok(config)
+        })
     }
 
     #[staticmethod]
@@ -341,14 +304,11 @@ impl From<&PySolveConfig> for SolveConfig {
             network_kind: c.network_kind.tag().to_string(),
             batch_size: c.batch_size,
             destroy_kind: c.destroy_kind.tag().to_string(),
-            destroy_fraction_max: c.destroy_fraction_max,
-            destroy_fraction_min: c.destroy_fraction_min,
-            mask_schedule_epochs: c.mask_schedule_epochs,
+            destroy_fraction: c.destroy_fraction,
             stochastic_decode: c.stochastic_decode,
             temperature: c.temperature,
             decode_kind: c.decode_kind.tag().to_string(),
             bp_iterations: c.bp_iterations,
-            mdd_grouping_size_bound: c.mdd_grouping_size_bound,
             mdd_grouping_window_size: c.mdd_grouping_window_size,
             time_limit: c.time_limit,
             iteration_limit: c.iteration_limit,
@@ -365,14 +325,11 @@ impl TryFrom<&SolveConfig> for PySolveConfig {
             network_kind: PyNetworkKind::parse(&c.network_kind)?,
             batch_size: c.batch_size,
             destroy_kind: PyDestroyKind::parse(&c.destroy_kind)?,
-            destroy_fraction_max: c.destroy_fraction_max,
-            destroy_fraction_min: c.destroy_fraction_min,
-            mask_schedule_epochs: c.mask_schedule_epochs,
+            destroy_fraction: c.destroy_fraction,
             stochastic_decode: c.stochastic_decode,
             temperature: c.temperature,
             decode_kind: PyDecodeKind::parse(&c.decode_kind)?,
             bp_iterations: c.bp_iterations,
-            mdd_grouping_size_bound: c.mdd_grouping_size_bound,
             mdd_grouping_window_size: c.mdd_grouping_window_size,
             time_limit: c.time_limit,
             iteration_limit: c.iteration_limit,
@@ -429,9 +386,6 @@ pub fn neural_local_search(
 
     let checkpoint_dir = PathBuf::from(checkpoint_dir);
     let config: SolveConfig = config.as_ref().map(SolveConfig::from).unwrap_or_default();
-    // `PySolveConfig::new` already validates this, but its fields are individually settable from
-    // Python afterwards (`#[pyo3(get, set)]`), so re-check here at the point of use.
-    config.validate().map_err(PyValueError::new_err)?;
     let budget = Budget {
         time_limit: config
             .time_limit
@@ -509,29 +463,18 @@ fn run<B: Backend>(
                         ))
                     },
                 )?;
-            let mask_schedule = MaskSchedule {
-                max: config.destroy_fraction_max,
-                min: config.destroy_fraction_min,
-                epochs: config.mask_schedule_epochs,
-            };
-            let destroy_op = destroy_kind.build();
+            let destroy_op = destroy_kind.build(config.destroy_fraction);
             let decode_kind = PyDecodeKind::parse(&config.decode_kind)?;
             let decode_op = build_decode_op::<B>(
                 &decode_kind,
                 config.stochastic_decode,
                 config.temperature,
                 config.bp_iterations,
-                config.mdd_grouping_size_bound,
                 config.mdd_grouping_window_size,
             );
 
             let nls = NeuralLocalSearch::<B, ConsFormer<B>, ConsFormerBatch<B>>::new(
-                network,
-                destroy_op,
-                mask_schedule,
-                decode_op,
-                1,
-                device,
+                network, destroy_op, decode_op, device,
             );
             Ok(chunked_run(
                 &nls,
