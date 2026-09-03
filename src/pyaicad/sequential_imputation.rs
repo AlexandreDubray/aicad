@@ -148,7 +148,7 @@ fn compile_problem_mdds(problem: &Arc<Problem>, compilation: &MddCompilationConf
     compilation
         .grouping
         .groups(problem)
-        .into_iter()
+        .into_par_iter()
         .map(|constraints| {
             let mut mdd = Mdd::new(
                 Arc::clone(problem),

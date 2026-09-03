@@ -19,7 +19,7 @@ use crate::mdd::Mdd;
 use crate::modelling::{Problem, ValueIndex, VariableIndex};
 use crate::sampling::bp::belief_propagation;
 use crate::sampling::solve::value_to_index;
-use crate::sampling::{DecodeMode, argmax, sample_categorical};
+use crate::sampling::{argmax, sample_categorical, DecodeMode};
 use crate::utils::tensor::to_rows;
 
 /// Turns this iteration's logits into the next assignment. Only positions
@@ -103,7 +103,7 @@ fn compile_mdds_for(problem: &Arc<Problem>, compilation: &MddCompilationConfig) 
     compilation
         .grouping
         .groups(problem)
-        .into_iter()
+        .into_par_iter()
         .map(|constraints| {
             let mut mdd = Mdd::new(
                 Arc::clone(problem),
@@ -236,8 +236,7 @@ impl<B: Backend> DecodingOperator<B> for BeliefPropagationDecode {
                     let probs_v: Vec<f64> = (0..domain_size)
                         .map(|d| {
                             let value = problem[variable].value(ValueIndex(d));
-                            let offset =
-                                row * n * domain_width + v * domain_width + value as usize;
+                            let offset = row * n * domain_width + v * domain_width + value as usize;
                             probs_flat[offset] as f64
                         })
                         .collect();
@@ -306,21 +305,24 @@ mod tests {
 
     #[test]
     fn detect_unsat_is_true_when_a_clique_has_fewer_colours_than_variables() {
-        let op = BeliefPropagationDecode::new(MddCompilationConfig::default(), 5, DecodeMode::Greedy);
+        let op =
+            BeliefPropagationDecode::new(MddCompilationConfig::default(), 5, DecodeMode::Greedy);
         let problem = clique_problem(6, 5);
         assert!(DecodingOperator::<NdArray>::detect_unsat(&op, &problem));
     }
 
     #[test]
     fn detect_unsat_is_false_when_a_clique_has_enough_colours() {
-        let op = BeliefPropagationDecode::new(MddCompilationConfig::default(), 5, DecodeMode::Greedy);
+        let op =
+            BeliefPropagationDecode::new(MddCompilationConfig::default(), 5, DecodeMode::Greedy);
         let problem = clique_problem(6, 6);
         assert!(!DecodingOperator::<NdArray>::detect_unsat(&op, &problem));
     }
 
     #[test]
     fn detect_unsat_caches_so_a_second_call_does_not_recompile() {
-        let op = BeliefPropagationDecode::new(MddCompilationConfig::default(), 5, DecodeMode::Greedy);
+        let op =
+            BeliefPropagationDecode::new(MddCompilationConfig::default(), 5, DecodeMode::Greedy);
         let problem = clique_problem(6, 5);
         assert!(DecodingOperator::<NdArray>::detect_unsat(&op, &problem));
         // Second call must read back the same (cached) UNSAT MDDs, not silently recompute
