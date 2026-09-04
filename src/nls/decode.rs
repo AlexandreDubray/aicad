@@ -156,52 +156,54 @@ impl<B: Backend> DecodingOperator<B> for BeliefPropagationDecode {
         let mask_rows = to_rows(&destroy_mask, rows, n);
 
         let mut next_data = vec![0i64; rows * n];
-        next_data
-            .par_chunks_mut(n)
-            .enumerate()
-            .for_each(|(row, next_row)| {
-                let problem = &problems[row];
-                let mdds = self.mdds_for(problem);
+        crate::utils::worker_pool().install(|| {
+            next_data
+                .par_chunks_mut(n)
+                .enumerate()
+                .for_each(|(row, next_row)| {
+                    let problem = &problems[row];
+                    let mdds = self.mdds_for(problem);
 
-                let mut assignment = vec![ValueIndex(0); n];
-                let mut decided = vec![false; n];
-                let mut probs: Vec<Vec<f64>> = Vec::with_capacity(n);
-                for v in 0..n {
-                    let variable = VariableIndex(v);
-                    assignment[v] = value_to_index(problem, variable, current_rows[row][v]);
-                    // `destroy_mask == 1` marks a position as free to change this iteration --
-                    // `decided` here is its opposite: everything the destroy/repair loop is
-                    // holding fixed this round.
-                    decided[v] = mask_rows[row][v] == 0;
+                    let mut assignment = vec![ValueIndex(0); n];
+                    let mut decided = vec![false; n];
+                    let mut probs: Vec<Vec<f64>> = Vec::with_capacity(n);
+                    for v in 0..n {
+                        let variable = VariableIndex(v);
+                        assignment[v] = value_to_index(problem, variable, current_rows[row][v]);
+                        // `destroy_mask == 1` marks a position as free to change this iteration --
+                        // `decided` here is its opposite: everything the destroy/repair loop is
+                        // holding fixed this round.
+                        decided[v] = mask_rows[row][v] == 0;
 
-                    let domain_size = problem[variable].domain_size();
-                    let probs_v: Vec<f64> = (0..domain_size)
-                        .map(|d| {
-                            let value = problem[variable].value(ValueIndex(d));
-                            let offset = row * n * domain_width + v * domain_width + value as usize;
-                            probs_flat[offset] as f64
-                        })
-                        .collect();
-                    probs.push(probs_v);
-                }
-
-                let marginals =
-                    belief_propagation(&mdds, &probs, &assignment, &decided, self.iterations);
-
-                for v in 0..n {
-                    if mask_rows[row][v] == 0 {
-                        // Untouched position -- keep the current value exactly, same contract
-                        // `Argmax`/`Sampling` honour via `mask_where`.
-                        next_row[v] = current_rows[row][v] as i64;
-                        continue;
+                        let domain_size = problem[variable].domain_size();
+                        let probs_v: Vec<f64> = (0..domain_size)
+                            .map(|d| {
+                                let value = problem[variable].value(ValueIndex(d));
+                                let offset = row * n * domain_width + v * domain_width + value as usize;
+                                probs_flat[offset] as f64
+                            })
+                            .collect();
+                        probs.push(probs_v);
                     }
-                    let chosen = match self.mode {
-                        DecodeMode::Greedy => argmax(&marginals[v]),
-                        DecodeMode::Sample => sample_categorical(&marginals[v]),
-                    };
-                    next_row[v] = problem[VariableIndex(v)].value(ValueIndex(chosen)) as i64;
-                }
-            });
+
+                    let marginals =
+                        belief_propagation(&mdds, &probs, &assignment, &decided, self.iterations);
+
+                    for v in 0..n {
+                        if mask_rows[row][v] == 0 {
+                            // Untouched position -- keep the current value exactly, same contract
+                            // `Argmax`/`Sampling` honour via `mask_where`.
+                            next_row[v] = current_rows[row][v] as i64;
+                            continue;
+                        }
+                        let chosen = match self.mode {
+                            DecodeMode::Greedy => argmax(&marginals[v]),
+                            DecodeMode::Sample => sample_categorical(&marginals[v]),
+                        };
+                        next_row[v] = problem[VariableIndex(v)].value(ValueIndex(chosen)) as i64;
+                    }
+                });
+        });
 
         Tensor::<B, 1, Int>::from_data(next_data.as_slice(), &device).reshape([rows, n])
     }
@@ -226,13 +228,15 @@ impl<B: Backend> DecodingOperator<B> for BeliefPropagationDecode {
         );
         progress.set_message("Compiling MDDs");
 
-        unique
-            .into_par_iter()
-            .progress_with(progress.clone())
-            .for_each(|problem| {
-                self.mdds_for(problem);
-            });
-        progress.finish_and_clear();
+        crate::utils::worker_pool().install(|| {
+            unique
+                .into_par_iter()
+                .progress_with(progress.clone())
+                .for_each(|problem| {
+                    self.mdds_for(problem);
+                });
+            progress.finish_and_clear();
+        });
     }
 }
 

@@ -9,6 +9,7 @@ pub fn worker_pool() -> &'static ThreadPool {
             .map(|n| n.get())
             .unwrap_or(1);
         let num_threads = available.saturating_div(4).max(1);
+        log::info!("Creating thread pool with  {} threads", num_threads);
         rayon::ThreadPoolBuilder::new()
             .num_threads(num_threads)
             .build()

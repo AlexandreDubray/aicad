@@ -287,8 +287,8 @@ where
             // to cross threads) just to read one `Copy` field.
             let rule = self.rule;
             let updated: Vec<(usize, Vec<ValueIndex>)> = active
-                .par_iter()
-                .zip(probs_batch.par_iter())
+                .iter()
+                .zip(probs_batch.iter())
                 .map(|(&i, probs)| {
                     let destroyed = samplers[i].destroyed_variables(probs, &assignments[i], rule);
                     let new_assignment = sequential_imputation(
