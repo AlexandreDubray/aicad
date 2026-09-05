@@ -10,7 +10,7 @@ use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256Plus;
 use std::cell::RefCell;
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use std::fs;
 use std::sync::Arc;
 
@@ -406,6 +406,7 @@ impl Mdd {
     fn collapse(&mut self) {
         for layer in 1..self.nodes.len() - 1 {
             let mut map: FxHashMap<MergeKey, NodeIndex> = FxHashMap::default();
+            let mut merges: Vec<(NodeIndex, NodeIndex)> = vec![];
             for index in 0..self.nodes[layer].len() {
                 let node = NodeIndex(layer, index);
                 if !self[node].is_active() {
@@ -416,37 +417,13 @@ impl Mdd {
                     bu_properties: &self.bottom_up_properties[layer][index],
                 };
                 if let Some(&primary_node) = map.get(&key) {
-                    let NodeIndex(primary_layer, primary_index) = primary_node;
-
-                    for i in 0..self[node].number_parents() {
-                        let EdgeIndex(edge_layer, edge_index) = self[node].parent_edge_at(i);
-                        self.edges[edge_layer][edge_index].set_to(primary_node);
-                        self.nodes[primary_layer][primary_index]
-                            .add_parent_edge(EdgeIndex(edge_layer, edge_index));
-                    }
-
-                    let mut existing_children = FxHashSet::<(NodeIndex, ValueIndex)>::default();
-                    for i in 0..self[primary_node].number_children() {
-                        let edge = self[primary_node].child_edge_at(i);
-                        let child = self[edge].to();
-                        let assignment = self[edge].assignment();
-                        existing_children.insert((child, assignment));
-                    }
-
-                    for i in 0..self[node].number_children() {
-                        let edge = self[node].child_edge_at(i);
-                        let EdgeIndex(edge_layer, edge_index) = edge;
-                        let child = self[edge].to();
-                        let assignment = self[edge].assignment();
-                        if !existing_children.contains(&(child, assignment)) {
-                            self.edges[edge_layer][edge_index].set_to(primary_node);
-                            self.nodes[primary_layer][primary_index].add_child_edge(edge);
-                        }
-                    }
-                    self.nodes[layer][index].deactivate();
+                    merges.push((node, primary_node));
                 } else {
                     map.insert(key, node);
                 }
+            }
+            for (node, primary_node) in merges {
+                self.merge_nodes_with_flag(node, primary_node, false);
             }
         }
     }
@@ -463,11 +440,9 @@ impl Mdd {
         }
         if !self.merge_heuristic.bucket_merge() {
             let into = node_ranks[active_nodes - max_width].1;
-            self[into].set_relaxed(true);
             for i in 0..active_nodes - max_width {
                 let from = node_ranks[i].1;
                 self.merge_nodes(from, into);
-                self[from].deactivate();
             }
         } else {
             let q = node_ranks.len() / max_width;
@@ -480,7 +455,6 @@ impl Mdd {
                 for j in (i + 1)..(i + q) {
                     let from = node_ranks[j].1;
                     self.merge_nodes(from, into);
-                    self[from].deactivate();
                 }
                 i += q;
             }
@@ -489,38 +463,59 @@ impl Mdd {
                 for j in (i + 1)..(i + q + 1) {
                     let from = node_ranks[j].1;
                     self.merge_nodes(from, into);
-                    self[from].deactivate();
                 }
                 i += q + 1;
             }
         }
     }
 
-    // TODO: Recursively merge child nodes when two outgoing edges have the same label
     fn merge_nodes(&mut self, from: NodeIndex, into: NodeIndex) {
-        self[into].set_relaxed(true);
-        for i in 0..self[from].number_parents() {
-            let edge = self[from].parent_edge_at(i);
-            self[edge].set_to(into);
-            self[into].add_parent_edge(edge);
-        }
+        self.merge_nodes_with_flag(from, into, true);
+    }
 
-        let mut existing_children = FxHashSet::<(NodeIndex, ValueIndex)>::default();
-        for i in 0..self[into].number_children() {
-            let edge = self[into].child_edge_at(i);
-            let child = self[edge].to();
-            let assignment = self[edge].assignment();
-            existing_children.insert((child, assignment));
-        }
-
-        for i in 0..self[from].number_children() {
-            let edge = self[from].child_edge_at(i);
-            let child = self[edge].to();
-            let assignment = self[edge].assignment();
-            if !existing_children.contains(&(child, assignment)) {
-                self[edge].set_from(into);
-                self[into].add_child_edge(edge);
+    fn merge_nodes_with_flag(&mut self, from: NodeIndex, into: NodeIndex, mark_relaxed: bool) {
+        let mut worklist = vec![(from, into, mark_relaxed)];
+        while let Some((from, into, mark_relaxed)) = worklist.pop() {
+            if from == into {
+                continue;
             }
+            if mark_relaxed {
+                self[into].set_relaxed(true);
+            }
+            for i in 0..self[from].number_parents() {
+                let edge = self[from].parent_edge_at(i);
+                self[edge].set_to(into);
+                self[into].add_parent_edge(edge);
+            }
+
+            let mut existing_children = FxHashMap::<ValueIndex, NodeIndex>::default();
+            for i in 0..self[into].number_children() {
+                let edge = self[into].child_edge_at(i);
+                existing_children.insert(self[edge].assignment(), self[edge].to());
+            }
+
+            for i in 0..self[from].number_children() {
+                let edge = self[from].child_edge_at(i);
+                let assignment = self[edge].assignment();
+                let child = self[edge].to();
+                match existing_children.get(&assignment).copied() {
+                    None => {
+                        self[edge].set_from(into);
+                        self[into].add_child_edge(edge);
+                        existing_children.insert(assignment, child);
+                    }
+                    Some(existing_child) if existing_child == child => {
+                        self[child].remove_parent_edge(edge);
+                        self[edge].deactivate();
+                    }
+                    Some(existing_child) => {
+                        self[child].remove_parent_edge(edge);
+                        self[edge].deactivate();
+                        worklist.push((child, existing_child, true));
+                    }
+                }
+            }
+            self[from].deactivate();
         }
     }
 
@@ -952,5 +947,46 @@ pub mod test_mdd {
         );
         mdd.refine(usize::MAX);
         // TODO assert?
+    }
+
+    #[test]
+    pub fn merge_nodes_merges_children_that_collide_on_the_same_label() {
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1], None);
+        let y = problem.add_variable(vec![0, 1], None);
+        gcc(&mut problem, vec![x, y], vec![]);
+
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mut mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
+
+        let into = NodeIndex(1, 0);
+        let c1 = NodeIndex(2, 0);
+        let from = mdd.add_node(1, true);
+        let c2 = mdd.add_node(2, true);
+        let shared_assignment = ValueIndex(0);
+        mdd.add_edge(1, from, c2, shared_assignment);
+
+        mdd.merge_nodes_with_flag(from, into, true);
+
+        assert!(!mdd[from].is_active());
+        assert!(mdd[into].is_active());
+        assert!(mdd[c1].is_active());
+        assert!(!mdd[c2].is_active());
+
+        let mut seen_assignments = std::collections::HashSet::new();
+        for edge in mdd[into].iter_children() {
+            if !mdd[edge].is_active() {
+                continue;
+            }
+            assert!(seen_assignments.insert(mdd[edge].assignment()));
+        }
+        assert_eq!(seen_assignments.len(), 2);
     }
 }
