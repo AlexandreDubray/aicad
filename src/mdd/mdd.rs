@@ -11,7 +11,10 @@ use rand_xoshiro::Xoshiro256Plus;
 use std::cell::RefCell;
 
 use rustc_hash::FxHashMap;
+use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 thread_local! {
@@ -199,29 +202,62 @@ impl Mdd {
         if self.unsat {
             return;
         }
-        for layer in 1..self.nodes.len() - 1 {
-            if self.number_nodes_in_layer(layer) == max_width {
-                continue;
+        let mut seen_fingerprints: HashSet<u64> = HashSet::default();
+        seen_fingerprints.insert(self.fingerprint());
+        loop {
+            let mut any_split = false;
+            for layer in 1..self.nodes.len() - 1 {
+                if self.number_nodes_in_layer(layer) == max_width {
+                    continue;
+                }
+                if let Some(node) = self.select_heuristic.select_node(self, layer) {
+                    any_split = true;
+                    let new_nodes = self.split_node(node);
+                    for &new_node in &new_nodes {
+                        self[new_node].set_property_flag();
+                    }
+                    let deepest_touched = self.update_top_down(layer);
+                    for &new_node in &new_nodes {
+                        self[new_node].set_property_flag();
+                    }
+                    self.update_bottom_up(deepest_touched);
+                    if !self[self.root].is_active() || !self[self.sink].is_active() {
+                        self.unsat = true;
+                        return;
+                    }
+                    self.collapse();
+                    self.merge_layer(layer, max_width);
+                    self.clean();
+                }
             }
-            if let Some(node) = self.select_heuristic.select_node(self, layer) {
-                let new_nodes = self.split_node(node);
-                for &new_node in &new_nodes {
-                    self[new_node].set_property_flag();
-                }
-                let deepest_touched = self.update_top_down(layer);
-                for &new_node in &new_nodes {
-                    self[new_node].set_property_flag();
-                }
-                self.update_bottom_up(deepest_touched);
-                if !self[self.root].is_active() || !self[self.sink].is_active() {
-                    self.unsat = true;
-                    return;
-                }
-                self.collapse();
-                self.merge_layer(layer, max_width);
-                self.clean();
+            if !any_split {
+                break;
+            }
+            if !seen_fingerprints.insert(self.fingerprint()) {
+                break;
             }
         }
+    }
+
+    fn fingerprint(&self) -> u64 {
+        let mut total: u64 = 0;
+        for layer in 0..self.nodes.len() {
+            let mut layer_signature: u64 = 0;
+            for index in 0..self.nodes[layer].len() {
+                if !self.nodes[layer][index].is_active() {
+                    continue;
+                }
+                let key = MergeKey {
+                    td_properties: &self.top_down_properties[layer][index],
+                    bu_properties: &self.bottom_up_properties[layer][index],
+                };
+                let mut hasher = DefaultHasher::new();
+                key.hash(&mut hasher);
+                layer_signature ^= hasher.finish();
+            }
+            total = total.wrapping_mul(1_000_000_007).wrapping_add(layer_signature);
+        }
+        total
     }
 
     fn split_node(&mut self, node: NodeIndex) -> Vec<NodeIndex> {
@@ -1141,6 +1177,48 @@ pub mod test_mdd {
             let mut seen = std::collections::HashSet::new();
             for s in &solutions {
                 assert!(seen.insert(s.clone()), "duplicate solution {:?} for n={}", s, n);
+            }
+        }
+    }
+
+    #[test]
+    pub fn refine_reaches_fixed_point_under_width_cap() {
+        for n in 4..=6 {
+            for max_width in [2usize, 3, 4, 5, 6] {
+                let merge_h = MergeHeuristic::LessRelaxed;
+                let mut problem = Problem::default();
+                let vars: Vec<_> = (0..n)
+                    .map(|_| problem.add_variable((0..n as isize).collect(), None))
+                    .collect();
+                all_different(&mut problem, vars.clone());
+                if n >= 5 {
+                    sum(&mut problem, vars[0..3].to_vec(), (n as isize) - 1);
+                }
+                let problem = Arc::new(problem);
+                let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+                let mut mdd = Mdd::new(
+                    problem,
+                    OrderingHeuristic::MinDomMaxLinked,
+                    merge_h,
+                    SelectHeuristic::Greedy,
+                    &constraints,
+                );
+                mdd.refine(max_width);
+                for layer in 1..mdd.number_layers() - 1 {
+                    let width = mdd.number_nodes_in_layer(layer);
+                    let has_relaxed_room = (0..width)
+                        .map(|i| NodeIndex(layer, i))
+                        .any(|node| mdd[node].is_active() && mdd[node].is_relaxed());
+                    assert!(
+                        width == max_width || !has_relaxed_room,
+                        "n={} max_width={} merge={:?} layer={} width={} still has a relaxed node left unsplit",
+                        n,
+                        max_width,
+                        merge_h,
+                        layer,
+                        width
+                    );
+                }
             }
         }
     }
