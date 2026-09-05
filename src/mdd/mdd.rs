@@ -204,8 +204,15 @@ impl Mdd {
                 continue;
             }
             if let Some(node) = self.select_heuristic.select_node(self, layer) {
-                self.split_node(node);
-                self.propagate_constraints();
+                let new_nodes = self.split_node(node);
+                for &new_node in &new_nodes {
+                    self[new_node].set_property_flag();
+                }
+                let deepest_touched = self.update_top_down(layer);
+                for &new_node in &new_nodes {
+                    self[new_node].set_property_flag();
+                }
+                self.update_bottom_up(deepest_touched);
                 if !self[self.root].is_active() || !self[self.sink].is_active() {
                     self.unsat = true;
                     return;
@@ -253,6 +260,115 @@ impl Mdd {
     pub fn propagate_constraints(&mut self) {
         self.update_top_down_properties();
         self.update_bottom_up_properties_and_filter_edges();
+    }
+
+    fn update_top_down(&mut self, start_layer: usize) -> usize {
+        let mut deepest_changed_layer = start_layer.max(1) - 1;
+        for layer in start_layer.max(1)..self.nodes.len() {
+            let parent_variable = self.order[layer - 1];
+            let mut any_changed = false;
+            for index in 0..self.nodes[layer].len() {
+                let target = NodeIndex(layer, index);
+                if !self[target].is_property_flag() {
+                    continue;
+                }
+                self[target].unset_property_flag();
+                if !self[target].is_active() {
+                    continue;
+                }
+                let mut changed = false;
+                for constraint_index in 0..self.constraints.len() {
+                    let new_property =
+                        self.fold_property_over_parents(target, parent_variable, constraint_index);
+                    if !ConstraintProperty::eq(
+                        new_property.as_ref(),
+                        self.top_down_properties[layer][index][constraint_index].as_ref(),
+                    ) {
+                        changed = true;
+                    }
+                    self.top_down_properties[layer][index][constraint_index] = new_property;
+                }
+                if !changed {
+                    continue;
+                }
+                any_changed = true;
+                deepest_changed_layer = deepest_changed_layer.max(layer);
+                if layer < self.nodes.len() - 1 {
+                    let children_before: Vec<NodeIndex> =
+                        self[target].iter_children().map(|edge| self[edge].to()).collect();
+                    let variable = self.order[layer];
+                    for constraint_index in 0..self.constraints.len() {
+                        if self.constraints[constraint_index].is_layer_in_scope(layer) {
+                            self.filter_invalid_edges(target, variable, constraint_index);
+                        }
+                    }
+                    for child in children_before {
+                        if self[child].is_active() {
+                            self[child].set_property_flag();
+                        }
+                    }
+                }
+                self[target].set_property_flag();
+            }
+            if !any_changed {
+                break;
+            }
+        }
+        deepest_changed_layer
+    }
+
+    fn update_bottom_up(&mut self, start_layer: usize) {
+        for layer in (0..=start_layer.min(self.nodes.len() - 2)).rev() {
+            let variable = self.order[layer];
+            let mut any_changed = false;
+            for index in 0..self.nodes[layer].len() {
+                let target = NodeIndex(layer, index);
+                if !self[target].is_property_flag() {
+                    continue;
+                }
+                self[target].unset_property_flag();
+                if !self[target].is_active() {
+                    continue;
+                }
+                let mut changed = false;
+                for constraint_index in 0..self.constraints.len() {
+                    let new_property =
+                        self.fold_property_over_children(target, variable, constraint_index);
+                    if !ConstraintProperty::eq(
+                        new_property.as_ref(),
+                        self.bottom_up_properties[layer][index][constraint_index].as_ref(),
+                    ) {
+                        changed = true;
+                    }
+                    self.bottom_up_properties[layer][index][constraint_index] = new_property;
+                }
+                let parents_before: Vec<NodeIndex> = if layer > 0 {
+                    self[target].iter_parents().map(|edge| self[edge].from()).collect()
+                } else {
+                    Vec::new()
+                };
+                for constraint_index in 0..self.constraints.len() {
+                    if self.constraints[constraint_index].is_layer_in_scope(layer) {
+                        self.filter_invalid_edges(target, variable, constraint_index);
+                    }
+                }
+                let target_removed = !self[target].is_active();
+                if !changed && !target_removed {
+                    continue;
+                }
+                any_changed = true;
+                {
+                    for parent in parents_before {
+                        if self[parent].is_active() {
+                            self[parent].set_property_flag();
+                        }
+                    }
+                }
+            }
+            if !any_changed {
+                break;
+            }
+        }
     }
 
     /// Recomputes `top_down_properties` for every layer but the root (layer 0), whose top-down
@@ -529,6 +645,8 @@ impl Mdd {
                 if self.nodes[layer][index].is_active() {
                     map_node_index.insert(NodeIndex(layer, index), NodeIndex(layer, new_index));
                     self.nodes[layer].swap(new_index, index);
+                    self.top_down_properties[layer].swap(new_index, index);
+                    self.bottom_up_properties[layer].swap(new_index, index);
                     new_index += 1;
                 }
             }
@@ -988,5 +1106,42 @@ pub mod test_mdd {
             assert!(seen_assignments.insert(mdd[edge].assignment()));
         }
         assert_eq!(seen_assignments.len(), 2);
+    }
+
+    #[test]
+    pub fn incremental_refine_matches_full_recompute_on_all_different() {
+        for n in 3..=7 {
+            let mut problem = Problem::default();
+            let vars: Vec<_> =
+                (0..n).map(|_| problem.add_variable((0..n as isize).collect(), None)).collect();
+            all_different(&mut problem, vars);
+            let problem = Arc::new(problem);
+            let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+            let mut mdd = Mdd::new(
+                problem,
+                OrderingHeuristic::MinDomMaxLinked,
+                MergeHeuristic::LessRelaxed,
+                SelectHeuristic::Greedy,
+                &constraints,
+            );
+            mdd.refine(usize::MAX);
+            let solutions = get_all_solutions(&mdd);
+            let mut factorial = 1usize;
+            for k in 1..=n {
+                factorial *= k;
+            }
+            assert_eq!(
+                solutions.len(),
+                factorial,
+                "n={} produced {} solutions, expected {} (all permutations)",
+                n,
+                solutions.len(),
+                factorial
+            );
+            let mut seen = std::collections::HashSet::new();
+            for s in &solutions {
+                assert!(seen.insert(s.clone()), "duplicate solution {:?} for n={}", s, n);
+            }
+        }
     }
 }
