@@ -147,6 +147,21 @@ impl ConstraintProperty for NotEqualsProperty {
         self.set.union(&other.set);
     }
 
+    fn merge(&mut self, other: &dyn ConstraintProperty) {
+        let other = other
+            .as_any()
+            .downcast_ref::<NotEqualsProperty>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "Calling merge on property {} with other property of type {}",
+                    self.name(),
+                    other.name()
+                );
+            });
+
+        self.set.union(&other.set);
+    }
+
     fn hash(&self, hasher: &mut dyn Hasher) {
         for word in self.set.iter() {
             hasher.write_u64(word);

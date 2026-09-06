@@ -49,6 +49,7 @@ dyn_clone::clone_trait_object!(Constraint);
 
 pub trait ConstraintProperty: DeepSizeOf + DynClone + Send + Sync {
     fn update(&mut self, other: &dyn ConstraintProperty, assignment: isize, in_scope: bool);
+    fn merge(&mut self, other: &dyn ConstraintProperty);
     fn hash(&self, hasher: &mut dyn Hasher);
     fn eq(&self, other: &dyn ConstraintProperty) -> bool;
     fn as_any(&self) -> &dyn Any;

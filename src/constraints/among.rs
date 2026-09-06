@@ -150,6 +150,22 @@ impl ConstraintProperty for AmongProperty {
         self.max = self.max.max(other.max + delta);
     }
 
+    fn merge(&mut self, other: &dyn ConstraintProperty) {
+        let other = other
+            .as_any()
+            .downcast_ref::<AmongProperty>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "Calling merge on property {} with other property of type {}",
+                    self.name(),
+                    other.name()
+                );
+            });
+
+        self.min = self.min.min(other.min);
+        self.max = self.max.max(other.max);
+    }
+
     fn hash(&self, hasher: &mut dyn Hasher) {
         hasher.write_usize(self.min);
         hasher.write_usize(self.max);

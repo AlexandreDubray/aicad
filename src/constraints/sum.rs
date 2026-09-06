@@ -141,8 +141,34 @@ impl ConstraintProperty for SumProperty {
         } else {
             0
         };
-        self.min = self.min.min(other.min + delta);
-        self.max = self.max.max(other.max + delta);
+        let other_min = if other.min == isize::MAX {
+            isize::MAX
+        } else {
+            other.min + delta
+        };
+        let other_max = if other.max == isize::MIN {
+            isize::MIN
+        } else {
+            other.max + delta
+        };
+        self.min = self.min.min(other_min);
+        self.max = self.max.max(other_max);
+    }
+
+    fn merge(&mut self, other: &dyn ConstraintProperty) {
+        let other = other
+            .as_any()
+            .downcast_ref::<SumProperty>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "Calling merge on property {} with other property of type {}",
+                    self.name(),
+                    other.name()
+                );
+            });
+
+        self.min = self.min.min(other.min);
+        self.max = self.max.max(other.max);
     }
 
     fn hash(&self, hasher: &mut dyn Hasher) {

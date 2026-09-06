@@ -215,6 +215,22 @@ impl ConstraintProperty for AllDifferentProperty {
         }
     }
 
+    fn merge(&mut self, other: &dyn ConstraintProperty) {
+        let other = other
+            .as_any()
+            .downcast_ref::<AllDifferentProperty>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "Calling merge on property {} with other property of type {}",
+                    self.name(),
+                    other.name()
+                );
+            });
+
+        self.value_some_path.union(&other.value_some_path);
+        self.value_all_path.intersect(&other.value_all_path);
+    }
+
     fn hash(&self, hasher: &mut dyn Hasher) {
         for word in self.value_all_path.iter() {
             hasher.write_u64(word);

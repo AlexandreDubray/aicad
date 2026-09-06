@@ -227,6 +227,7 @@ impl Mdd {
                     }
                     self.collapse();
                     self.merge_layer(layer, max_width);
+                    self.collapse();
                     self.clean();
                 }
             }
@@ -667,7 +668,28 @@ impl Mdd {
                     }
                 }
             }
+            Self::merge_properties(&mut self.top_down_properties[from.0], from.1, into.1);
+            Self::merge_properties(&mut self.bottom_up_properties[from.0], from.1, into.1);
             self[from].deactivate();
+        }
+    }
+
+    fn merge_properties(
+        properties: &mut [Vec<Box<dyn ConstraintProperty>>],
+        from_index: usize,
+        into_index: usize,
+    ) {
+        let hi = from_index.max(into_index);
+        let lo = from_index.min(into_index);
+        let (left, right) = properties.split_at_mut(hi);
+        let (from_properties, into_properties) = if from_index < into_index {
+            (&left[lo], &mut right[0])
+        } else {
+            (&right[0], &mut left[lo])
+        };
+        for (into_property, from_property) in into_properties.iter_mut().zip(from_properties.iter())
+        {
+            into_property.merge(from_property.as_ref());
         }
     }
 
@@ -1217,6 +1239,62 @@ pub mod test_mdd {
                         merge_h,
                         layer,
                         width
+                    );
+                }
+            }
+        }
+    }
+
+    fn permutations_of(n: usize) -> Vec<Vec<isize>> {
+        fn go(n: usize, used: &mut Vec<bool>, current: &mut Vec<isize>, all: &mut Vec<Vec<isize>>) {
+            if current.len() == n {
+                all.push(current.clone());
+                return;
+            }
+            for value in 0..n {
+                if !used[value] {
+                    used[value] = true;
+                    current.push(value as isize);
+                    go(n, used, current, all);
+                    current.pop();
+                    used[value] = false;
+                }
+            }
+        }
+        let mut used = vec![false; n];
+        let mut current = vec![];
+        let mut all = vec![];
+        go(n, &mut used, &mut current, &mut all);
+        all
+    }
+
+    #[test]
+    pub fn merged_relaxed_mdd_still_contains_every_true_all_different_solution() {
+        for n in 4..=6 {
+            for max_width in [1usize, 2, 3] {
+                let mut problem = Problem::default();
+                let vars: Vec<_> = (0..n)
+                    .map(|_| problem.add_variable((0..n as isize).collect(), None))
+                    .collect();
+                all_different(&mut problem, vars.clone());
+                let problem = Arc::new(problem);
+                let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+                let mut mdd = Mdd::new(
+                    problem,
+                    OrderingHeuristic::MinDomMaxLinked,
+                    MergeHeuristic::LessRelaxed,
+                    SelectHeuristic::Greedy,
+                    &constraints,
+                );
+                mdd.refine(max_width);
+                let candidate_solutions = get_all_solutions(&mdd);
+                for solution in permutations_of(n) {
+                    assert!(
+                        is_solution(solution.clone(), &candidate_solutions),
+                        "n={} max_width={} true all-different solution {:?} missing from relaxed mdd -- unsound property merge",
+                        n,
+                        max_width,
+                        solution
                     );
                 }
             }

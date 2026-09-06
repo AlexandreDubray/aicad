@@ -215,6 +215,24 @@ impl ConstraintProperty for GccProperty {
         }
     }
 
+    fn merge(&mut self, other: &dyn ConstraintProperty) {
+        let other = other
+            .as_any()
+            .downcast_ref::<GccProperty>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "Calling merge on property {} with other property of type {}",
+                    self.name(),
+                    other.name()
+                );
+            });
+
+        for bit in 0..self.min.len() {
+            self.min[bit] = self.min[bit].min(other.min[bit]);
+            self.max[bit] = self.max[bit].max(other.max[bit]);
+        }
+    }
+
     fn hash(&self, hasher: &mut dyn Hasher) {
         for &bound in self.min.iter() {
             hasher.write_usize(bound);
