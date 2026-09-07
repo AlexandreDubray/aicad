@@ -46,6 +46,29 @@ pub fn gcc(
     problem.add_constraint(Gcc::new(variables, bounds));
 }
 
+/// Adds a regular constraint to the problem over the sequence of variables in `variables`.
+/// The alphabet is the union of the variables domains, computed in the constraint constructor.
+/// `transitions` is the allowed transition, `initial_state` and `accepting_states` index
+/// the first dimension of `transitions`.
+///
+/// Note that when using a regular constraint, the compilation order *MUST* follow the order stated
+/// in `variables`.
+pub fn regular(
+    problem: &mut Problem,
+    variables: Vec<VariableIndex>,
+    transitions: Vec<Vec<Option<usize>>>,
+    initial_state: usize,
+    accepting_states: Vec<usize>,
+) {
+    problem.add_constraint(Regular::new(
+        variables,
+        transitions,
+        initial_state,
+        FxHashSet::from_iter(accepting_states.iter().copied()),
+        problem,
+    ));
+}
+
 #[derive(
     Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Default, deepsize::DeepSizeOf,
 )]

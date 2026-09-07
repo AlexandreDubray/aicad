@@ -2,6 +2,7 @@ pub mod all_different;
 pub mod among;
 pub mod gcc;
 pub mod not_equals;
+pub mod regular;
 pub mod sum;
 
 use deepsize::DeepSizeOf;
@@ -16,6 +17,7 @@ pub use all_different::AllDifferent;
 pub use among::Among;
 pub use gcc::Gcc;
 pub use not_equals::NotEquals;
+pub use regular::Regular;
 pub use sum::Sum;
 
 pub trait Constraint: DeepSizeOf + DynClone + Send + Sync {
@@ -35,6 +37,9 @@ pub trait Constraint: DeepSizeOf + DynClone + Send + Sync {
     fn empty_property(&self) -> Box<dyn ConstraintProperty> {
         self.identity_property()
     }
+    fn empty_property_backward(&self) -> Box<dyn ConstraintProperty> {
+        self.empty_property()
+    }
     /// Returns true if the assignment is invalid and the edge can be removed
     fn is_assignment_invalid(
         &self,
@@ -49,6 +54,9 @@ dyn_clone::clone_trait_object!(Constraint);
 
 pub trait ConstraintProperty: DeepSizeOf + DynClone + Send + Sync {
     fn update(&mut self, other: &dyn ConstraintProperty, assignment: isize, in_scope: bool);
+    fn update_backward(&mut self, other: &dyn ConstraintProperty, assignment: isize, in_scope: bool) {
+        self.update(other, assignment, in_scope);
+    }
     fn merge(&mut self, other: &dyn ConstraintProperty);
     fn hash(&self, hasher: &mut dyn Hasher);
     fn eq(&self, other: &dyn ConstraintProperty) -> bool;

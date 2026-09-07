@@ -161,7 +161,7 @@ impl Mdd {
             (0..self.constraints.len())
                 .map(|i| {
                     if is_sink {
-                        self.constraints[i].empty_property()
+                        self.constraints[i].empty_property_backward()
                     } else {
                         self.constraints[i].identity_property()
                     }
@@ -485,7 +485,7 @@ impl Mdd {
             let assignment = self.problem[variable].value(self[edge].assignment());
             let child_property =
                 self.bottom_up_properties[child_layer][child_index][constraint_index].as_ref();
-            property.update(child_property, assignment, in_scope);
+            property.update_backward(child_property, assignment, in_scope);
         }
         property
     }

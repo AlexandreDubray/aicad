@@ -83,6 +83,18 @@ impl PyProblem {
         Ok(())
     }
 
+    fn add_regular(
+        &mut self,
+        scope: Vec<usize>,
+        transitions: Vec<Vec<Option<usize>>>,
+        initial_state: usize,
+        accepting_states: Vec<usize>,
+    ) -> PyResult<()> {
+        let vars = scope.into_iter().map(VariableIndex).collect();
+        regular(self.mutate()?, vars, transitions, initial_state, accepting_states);
+        Ok(())
+    }
+
     fn negate(&mut self, x: usize) -> PyResult<usize> {
         let y = self.add_bool_var()?;
         self.add_not_equals(x, y)?;
