@@ -6,15 +6,30 @@ use std::sync::Arc;
 
 #[derive(Clone, deepsize::DeepSizeOf)]
 struct GccProperty {
+    /// Maps each value to its bit
     map: Arc<FxHashMap<isize, usize>>,
+    /// Indicates each value's (by its bit) lower bound
+    lo: Arc<Vec<usize>>,
+    /// Indicates if a given value (by its bit) saturates (i.e., its upper-bound is unreachable)
+    saturates: Arc<Vec<bool>>,
+    /// Guaranteed count for each values
     min: Vec<usize>,
+    /// Maximum reachable count for each values
     max: Vec<usize>,
 }
 
 impl GccProperty {
-    pub fn new(n: usize, map: Arc<FxHashMap<isize, usize>>, min_seed: usize) -> Self {
+    pub fn new(
+        n: usize,
+        map: Arc<FxHashMap<isize, usize>>,
+        lo: Arc<Vec<usize>>,
+        saturates: Arc<Vec<bool>>,
+        min_seed: usize,
+    ) -> Self {
         Self {
             map,
+            lo,
+            saturates,
             min: vec![min_seed; n],
             max: vec![0; n],
         }
@@ -30,9 +45,12 @@ pub struct Gcc {
     bounds: Vec<(isize, usize, usize)>,
     /// Map each value of `domain` to a slot in the properties' vectors
     val_to_bit: Arc<FxHashMap<isize, usize>>,
-    /// For each value (by its slot), the required lower/upper occurrence bound
-    lo: Vec<usize>,
+    /// For each value (by its slot), the required lower occurrence bound
+    lo: Arc<Vec<usize>>,
     hi: Vec<usize>,
+    /// For each value (by its slot), whether its upper bound is structurally unreachable
+    /// (`hi >= |variables|`)
+    saturates: Arc<Vec<bool>>,
     /// Bitvector to indicate if a layer is in the scope of the constraint or not
     layer_in_scope: Vec<u64>,
 }
@@ -63,14 +81,16 @@ impl Gcc {
                 .map(|(bit, (value, _, _))| (value, bit))
                 .collect(),
         );
-        let lo = bounds.iter().copied().map(|(_, lo, _)| lo).collect();
-        let hi = bounds.iter().copied().map(|(_, _, hi)| hi).collect();
+        let lo: Vec<usize> = bounds.iter().copied().map(|(_, lo, _)| lo).collect();
+        let hi: Vec<usize> = bounds.iter().copied().map(|(_, _, hi)| hi).collect();
+        let saturates: Vec<bool> = hi.iter().map(|&h| h >= variables.len()).collect();
         Self {
             variables,
             bounds,
             val_to_bit,
-            lo,
+            lo: Arc::new(lo),
             hi,
+            saturates: Arc::new(saturates),
             layer_in_scope: vec![],
         }
     }
@@ -164,6 +184,8 @@ impl Constraint for Gcc {
         Box::new(GccProperty::new(
             self.bounds.len(),
             self.val_to_bit.clone(),
+            self.lo.clone(),
+            self.saturates.clone(),
             usize::MAX,
         ))
     }
@@ -172,6 +194,8 @@ impl Constraint for Gcc {
         Box::new(GccProperty::new(
             self.bounds.len(),
             self.val_to_bit.clone(),
+            self.lo.clone(),
+            self.saturates.clone(),
             0,
         ))
     }
@@ -198,11 +222,20 @@ impl ConstraintProperty for GccProperty {
             self.min.len()
         };
 
-        // Then, we integrate the min-max values for each bounded value from the other property
+        // Then, we integrate the min-max values for each bounded value from the other property.
+        // For a value whose upper bound can never bind (`saturates[bit]`), cap the tracked
+        // count at its lower bound once reached: every count >= lo is then behaviorally
+        // identical for every future decision, so collapsing them is exact, not a relaxation.
         for bit in 0..self.min.len() {
             if bit == target_bit {
-                self.min[bit] = self.min[bit].min(other.min[bit] + 1);
-                self.max[bit] = self.max[bit].max(other.max[bit] + 1);
+                let mut new_min = other.min[bit] + 1;
+                let mut new_max = other.max[bit] + 1;
+                if self.saturates[bit] {
+                    new_min = new_min.min(self.lo[bit]);
+                    new_max = new_max.min(self.lo[bit]);
+                }
+                self.min[bit] = self.min[bit].min(new_min);
+                self.max[bit] = self.max[bit].max(new_max);
             } else {
                 self.min[bit] = self.min[bit].min(other.min[bit]);
                 self.max[bit] = self.max[bit].max(other.max[bit]);
@@ -543,6 +576,107 @@ mod test_gcc {
                         expected.push(vec![a, b, c]);
                     }
                 }
+            }
+        }
+        assert_eq!(solutions.len(), expected.len());
+        for sol in expected {
+            assert!(is_solution(sol, &solutions));
+        }
+    }
+
+    // --- saturation: exact-count collapse when the upper bound can never bind --- //
+
+    #[test]
+    pub fn test_saturating_bound_still_correct() {
+        // Value 1 needs at least 2 occurrences among 6 binary variables; upper bound (6)
+        // equals the scope size, so it can never bind and the count should saturate at 2.
+        // Correctness (not just size) is what this test checks: solutions must match brute
+        // force exactly, saturation must not change the accepted language.
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(6, vec![0, 1], None);
+        gcc(&mut problem, vars.clone(), vec![(1, 2, 6)]);
+
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mut mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::Custom(vars.iter().map(|v| v.0).collect()),
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
+        mdd.refine(usize::MAX);
+        let solutions = get_all_solutions(&mdd);
+
+        let mut expected: Vec<Vec<isize>> = vec![];
+        for mask in 0..(1 << 6) {
+            let assignment: Vec<isize> = (0..6).map(|i| (mask >> i) & 1).collect();
+            if assignment.iter().filter(|&&v| v == 1).count() >= 2 {
+                expected.push(assignment);
+            }
+        }
+        assert_eq!(solutions.len(), expected.len());
+        for sol in expected {
+            assert!(is_solution(sol, &solutions));
+        }
+    }
+
+    #[test]
+    pub fn test_saturating_bound_shrinks_state_space() {
+        // Same setup as above: with the upper bound structurally unreachable (== scope size),
+        // the exact compiled width per layer should be capped at lo + 1 (counts 0, 1, "2 or
+        // more"), not grow towards the scope size as an unsaturated count would.
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(6, vec![0, 1], None);
+        gcc(&mut problem, vars.clone(), vec![(1, 2, 6)]);
+
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mut mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::Custom(vars.iter().map(|v| v.0).collect()),
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
+        mdd.refine(usize::MAX);
+        for layer in 0..=6 {
+            assert!(
+                mdd.number_nodes_in_layer(layer) <= 3,
+                "layer {} has {} nodes, expected at most 3 (saturated at lo=2)",
+                layer,
+                mdd.number_nodes_in_layer(layer)
+            );
+        }
+    }
+
+    #[test]
+    pub fn test_non_saturating_bound_still_correct() {
+        // A genuinely binding upper bound (3, well below the scope size of 6) must NOT be
+        // saturated away -- the exact count matters all the way up to hi, so this checks
+        // saturation only ever engages when it's actually safe to.
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(6, vec![0, 1], None);
+        gcc(&mut problem, vars.clone(), vec![(1, 1, 3)]);
+
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mut mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::Custom(vars.iter().map(|v| v.0).collect()),
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
+        mdd.refine(usize::MAX);
+        let solutions = get_all_solutions(&mdd);
+
+        let mut expected: Vec<Vec<isize>> = vec![];
+        for mask in 0..(1 << 6) {
+            let assignment: Vec<isize> = (0..6).map(|i| (mask >> i) & 1).collect();
+            let count = assignment.iter().filter(|&&v| v == 1).count();
+            if (1..=3).contains(&count) {
+                expected.push(assignment);
             }
         }
         assert_eq!(solutions.len(), expected.len());
