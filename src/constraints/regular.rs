@@ -1,5 +1,4 @@
 use super::*;
-use crate::mdd::*;
 use crate::modelling::VariableIndex;
 use crate::utils::Bitset;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -144,10 +143,6 @@ impl Constraint for Regular {
         self
     }
 
-    fn rank_nodes(&self, _nodes: &[NodeIndex]) -> Vec<f64> {
-        vec![]
-    }
-
     fn is_assignment_invalid(
         &self,
         parent: &dyn ConstraintProperty,
@@ -283,6 +278,10 @@ impl ConstraintProperty for RegularProperty {
             });
 
         self.states.union(&other.states);
+    }
+
+    fn order_key(&self) -> Vec<f64> {
+        vec![self.states.size() as f64]
     }
 
     fn hash(&self, hasher: &mut dyn Hasher) {

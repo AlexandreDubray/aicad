@@ -1,5 +1,4 @@
 use super::*;
-use crate::mdd::*;
 use crate::modelling::*;
 use rustc_hash::FxHashSet;
 use std::hash::Hasher;
@@ -114,10 +113,6 @@ impl Constraint for Among {
         self
     }
 
-    fn rank_nodes(&self, _nodes: &[NodeIndex]) -> Vec<f64> {
-        vec![]
-    }
-
     fn identity_property(&self) -> Box<dyn ConstraintProperty> {
         Box::new(AmongProperty::new(self.values.clone(), usize::MAX, 0))
     }
@@ -164,6 +159,10 @@ impl ConstraintProperty for AmongProperty {
 
         self.min = self.min.min(other.min);
         self.max = self.max.max(other.max);
+    }
+
+    fn order_key(&self) -> Vec<f64> {
+        vec![self.min as f64, self.max as f64]
     }
 
     fn hash(&self, hasher: &mut dyn Hasher) {

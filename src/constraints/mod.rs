@@ -10,7 +10,6 @@ use dyn_clone::DynClone;
 use std::any::Any;
 use std::hash::Hasher;
 
-use crate::mdd::*;
 use crate::modelling::*;
 
 pub use all_different::AllDifferent;
@@ -31,7 +30,6 @@ pub trait Constraint: DeepSizeOf + DynClone + Send + Sync {
     /// Returns true if the constraint is satisfied by the assignment
     fn is_satisfied(&self, assignment: &[isize]) -> bool;
     fn name(&self) -> &'static str;
-    fn rank_nodes(&self, nodes: &[NodeIndex]) -> Vec<f64>;
     fn as_any(&self) -> &dyn Any;
     fn identity_property(&self) -> Box<dyn ConstraintProperty>;
     fn empty_property(&self) -> Box<dyn ConstraintProperty> {
@@ -60,6 +58,12 @@ pub trait ConstraintProperty: DeepSizeOf + DynClone + Send + Sync {
     fn merge(&mut self, other: &dyn ConstraintProperty);
     fn hash(&self, hasher: &mut dyn Hasher);
     fn eq(&self, other: &dyn ConstraintProperty) -> bool;
+    /// Coordinates summarizing this property's position in its own constraint's state space,
+    /// used for state-similarity-based merging (`MergeHeuristic::StateSimilarity`). Properties
+    /// with close coordinates should represent genuinely similar constraint states; exact
+    /// equality between distinct nodes won't occur here in practice, since `collapse()` already
+    /// dedupes nodes with identical properties before merging runs.
+    fn order_key(&self) -> Vec<f64>;
     fn as_any(&self) -> &dyn Any;
     fn name(&self) -> &'static str;
 }

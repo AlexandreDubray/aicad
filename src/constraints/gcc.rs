@@ -1,5 +1,4 @@
 use super::*;
-use crate::mdd::*;
 use crate::modelling::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::hash::Hasher;
@@ -161,10 +160,6 @@ impl Constraint for Gcc {
         self
     }
 
-    fn rank_nodes(&self, _nodes: &[NodeIndex]) -> Vec<f64> {
-        vec![]
-    }
-
     fn identity_property(&self) -> Box<dyn ConstraintProperty> {
         Box::new(GccProperty::new(
             self.bounds.len(),
@@ -231,6 +226,16 @@ impl ConstraintProperty for GccProperty {
             self.min[bit] = self.min[bit].min(other.min[bit]);
             self.max[bit] = self.max[bit].max(other.max[bit]);
         }
+    }
+
+    fn order_key(&self) -> Vec<f64> {
+        // One axis per bounded value's min, then one axis per bounded value's max: Gcc's bounds
+        // are genuinely separate dimensions of state, so they aren't collapsed to one number.
+        self.min
+            .iter()
+            .chain(self.max.iter())
+            .map(|&x| x as f64)
+            .collect()
     }
 
     fn hash(&self, hasher: &mut dyn Hasher) {

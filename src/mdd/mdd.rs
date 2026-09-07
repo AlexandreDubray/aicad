@@ -11,8 +11,8 @@ use rand_xoshiro::Xoshiro256Plus;
 use std::cell::RefCell;
 
 use rustc_hash::FxHashMap;
-use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -256,7 +256,9 @@ impl Mdd {
                 key.hash(&mut hasher);
                 layer_signature ^= hasher.finish();
             }
-            total = total.wrapping_mul(1_000_000_007).wrapping_add(layer_signature);
+            total = total
+                .wrapping_mul(1_000_000_007)
+                .wrapping_add(layer_signature);
         }
         total
     }
@@ -331,8 +333,10 @@ impl Mdd {
                 any_changed = true;
                 deepest_changed_layer = deepest_changed_layer.max(layer);
                 if layer < self.nodes.len() - 1 {
-                    let children_before: Vec<NodeIndex> =
-                        self[target].iter_children().map(|edge| self[edge].to()).collect();
+                    let children_before: Vec<NodeIndex> = self[target]
+                        .iter_children()
+                        .map(|edge| self[edge].to())
+                        .collect();
                     let variable = self.order[layer];
                     for constraint_index in 0..self.constraints.len() {
                         if self.constraints[constraint_index].is_layer_in_scope(layer) {
@@ -380,7 +384,10 @@ impl Mdd {
                     self.bottom_up_properties[layer][index][constraint_index] = new_property;
                 }
                 let parents_before: Vec<NodeIndex> = if layer > 0 {
-                    self[target].iter_parents().map(|edge| self[edge].from()).collect()
+                    self[target]
+                        .iter_parents()
+                        .map(|edge| self[edge].from())
+                        .collect()
                 } else {
                     Vec::new()
                 };
@@ -581,20 +588,90 @@ impl Mdd {
         }
     }
 
+    /// Ranks this layer's active nodes according to `self.merge_heuristic`.
+    fn rank_nodes(&self, layer: usize) -> Vec<NodeIndex> {
+        match self.merge_heuristic {
+            MergeHeuristic::LessRelaxed => {
+                let mut scores: Vec<(f64, NodeIndex)> = vec![];
+                for i in 0..self.number_nodes_in_layer(layer) {
+                    let node = NodeIndex(layer, i);
+                    if self[node].is_active() {
+                        let number_parents = self[node].number_parents() as f64;
+                        let number_parents_relaxed = self[node]
+                            .iter_parents()
+                            .map(|edge| self[edge].from())
+                            .filter(|parent| !self[*parent].is_relaxed())
+                            .count() as f64;
+                        scores.push((number_parents_relaxed / number_parents, node));
+                    }
+                }
+                scores.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+                scores.into_iter().map(|(_, node)| node).collect()
+            }
+            MergeHeuristic::MostLikely => {
+                let mut scores: Vec<(f64, NodeIndex)> = vec![];
+                for i in 0..self.number_nodes_in_layer(layer) {
+                    let node = NodeIndex(layer, i);
+                    if self[node].is_active() {
+                        let number_parents = self[node].number_parents() as f64;
+                        let aggregate_probabilities = self[node]
+                            .iter_parents()
+                            .map(|edge| self.get_edge_probability(edge))
+                            .sum::<f64>();
+                        scores.push((aggregate_probabilities / number_parents, node));
+                    }
+                }
+                scores.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+                scores.into_iter().map(|(_, node)| node).collect()
+            }
+            MergeHeuristic::StateSimilarity => {
+                // One composite key per node: every constraint's top-down `order_key()` then
+                // its bottom-up `order_key()`, in the MDD's own (local) constraint order.
+                // Sorting lexicographically -- rather than collapsing to one weighted scalar --
+                // avoids letting one constraint's scale (e.g. a Gcc key in the hundreds)
+                // dominate another's (e.g. a Regular popcount in the single digits): nodes
+                // agreeing on more constraints end up genuinely adjacent in the sort.
+                let mut keyed: Vec<(Vec<f64>, NodeIndex)> = vec![];
+                for i in 0..self.number_nodes_in_layer(layer) {
+                    let node = NodeIndex(layer, i);
+                    if !self[node].is_active() {
+                        continue;
+                    }
+                    let mut key = Vec::with_capacity(2 * self.constraints.len());
+                    for c in 0..self.constraints.len() {
+                        key.extend(self.top_down_properties[layer][i][c].order_key());
+                        key.extend(self.bottom_up_properties[layer][i][c].order_key());
+                    }
+                    keyed.push((key, node));
+                }
+                keyed.sort_unstable_by(|a, b| {
+                    for (x, y) in a.0.iter().zip(b.0.iter()) {
+                        match x.total_cmp(y) {
+                            std::cmp::Ordering::Equal => continue,
+                            other => return other,
+                        }
+                    }
+                    std::cmp::Ordering::Equal
+                });
+                keyed.into_iter().map(|(_, node)| node).collect()
+            }
+        }
+    }
+
     fn merge_layer(&mut self, layer: usize, max_width: usize) {
         let number_nodes = self.nodes[layer].len();
         if number_nodes <= max_width {
             return;
         }
-        let node_ranks = self.merge_heuristic.rank_nodes(self, layer);
+        let node_ranks = self.rank_nodes(layer);
         let active_nodes = node_ranks.len();
         if active_nodes <= max_width {
             return;
         }
         if !self.merge_heuristic.bucket_merge() {
-            let into = node_ranks[active_nodes - max_width].1;
+            let into = node_ranks[active_nodes - max_width];
             for i in 0..active_nodes - max_width {
-                let from = node_ranks[i].1;
+                let from = node_ranks[i];
                 self.merge_nodes(from, into);
             }
         } else {
@@ -604,17 +681,17 @@ impl Mdd {
             bucket_sizes.extend(vec![q + 1; r]);
             let mut i = 0;
             for _ in 0..max_width - r {
-                let into = node_ranks[i].1;
+                let into = node_ranks[i];
                 for j in (i + 1)..(i + q) {
-                    let from = node_ranks[j].1;
+                    let from = node_ranks[j];
                     self.merge_nodes(from, into);
                 }
                 i += q;
             }
             for _ in 0..r {
-                let into = node_ranks[i].1;
+                let into = node_ranks[i];
                 for j in (i + 1)..(i + q + 1) {
-                    let from = node_ranks[j].1;
+                    let from = node_ranks[j];
                     self.merge_nodes(from, into);
                 }
                 i += q + 1;
@@ -1170,8 +1247,9 @@ pub mod test_mdd {
     pub fn incremental_refine_matches_full_recompute_on_all_different() {
         for n in 3..=7 {
             let mut problem = Problem::default();
-            let vars: Vec<_> =
-                (0..n).map(|_| problem.add_variable((0..n as isize).collect(), None)).collect();
+            let vars: Vec<_> = (0..n)
+                .map(|_| problem.add_variable((0..n as isize).collect(), None))
+                .collect();
             all_different(&mut problem, vars);
             let problem = Arc::new(problem);
             let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
@@ -1198,7 +1276,12 @@ pub mod test_mdd {
             );
             let mut seen = std::collections::HashSet::new();
             for s in &solutions {
-                assert!(seen.insert(s.clone()), "duplicate solution {:?} for n={}", s, n);
+                assert!(
+                    seen.insert(s.clone()),
+                    "duplicate solution {:?} for n={}",
+                    s,
+                    n
+                );
             }
         }
     }
@@ -1295,6 +1378,72 @@ pub mod test_mdd {
                         n,
                         max_width,
                         solution
+                    );
+                }
+            }
+        }
+    }
+
+    fn all_assignments(n: usize, domain_size: usize) -> Vec<Vec<isize>> {
+        let mut all = vec![vec![]];
+        for _ in 0..n {
+            let mut next = vec![];
+            for prefix in all.iter() {
+                for v in 0..domain_size as isize {
+                    let mut extended = prefix.clone();
+                    extended.push(v);
+                    next.push(extended);
+                }
+            }
+            all = next;
+        }
+        all
+    }
+
+    #[test]
+    pub fn state_similarity_merge_caps_width_and_stays_sound_for_gcc() {
+        // Gcc's order_key is the richest of the six (one axis per bounded value), so it
+        // exercises the lexicographic multi-key sort the most; forcing max_width well below the
+        // natural node count means merge_layer's bucket path must actually run.
+        let n = 5;
+        let candidates = all_assignments(n, n);
+        for max_width in [1usize, 2, 3] {
+            let mut problem = Problem::default();
+            let vars: Vec<_> = (0..n)
+                .map(|_| problem.add_variable((0..n as isize).collect(), None))
+                .collect();
+            // Every value can appear at most twice among the 5 variables.
+            let bounds: Vec<(isize, usize, usize)> = (0..n as isize).map(|v| (v, 0, 2)).collect();
+            gcc(&mut problem, vars.clone(), bounds);
+            let problem = Arc::new(problem);
+            let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+            let mut mdd = Mdd::new(
+                Arc::clone(&problem),
+                OrderingHeuristic::MinDomMaxLinked,
+                MergeHeuristic::StateSimilarity,
+                SelectHeuristic::Greedy,
+                &constraints,
+            );
+            mdd.refine(max_width);
+
+            for layer in 1..mdd.number_layers() {
+                assert!(
+                    mdd.number_nodes_in_layer(layer) <= max_width,
+                    "layer {} has {} nodes, exceeding max_width={}",
+                    layer,
+                    mdd.number_nodes_in_layer(layer),
+                    max_width
+                );
+            }
+
+            let candidate_solutions = get_all_solutions(&mdd);
+            for assignment in candidates.iter() {
+                if problem.is_solution(assignment) {
+                    assert!(
+                        is_solution(assignment.clone(), &candidate_solutions),
+                        "max_width={} true gcc solution {:?} missing from relaxed mdd -- unsound state-similarity merge",
+                        max_width,
+                        assignment
                     );
                 }
             }

@@ -21,7 +21,6 @@ use burn::tensor::backend::Backend;
 use burn::tensor::{Int, Tensor};
 
 use rand::seq::SliceRandom;
-use rayon::prelude::*;
 
 use crate::learning::{Batch, Network};
 use crate::modelling::{Problem, ValueIndex, VariableIndex};

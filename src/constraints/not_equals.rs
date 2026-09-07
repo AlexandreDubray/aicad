@@ -1,5 +1,4 @@
 use super::*;
-use crate::mdd::*;
 use crate::modelling::*;
 use crate::utils::Bitset;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -119,10 +118,6 @@ impl Constraint for NotEquals {
         self
     }
 
-    fn rank_nodes(&self, _nodes: &[NodeIndex]) -> Vec<f64> {
-        vec![]
-    }
-
     fn identity_property(&self) -> Box<dyn ConstraintProperty> {
         Box::new(NotEqualsProperty::new(self.val_to_bit.clone()))
     }
@@ -160,6 +155,10 @@ impl ConstraintProperty for NotEqualsProperty {
             });
 
         self.set.union(&other.set);
+    }
+
+    fn order_key(&self) -> Vec<f64> {
+        vec![self.set.size() as f64]
     }
 
     fn hash(&self, hasher: &mut dyn Hasher) {

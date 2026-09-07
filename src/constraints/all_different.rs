@@ -1,5 +1,4 @@
 use super::*;
-use crate::mdd::*;
 use crate::modelling::VariableIndex;
 use crate::utils::Bitset;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -135,10 +134,6 @@ impl Constraint for AllDifferent {
         self
     }
 
-    fn rank_nodes(&self, _nodes: &[NodeIndex]) -> Vec<f64> {
-        vec![]
-    }
-
     fn is_assignment_invalid(
         &self,
         parent: &dyn ConstraintProperty,
@@ -229,6 +224,13 @@ impl ConstraintProperty for AllDifferentProperty {
 
         self.value_some_path.union(&other.value_some_path);
         self.value_all_path.intersect(&other.value_all_path);
+    }
+
+    fn order_key(&self) -> Vec<f64> {
+        vec![
+            self.value_all_path.size() as f64,
+            self.value_some_path.size() as f64,
+        ]
     }
 
     fn hash(&self, hasher: &mut dyn Hasher) {
