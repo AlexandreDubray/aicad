@@ -77,6 +77,13 @@ impl PyProblem {
         Ok(())
     }
 
+    /// At least `lb` of `scope` must take a value in `values`.
+    fn add_at_least(&mut self, scope: Vec<usize>, values: Vec<isize>, lb: usize) -> PyResult<()> {
+        let vars = scope.into_iter().map(VariableIndex).collect();
+        at_least(self.mutate()?, vars, values, lb);
+        Ok(())
+    }
+
     fn add_gcc(&mut self, scope: Vec<usize>, bounds: Vec<(isize, usize, usize)>) -> PyResult<()> {
         let vars = scope.into_iter().map(VariableIndex).collect();
         gcc(self.mutate()?, vars, bounds);
@@ -91,7 +98,13 @@ impl PyProblem {
         accepting_states: Vec<usize>,
     ) -> PyResult<()> {
         let vars = scope.into_iter().map(VariableIndex).collect();
-        regular(self.mutate()?, vars, transitions, initial_state, accepting_states);
+        regular(
+            self.mutate()?,
+            vars,
+            transitions,
+            initial_state,
+            accepting_states,
+        );
         Ok(())
     }
 

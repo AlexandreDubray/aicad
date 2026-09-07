@@ -38,6 +38,20 @@ pub fn sum(problem: &mut Problem, variables: Vec<VariableIndex>, target: isize) 
     problem.add_constraint(Sum::new(variables, target, problem));
 }
 
+/// At least `lb` of `variables` must take a value in `values`
+pub fn at_least(
+    problem: &mut Problem,
+    variables: Vec<VariableIndex>,
+    values: Vec<isize>,
+    lb: usize,
+) {
+    problem.add_constraint(AtLeast::new(
+        variables,
+        FxHashSet::from_iter(values.iter().cloned()),
+        lb,
+    ));
+}
+
 pub fn gcc(
     problem: &mut Problem,
     variables: Vec<VariableIndex>,

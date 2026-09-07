@@ -1,5 +1,6 @@
 pub mod all_different;
 pub mod among;
+pub mod at_least;
 pub mod gcc;
 pub mod not_equals;
 pub mod regular;
@@ -14,6 +15,7 @@ use crate::modelling::*;
 
 pub use all_different::AllDifferent;
 pub use among::Among;
+pub use at_least::AtLeast;
 pub use gcc::Gcc;
 pub use not_equals::NotEquals;
 pub use regular::Regular;
