@@ -4,6 +4,8 @@ use crate::constraints::*;
 use crate::modelling::*;
 use crate::utils::MemoryReport;
 
+use num_bigint::BigUint;
+
 use rand;
 use rand::prelude::*;
 use rand::SeedableRng;
@@ -588,7 +590,7 @@ impl Mdd {
         }
     }
 
-    /// Ranks this layer's active nodes according to `self.merge_heuristic`.
+    /// Ranks this layer's active nodes according to `self.merge_heuristic`
     fn rank_nodes(&self, layer: usize) -> Vec<NodeIndex> {
         match self.merge_heuristic {
             MergeHeuristic::LessRelaxed => {
@@ -939,6 +941,39 @@ impl Mdd {
         }
         toporder
     }
+
+    /// Counts the number of root-to-sink paths (i.e. encoded assignments) in the MDD, via a
+    /// topological path-counting DP: `count[sink] = 1`, `count[node] = sum(count[child])` over
+    /// its outgoing edges, computed layer by layer from the sink back to the root. This relies
+    /// on the same invariant `topological_order()` does -- that `clean()` has already dropped
+    /// every inactive node/edge, so every node and edge still present is active -- rather than
+    /// checking `is_active()` on each.
+    pub fn count_solutions(&self) -> BigUint {
+        if self.unsat {
+            return BigUint::from(0u32);
+        }
+        let last_layer = self.nodes.len() - 1;
+        let mut counts: Vec<Vec<BigUint>> = self
+            .nodes
+            .iter()
+            .map(|layer| vec![BigUint::from(0u32); layer.len()])
+            .collect();
+        for i in 0..self.nodes[last_layer].len() {
+            counts[last_layer][i] = BigUint::from(1u32);
+        }
+        for layer in (0..last_layer).rev() {
+            for i in 0..self.nodes[layer].len() {
+                let node = NodeIndex(layer, i);
+                let mut total = BigUint::from(0u32);
+                for edge in self[node].iter_children() {
+                    let NodeIndex(to_layer, to_index) = self[edge].to();
+                    total += &counts[to_layer][to_index];
+                }
+                counts[layer][i] = total;
+            }
+        }
+        counts[0][0].clone()
+    }
 }
 
 /* ---- Various helper implementation to make life easier ---- */
@@ -1092,6 +1127,7 @@ pub mod test_mdd {
     use crate::mdd::heuristics::*;
     use crate::mdd::*;
     use crate::modelling::*;
+    use num_bigint::BigUint;
     use std::sync::Arc;
 
     pub fn get_all_solutions(mdd: &Mdd) -> Vec<Vec<isize>> {
@@ -1447,6 +1483,100 @@ pub mod test_mdd {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    pub fn count_solutions_matches_brute_force_when_exact() {
+        let n = 5;
+        let candidates = all_assignments(n, n);
+        let mut problem = Problem::default();
+        let vars: Vec<_> = (0..n)
+            .map(|_| problem.add_variable((0..n as isize).collect(), None))
+            .collect();
+        let bounds: Vec<(isize, usize, usize)> = (0..n as isize).map(|v| (v, 0, 2)).collect();
+        gcc(&mut problem, vars.clone(), bounds);
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mut mdd = Mdd::new(
+            Arc::clone(&problem),
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
+        mdd.refine(usize::MAX);
+
+        let true_count = candidates
+            .iter()
+            .filter(|assignment| problem.is_solution(assignment))
+            .count();
+        let path_count = get_all_solutions(&mdd).len();
+        assert_eq!(
+            path_count, true_count,
+            "get_all_solutions found {} but brute force found {}",
+            path_count, true_count
+        );
+        assert_eq!(
+            mdd.count_solutions(),
+            BigUint::from(true_count),
+            "count_solutions() should exactly match the brute-force count once compiled exactly \
+             (no merging means the diagram is tree-shaped: every path is a distinct assignment)"
+        );
+    }
+
+    #[test]
+    pub fn count_solutions_is_zero_when_unsat() {
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(2, vec![1], None);
+        gcc(&mut problem, vars, vec![(1, 0, 1)]); // both forced to 1, but at most one allowed
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
+        assert!(mdd.is_unsat());
+        assert_eq!(mdd.count_solutions(), BigUint::from(0u32));
+    }
+
+    #[test]
+    pub fn count_solutions_upper_bounds_the_true_count_under_relaxed_width() {
+        // A relaxed diagram over-approximates: it should never encode *fewer* paths than there
+        // are true solutions, since every true solution must still be present (soundness).
+        let n = 5;
+        let candidates = all_assignments(n, n);
+        for max_width in [1usize, 2, 3] {
+            let mut problem = Problem::default();
+            let vars: Vec<_> = (0..n)
+                .map(|_| problem.add_variable((0..n as isize).collect(), None))
+                .collect();
+            let bounds: Vec<(isize, usize, usize)> = (0..n as isize).map(|v| (v, 0, 2)).collect();
+            gcc(&mut problem, vars.clone(), bounds);
+            let problem = Arc::new(problem);
+            let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+            let mut mdd = Mdd::new(
+                Arc::clone(&problem),
+                OrderingHeuristic::MinDomMaxLinked,
+                MergeHeuristic::StateSimilarity,
+                SelectHeuristic::Greedy,
+                &constraints,
+            );
+            mdd.refine(max_width);
+            let true_count = candidates
+                .iter()
+                .filter(|assignment| problem.is_solution(assignment))
+                .count();
+            assert!(
+                mdd.count_solutions() >= BigUint::from(true_count),
+                "max_width={} count_solutions()={} is less than the true count {} -- unsound relaxation",
+                max_width,
+                mdd.count_solutions(),
+                true_count
+            );
         }
     }
 }

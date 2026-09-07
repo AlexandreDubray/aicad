@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use num_bigint::BigUint;
 use pyo3::prelude::*;
 
 use crate::mdd::heuristics::*;
@@ -149,6 +150,26 @@ impl PyMdd {
             .filter(|constraint| constraint.is_satisfied(&solution))
             .count() as f64;
         satisfied / number_constraints
+    }
+
+    /// Number of root-to-sink paths (encoded assignments) in this Mdd, as an arbitrary-
+    /// precision Python int -- a relaxed diagram can encode far more than any fixed-width
+    /// integer holds. 0 for an unsat Mdd.
+    fn count_solutions(&self) -> BigUint {
+        self.inner.count_solutions()
+    }
+
+    /// Number of layers in the compiled Mdd (one per variable in its scope, plus the sink).
+    fn number_layers(&self) -> usize {
+        self.inner.number_layers()
+    }
+
+    /// Number of (active) nodes at a given layer -- the Mdd's width at that layer. Useful for
+    /// checking whether a compile actually reached exactness (every layer's width strictly
+    /// below whatever cap was passed to `Compiler.compile`'s `max_width`) versus having been
+    /// capped before converging.
+    fn number_nodes_in_layer(&self, layer: usize) -> usize {
+        self.inner.number_nodes_in_layer(layer)
     }
 
     // --- MODEL INFO --- //

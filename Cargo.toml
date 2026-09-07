@@ -6,7 +6,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rustc-hash = "2.1"
-pyo3 = { version= "0.28", features = ["extension-module"] }
+pyo3 = { version= "0.28", features = ["extension-module", "num-bigint"] }
+num-bigint = "0.4"
 rayon = "1"
 rand = "0.10"
 rand_xoshiro = "0.8"
