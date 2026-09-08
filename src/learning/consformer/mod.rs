@@ -65,6 +65,14 @@ pub struct ConsFormerConfig {
     pub mask_fraction: f64,
     /// Logit scaling factor
     pub tau: f64,
+    /// How the multi-head attention blocks apply the primal-graph attention mask.
+    /// Hard imposes a hard masking on unconnected variables in the primal graph, removing any
+    /// attention between them.
+    /// Learned starts with negative influence between unconnected variables, but still learns an
+    /// attention mask for each entry, allowing to adjust attention when many global constraints
+    /// exist in the problem.
+    #[config(default = "MaskingKind::Hard")]
+    pub masking_kind: MaskingKind,
 }
 
 /// The subset of `ConsFormerConfig` the data pipeline (a `ConsFormerMddDataset` and its
@@ -109,6 +117,7 @@ impl<B: Backend> NetworkConfig<B> for ConsFormerConfig {
                 .with_attn_drop(self.drop_out)
                 .with_ffn_drop(self.drop_out)
                 .with_bias(self.bias)
+                .with_masking_kind(self.masking_kind)
                 .init(device)
             })
             .collect();

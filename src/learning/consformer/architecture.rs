@@ -250,6 +250,57 @@ impl<B: Backend> FeedForward<B> {
 
 // --- Multi-head attention --- //
 
+/// Two biases (per head) added to attention energy in place of hard masking: `connected` for
+/// primal-graph-linked (or self) pairs, `unconnected` for everything else. `unconnected` is
+/// initialised strongly negative (`UNCONNECTED_BIAS_INIT`) so the network starts out close to
+/// the hard-masked behaviour -- but, being a learned `Param` rather than a literal
+/// `f32::NEG_INFINITY`, gradients still flow through it and the model can learn to attend
+/// beyond the primal graph where that helps.
+#[derive(Module, Debug)]
+pub struct LearnedMaskBias<B: Backend> {
+    connected: Param<Tensor<B, 1>>,
+    unconnected: Param<Tensor<B, 1>>,
+}
+
+/// Starting value for the "unconnected" bias: negative enough that softmax over a row with
+/// many connected entries still puts negligible weight on unconnected ones at initialisation
+/// (unlike literal `-inf`, this is finite so its gradient isn't always exactly zero).
+const UNCONNECTED_BIAS_INIT: f32 = -1.0;
+
+impl<B: Backend> LearnedMaskBias<B> {
+    fn new(head_count: usize, device: &B::Device) -> Self {
+        LearnedMaskBias {
+            connected: Param::from_tensor(Tensor::zeros([head_count], device)),
+            unconnected: Param::from_tensor(
+                Tensor::ones([head_count], device).mul_scalar(UNCONNECTED_BIAS_INIT),
+            ),
+        }
+    }
+
+    /// mask: (batch, 1, number_vars, number_vars), true where connected.
+    /// returns: (batch, head_count, number_vars, number_vars) additive bias to add to energy.
+    fn bias_for(&self, mask: Tensor<B, 4, Bool>) -> Tensor<B, 4> {
+        let head_count = self.connected.val().dims()[0];
+        let mask_f = mask.float();
+        let connected = self.connected.val().reshape([1, head_count, 1, 1]);
+        let unconnected = self.unconnected.val().reshape([1, head_count, 1, 1]);
+        mask_f.clone() * connected + (mask_f.neg().add_scalar(1.0)) * unconnected
+    }
+}
+
+/// How `MultiHeadAttention` incorporates the primal-graph attention mask into the attention
+/// energy before softmax.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum MaskingKind {
+    /// Non-linked pairs get `f32::NEG_INFINITY` added to their energy (`Tensor::mask_fill`),
+    /// giving them exactly zero softmax weight and zero gradient.
+    Hard,
+    /// Each entry in the attention mask is learned instead of masking unconnected entries. This is
+    /// useful for problems with large global constraint, leading to almost all-connected
+    /// attention.
+    Learned,
+}
+
 #[derive(Module, Debug)]
 pub struct MultiHeadAttention<B: Backend> {
     q_proj: Linear<B>,
@@ -259,6 +310,8 @@ pub struct MultiHeadAttention<B: Backend> {
     projection: Linear<B>,
     hidden_size: usize,
     head_count: usize,
+    /// `Some` iff `masking_kind == MaskingKind::Learned`.
+    learned_bias: Option<LearnedMaskBias<B>>,
 }
 
 #[derive(Config, Debug)]
@@ -273,6 +326,9 @@ pub struct MultiHeadAttentionConfig {
     /// Drop-out used during training
     #[config(default = 0.1)]
     pub dropout: f64,
+    /// How the primal-graph attention mask is applied -- see `MaskingKind`.
+    #[config(default = "MaskingKind::Hard")]
+    pub masking_kind: MaskingKind,
 }
 
 impl MultiHeadAttentionConfig {
@@ -289,6 +345,10 @@ impl MultiHeadAttentionConfig {
                 .init(device),
             hidden_size: self.hidden_size,
             head_count: self.head_count,
+            learned_bias: match self.masking_kind {
+                MaskingKind::Hard => None,
+                MaskingKind::Learned => Some(LearnedMaskBias::new(self.head_count, device)),
+            },
         }
     }
 }
@@ -317,14 +377,19 @@ impl<B: Backend> MultiHeadAttention<B> {
         // grows.
         let mut energy = queries.matmul(keys.transpose()) / (self.hidden_size as f64).sqrt();
 
-        // Applies the attention mask. Remove the energy between variables that are not linked in
-        // the primal graph of the CSP.
-        //
-        // `attention_mask` is `true` where attention IS allowed (self, or linked in the primal
-        // graph -- see `consformer_mask_data`'s doc)
+        // Applies the attention mask. `attention_mask` is `true` where attention IS allowed
+        // (self, or linked in the primal graph -- see `consformer_mask_data`'s doc).
         let mask_4d: Tensor<B, 4, Bool> =
             attention_mask.reshape([batch_size, 1, number_vars, number_vars]);
-        energy = energy.mask_fill(mask_4d.bool_not(), f32::NEG_INFINITY);
+        energy = match &self.learned_bias {
+            // Hard masking: non-linked pairs get exactly -inf, i.e. exactly zero softmax
+            // weight and zero gradient
+            None => energy.mask_fill(mask_4d.bool_not(), f32::NEG_INFINITY),
+            // Learned masking: non-linked pairs get a learned per-head additive bias instead
+            // (see `LearnedMaskBias`), so the network can adjust how strongly it suppresses
+            // attention outside the primal graph rather than having it fixed at -inf.
+            Some(bias) => energy + bias.bias_for(mask_4d),
+        };
 
         // Create a probability distribution from the energy mask
         let attention = burn::tensor::activation::softmax(energy, 3);
@@ -394,6 +459,10 @@ pub struct TransformerBlockConfig {
     /// If present, include bias in the feed-forward block
     #[config(default = true)]
     pub bias: bool,
+    /// How the multi-head attention block applies the primal-graph attention mask -- see
+    /// `MaskingKind`.
+    #[config(default = "MaskingKind::Hard")]
+    pub masking_kind: MaskingKind,
 }
 
 impl TransformerBlockConfig {
@@ -412,6 +481,7 @@ impl TransformerBlockConfig {
             attn: MultiHeadAttentionConfig::new(self.embedding_size, self.hidden_size)
                 .with_head_count(self.num_heads)
                 .with_dropout(self.attn_drop)
+                .with_masking_kind(self.masking_kind)
                 .init(device),
             norm2: LayerNormConfig::new(self.hidden_size).init(device),
             ffn: FeedForwardConfig::new(self.hidden_size, self.expand_size)
@@ -478,5 +548,96 @@ impl<B: Backend, Ba: ConsFormerInputs<B>> Network<B, Ba> for ConsFormer<B> {
         }
 
         self.head.forward(x).div_scalar(self.tau)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use burn::backend::ndarray::{NdArray, NdArrayDevice};
+
+    /// 3 variables: 0 and 1 linked (and self-linked), 2 isolated (self only) -- exercises both
+    /// the "has an unconnected neighbour" and the "self-only, would be all -inf without the
+    /// diagonal" cases in one small mask.
+    fn toy_mask<B: Backend>(device: &B::Device) -> Tensor<B, 3, Bool> {
+        let data = vec![
+            true, true, false, //
+            true, true, false, //
+            false, false, true,
+        ];
+        Tensor::<B, 1, Bool>::from_data(data.as_slice(), device).reshape([1, 3, 3])
+    }
+
+    #[test]
+    fn learned_mask_bias_starts_near_hard_masking() {
+        // At init, `connected` is exactly 0 (no bias) and `unconnected` is a large negative
+        // constant -- close to (but, being learnable, not identical to) hard -inf masking.
+        let device = NdArrayDevice::default();
+        let bias = LearnedMaskBias::<NdArray>::new(4, &device);
+
+        let connected: Vec<f32> = bias.connected.val().into_data().to_vec::<f32>().unwrap();
+        let unconnected: Vec<f32> = bias.unconnected.val().into_data().to_vec::<f32>().unwrap();
+
+        assert_eq!(connected, vec![0.0; 4]);
+        assert_eq!(unconnected, vec![UNCONNECTED_BIAS_INIT; 4]);
+    }
+
+    #[test]
+    fn both_masking_kinds_produce_finite_output() {
+        // Regression test for the NaN-from-an-all-masked-row failure mode `consformer_mask_data`
+        // guards against (see its doc) -- verifies both masking strategies stay finite on a mask
+        // that includes an isolated (self-only) variable.
+        let device = NdArrayDevice::default();
+        let mask = toy_mask::<NdArray>(&device);
+
+        for masking_kind in [MaskingKind::Hard, MaskingKind::Learned] {
+            let attn = MultiHeadAttentionConfig::new(8, 8)
+                .with_head_count(2)
+                .with_dropout(0.0)
+                .with_masking_kind(masking_kind)
+                .init::<NdArray>(&device);
+            let x: Tensor<NdArray, 3> = Tensor::random(
+                [1, 3, 8],
+                burn::tensor::Distribution::Uniform(-1.0, 1.0),
+                &device,
+            );
+            let out = attn.forward(x, mask.clone());
+            let data: Vec<f32> = out.into_data().to_vec::<f32>().unwrap();
+            assert!(
+                data.iter().all(|v| v.is_finite()),
+                "masking_kind={masking_kind:?} produced a non-finite output: {data:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn learned_mask_bias_is_trainable() {
+        // The whole point of MaskingKind::Learned over hard -inf masking: gradients must flow
+        // through both the connected and unconnected biases, not just be fixed constants.
+        use burn::backend::Autodiff;
+
+        type ADBackend = Autodiff<NdArray>;
+        let device = NdArrayDevice::default();
+        let mask = toy_mask::<ADBackend>(&device).reshape([1, 1, 3, 3]);
+
+        let bias = LearnedMaskBias::<ADBackend>::new(2, &device);
+        let loss = bias.bias_for(mask).sum();
+        let grads = loss.backward();
+
+        let connected_grad = bias
+            .connected
+            .val()
+            .grad(&grads)
+            .expect("connected bias should have a gradient after backward()");
+        let unconnected_grad = bias
+            .unconnected
+            .val()
+            .grad(&grads)
+            .expect("unconnected bias should have a gradient after backward()");
+
+        let connected_grad: Vec<f32> = connected_grad.into_data().to_vec::<f32>().unwrap();
+        let unconnected_grad: Vec<f32> = unconnected_grad.into_data().to_vec::<f32>().unwrap();
+        assert!(connected_grad.iter().any(|&v| v != 0.0));
+        assert!(unconnected_grad.iter().any(|&v| v != 0.0));
     }
 }

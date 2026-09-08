@@ -12,6 +12,7 @@ use burn::tensor::backend::{AutodiffBackend, Backend};
 
 use rand::seq::SliceRandom;
 
+use crate::learning::consformer::architecture::MaskingKind;
 use crate::learning::consformer::{
     ConsFormerBatch, ConsFormerBatcher, ConsFormerConfig, ConsFormerDataConfig, ConsFormerDataset,
     ConsFormerLoss, ConsFormerMddBatch, ConsFormerMddBatcher, ConsFormerMddDataset,
@@ -37,6 +38,9 @@ pub struct PyConsFormerConfig {
     pub positional_encoding_dimensions: usize,
     pub mask_fraction: f64,
     pub tau: f64,
+    /// If true, the multi-head attention blocks replace hard -inf masking of non-primal-graph
+    /// pairs with a learned per-head bias.
+    pub learn_attention_mask: bool,
 }
 
 #[pymethods]
@@ -52,7 +56,8 @@ impl PyConsFormerConfig {
             num_layers=1,
             drop_out=0.0,
             bias=true,
-            positional_encoding_dimensions=0))]
+            positional_encoding_dimensions=0,
+            learn_attention_mask=false))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         domain_size: usize,
@@ -66,6 +71,7 @@ impl PyConsFormerConfig {
         drop_out: f64,
         bias: bool,
         positional_encoding_dimensions: usize,
+        learn_attention_mask: bool,
     ) -> Self {
         PyConsFormerConfig {
             domain_size,
@@ -79,6 +85,7 @@ impl PyConsFormerConfig {
             positional_encoding_dimensions,
             mask_fraction,
             tau,
+            learn_attention_mask,
         }
     }
 }
@@ -97,6 +104,11 @@ impl From<&PyConsFormerConfig> for ConsFormerConfig {
             positional_encoding_dimensions: c.positional_encoding_dimensions,
             mask_fraction: c.mask_fraction,
             tau: c.tau,
+            masking_kind: if c.learn_attention_mask {
+                MaskingKind::Learned
+            } else {
+                MaskingKind::Hard
+            },
         }
     }
 }
