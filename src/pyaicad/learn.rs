@@ -39,7 +39,10 @@ pub struct PyConsFormerConfig {
     pub mask_fraction: f64,
     pub tau: f64,
     /// If true, the multi-head attention blocks replace hard -inf masking of non-primal-graph
-    /// pairs with a learned per-head bias.
+    /// pairs with a learned per-head bias (see `architecture::MaskingKind::Learned`). Useful
+    /// for problems whose primal graph has large cliques (e.g. nurse rostering's per-day
+    /// coverage constraints) where hard masking still leaves each row attending near-uniformly
+    /// over many neighbours.
     pub learn_attention_mask: bool,
 }
 
@@ -136,18 +139,44 @@ pub struct PyTrainingConfig {
     pub batch_size: usize,
     pub validation_interval: usize,
     pub model_selection: PyModelSelection,
+    /// Adam's first moment (gradient mean) decay rate.
+    pub beta_1: f64,
+    /// Adam's second moment (gradient variance) decay rate.
+    pub beta_2: f64,
+    /// Numerical-stability floor added to Adam's denominator.
+    pub epsilon: f64,
+    /// Whether to use the AMSGrad variant of Adam.
+    pub amsgrad: bool,
+    /// L2 weight decay penalty. `None` disables it.
+    pub weight_decay: Option<f64>,
+    /// Clip each gradient tensor's global L2 norm to this value, if set. Takes precedence over
+    /// `grad_clip_value` when both are set.
+    pub grad_clip_norm: Option<f64>,
+    /// Clip each gradient element to `[-grad_clip_value, grad_clip_value]`, if set. Ignored when
+    /// `grad_clip_norm` is also set.
+    pub grad_clip_value: Option<f64>,
 }
 
 #[pymethods]
 impl PyTrainingConfig {
     #[new]
-    #[pyo3(signature = (lr=3e-4, num_epochs=10, batch_size=32, validation_interval=10, model_selection=PyModelSelection::Loss))]
+    #[pyo3(signature = (lr=3e-4, num_epochs=10, batch_size=32, validation_interval=10,
+            model_selection=PyModelSelection::Loss, beta_1=0.9, beta_2=0.999, epsilon=1e-5,
+            amsgrad=false, weight_decay=None, grad_clip_norm=None, grad_clip_value=None))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         lr: f64,
         num_epochs: usize,
         batch_size: usize,
         validation_interval: usize,
         model_selection: PyModelSelection,
+        beta_1: f64,
+        beta_2: f64,
+        epsilon: f64,
+        amsgrad: bool,
+        weight_decay: Option<f64>,
+        grad_clip_norm: Option<f64>,
+        grad_clip_value: Option<f64>,
     ) -> Self {
         PyTrainingConfig {
             lr,
@@ -155,6 +184,13 @@ impl PyTrainingConfig {
             batch_size,
             validation_interval,
             model_selection,
+            beta_1,
+            beta_2,
+            epsilon,
+            amsgrad,
+            weight_decay,
+            grad_clip_norm,
+            grad_clip_value,
         }
     }
 }
@@ -167,6 +203,13 @@ impl From<&PyTrainingConfig> for TrainingConfig {
             batch_size: c.batch_size,
             validation_interval: c.validation_interval,
             model_selection: ModelSelection::from(&c.model_selection),
+            beta_1: c.beta_1,
+            beta_2: c.beta_2,
+            epsilon: c.epsilon,
+            amsgrad: c.amsgrad,
+            weight_decay: c.weight_decay,
+            grad_clip_norm: c.grad_clip_norm,
+            grad_clip_value: c.grad_clip_value,
         }
     }
 }

@@ -3,6 +3,8 @@ use burn::data::dataloader::batcher::Batcher;
 use burn::data::dataloader::DataLoaderBuilder;
 use burn::data::dataset::Dataset;
 use burn::module::{AutodiffModule, Module};
+use burn::grad_clipping::GradientClippingConfig;
+use burn::optim::decay::WeightDecayConfig;
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
 use burn::prelude::ElementConversion;
 use burn::record::CompactRecorder;
@@ -43,6 +45,31 @@ pub struct TrainingConfig {
     pub validation_interval: usize,
     /// How to evaluate the best model found so far
     pub model_selection: ModelSelection,
+    /// Adam's first moment (gradient mean) decay rate.
+    #[config(default = 0.9)]
+    pub beta_1: f64,
+    /// Adam's second moment (gradient variance) decay rate.
+    #[config(default = 0.999)]
+    pub beta_2: f64,
+    /// Numerical-stability floor added to Adam's denominator.
+    #[config(default = 1e-5)]
+    pub epsilon: f64,
+    /// Whether to use the AMSGrad variant of Adam (keeps a running max of the second moment
+    /// instead of the plain EMA, which can help when the loss landscape is noisy).
+    #[config(default = false)]
+    pub amsgrad: bool,
+    /// L2 weight decay penalty. `None` (the default) disables it.
+    #[config(default = "None")]
+    pub weight_decay: Option<f64>,
+    /// Clip each gradient tensor's global L2 norm to this value before the optimizer step, if
+    /// set. Takes precedence over `grad_clip_value` when both are set. Useful against the loss
+    /// blowing up over a long fixed-LR run (e.g. climbing back up after an initial good minimum).
+    #[config(default = "None")]
+    pub grad_clip_norm: Option<f64>,
+    /// Clip each gradient element to `[-grad_clip_value, grad_clip_value]` before the optimizer
+    /// step, if set. Ignored when `grad_clip_norm` is also set.
+    #[config(default = "None")]
+    pub grad_clip_value: Option<f64>,
 }
 
 /// Trains a model. Generic over the backend (B), the network configuration (NC), the training
@@ -103,12 +130,31 @@ where
         .batch_size(training.batch_size)
         .build(valid_dataset);
 
-    let mut optim = AdamConfig::new().init();
+    let mut adam_config = AdamConfig::new()
+        .with_beta_1(training.beta_1 as f32)
+        .with_beta_2(training.beta_2 as f32)
+        .with_epsilon(training.epsilon as f32)
+        .with_amsgrad(training.amsgrad);
+    if let Some(penalty) = training.weight_decay {
+        adam_config =
+            adam_config.with_weight_decay(Some(WeightDecayConfig::new(penalty as f32)));
+    }
+    if let Some(norm) = training.grad_clip_norm {
+        adam_config = adam_config.with_grad_clipping(Some(GradientClippingConfig::Norm(
+            norm as f32,
+        )));
+    } else if let Some(value) = training.grad_clip_value {
+        adam_config = adam_config.with_grad_clipping(Some(GradientClippingConfig::Value(
+            value as f32,
+        )));
+    }
+    let mut optim = adam_config.init();
 
     let mut best_score = f64::INFINITY;
 
     for epoch in 0..training.num_epochs {
-        let mut epoch_loss = 0.0;
+        let mut epoch_loss_sum = 0.0;
+        let mut epoch_batches = 0usize;
         let mut epoch_report: Option<SatisfactionReport> = None;
         let epoch_start = Instant::now();
 
@@ -149,9 +195,15 @@ where
             let grads = GradientsParams::from_grads(loss.backward(), &network);
             network = optim.step(training.lr, network, grads);
 
-            epoch_loss += loss_scalar;
+            epoch_loss_sum += loss_scalar;
+            epoch_batches += 1;
         }
         let epoch_rt = epoch_start.elapsed().as_secs();
+        // Averaged per batch, matching how validation loss below is reported -- previously this
+        // was a raw sum over the epoch's mini-batches, which made it look ~(batch count) larger
+        // than the (correctly averaged) validation loss printed a few lines down, even when the
+        // two were otherwise on the same footing.
+        let epoch_loss = epoch_loss_sum / epoch_batches.max(1) as f32;
         log::info!("epoch {epoch}: loss = {epoch_loss} ({epoch_rt} seconds)");
         if let Some(report) = epoch_report {
             report.print(40);
