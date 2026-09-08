@@ -13,7 +13,9 @@ use rand_xoshiro::Xoshiro256Plus;
 use std::cell::RefCell;
 
 use rustc_hash::FxHashMap;
+use std::cmp::Reverse;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::BinaryHeap;
 use std::collections::HashSet;
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -55,6 +57,78 @@ pub struct Mdd {
     top_down_properties: Vec<Vec<Vec<Box<dyn ConstraintProperty>>>>,
     /// Bottom up properties of the MDD's constraints
     bottom_up_properties: Vec<Vec<Vec<Box<dyn ConstraintProperty>>>>,
+}
+
+/// Repairs `var_order` (as produced by an `OrderingHeuristic`) so it satisfies every
+/// `precedence_edges` pair from `constraints` -- e.g. `Regular`'s requirement that its scope be
+/// branched in the exact sequence its automaton walks it. None of the ordering heuristics know
+/// anything about a constraint's internal branching sequence (`MinDomMaxLinked` ranks purely by
+/// constraint-graph connectivity), so without this repair, compiling a `Regular` constraint under
+/// anything but a hand-built `OrderingHeuristic::Custom` order that happens to already respect it
+/// panics in `Regular::update_variable_ordering`.
+///
+/// Implemented as a "stable" topological sort (Kahn's algorithm, breaking ties by the heuristic's
+/// own rank): among the variables with no unsatisfied precedence-predecessor remaining, always
+/// picks the one the heuristic placed earliest. This satisfies every precedence pair while
+/// otherwise disturbing the heuristic's chosen order as little as possible -- variables with no
+/// precedence requirement at all keep exactly the relative order the heuristic gave them.
+///
+/// Panics if the combined precedence edges are contradictory (a cycle) -- e.g. two `Regular`
+/// constraints over the same scope declared in incompatible sequences. That's a genuine modelling
+/// conflict between the constraints being compiled into this MDD, not something any variable
+/// ordering can resolve.
+fn enforce_precedence_order(
+    var_order: Vec<VariableIndex>,
+    constraints: &[Box<dyn Constraint>],
+) -> Vec<VariableIndex> {
+    let edges: HashSet<(VariableIndex, VariableIndex)> = constraints
+        .iter()
+        .flat_map(|c| c.precedence_edges())
+        .collect();
+    if edges.is_empty() {
+        return var_order;
+    }
+
+    let rank: FxHashMap<VariableIndex, usize> =
+        var_order.iter().enumerate().map(|(i, &v)| (v, i)).collect();
+
+    let mut successors: FxHashMap<VariableIndex, Vec<VariableIndex>> = FxHashMap::default();
+    let mut in_degree: FxHashMap<VariableIndex, usize> =
+        var_order.iter().map(|&v| (v, 0)).collect();
+    for (before, after) in edges {
+        successors.entry(before).or_default().push(after);
+        *in_degree.get_mut(&after).expect(
+            "precedence_edges must only reference variables in this constraint's (and hence \
+             the MDD's) own scope",
+        ) += 1;
+    }
+
+    let mut heap: BinaryHeap<Reverse<(usize, VariableIndex)>> = var_order
+        .iter()
+        .filter(|&&v| in_degree[&v] == 0)
+        .map(|&v| Reverse((rank[&v], v)))
+        .collect();
+
+    let mut result = Vec::with_capacity(var_order.len());
+    while let Some(Reverse((_, v))) = heap.pop() {
+        result.push(v);
+        for &succ in successors.get(&v).map(Vec::as_slice).unwrap_or(&[]) {
+            let deg = in_degree.get_mut(&succ).unwrap();
+            *deg -= 1;
+            if *deg == 0 {
+                heap.push(Reverse((rank[&succ], succ)));
+            }
+        }
+    }
+
+    assert_eq!(
+        result.len(),
+        var_order.len(),
+        "conflicting precedence requirements between constraints being compiled into the same \
+         MDD -- no variable ordering can satisfy every order-sensitive constraint's declared \
+         sequence simultaneously"
+    );
+    result
 }
 
 impl Mdd {
@@ -107,6 +181,11 @@ impl Mdd {
         // Set the variable order in the MDD given the heuristics
         // We get for each layer its decision variable
         let var_order = order.get_order(&mdd.problem, &mdd.scope);
+        // Repair the heuristic's order (none of them -- MinDomMaxLinked included -- know
+        // anything about a constraint's internal branching sequence) so every constraint's
+        // `precedence_edges` is satisfied before any constraint sees it. See
+        // `enforce_precedence_order`'s doc.
+        let var_order = enforce_precedence_order(var_order, &mdd.constraints);
         for i in 0..mdd.constraints.len() {
             mdd.constraints[i].update_variable_ordering(&var_order);
         }
@@ -590,7 +669,11 @@ impl Mdd {
         }
     }
 
-    /// Ranks this layer's active nodes according to `self.merge_heuristic`
+    /// Ranks this layer's active nodes according to `self.merge_heuristic`, worst/least-similar
+    /// first. Lives here (rather than on `MergeHeuristic` itself, as it used to) because
+    /// `StateSimilarity` needs each node's actual constraint properties, which are private to
+    /// `Mdd` -- keeping every variant's logic in the same place avoids splitting the merging
+    /// logic across two modules for what is really one concern.
     fn rank_nodes(&self, layer: usize) -> Vec<NodeIndex> {
         match self.merge_heuristic {
             MergeHeuristic::LessRelaxed => {
@@ -948,6 +1031,16 @@ impl Mdd {
     /// on the same invariant `topological_order()` does -- that `clean()` has already dropped
     /// every inactive node/edge, so every node and edge still present is active -- rather than
     /// checking `is_active()` on each.
+    ///
+    /// Runs in O(nodes + edges) regardless of how many assignments are actually encoded, which
+    /// matters here: even a modest relaxed MDD can encode more assignments than any fixed-width
+    /// integer can hold (a width-1 diagram over a real NSPLib instance easily reaches 10^100+),
+    /// hence the arbitrary-precision result rather than a `u64`/`f64`.
+    ///
+    /// Returns 0 for an unsat MDD without walking the graph: `refine()` returns immediately
+    /// once `self.unsat` is set, without necessarily leaving the node/edge arrays in a state
+    /// that reflects that unsatisfiability, so counting them directly could otherwise report a
+    /// stale, meaningless number instead of 0.
     pub fn count_solutions(&self) -> BigUint {
         if self.unsat {
             return BigUint::from(0u32);
@@ -1212,6 +1305,82 @@ pub mod test_mdd {
         assert!(is_solution(vec![1, 1, 0], &solutions));
         assert!(is_solution(vec![1, 1, 1], &solutions));
         assert!(is_solution(vec![1, 1, 2], &solutions));
+    }
+
+    /// Regression test for `enforce_precedence_order`: `MinDomMaxLinked` has no notion of
+    /// `Regular`'s required scope order, so without the repair pass in `Mdd::new`, a `Regular`
+    /// constraint whose scope isn't the one `MinDomMaxLinked` would naturally pick first panics
+    /// in `Regular::update_variable_ordering`. This inflates `vars[3]`'s constraint degree well
+    /// above `vars[0..3]`'s so `MinDomMaxLinked`'s greedy score/tie-break picks `vars[3]` FIRST
+    /// -- directly ahead of `vars[0]`, which the trivial automaton below requires to be branched
+    /// before `vars[1]`, `vars[2]`, and `vars[3]`.
+    #[test]
+    pub fn min_dom_max_linked_repairs_order_for_regular_constraints() {
+        let mut problem = Problem::default();
+        let vars: Vec<VariableIndex> = (0..4)
+            .map(|_| problem.add_variable(vec![0, 1], None))
+            .collect();
+        // One state, self-loop on every value, always accepting: imposes no restriction on
+        // solutions, only exercises the ordering requirement (vars[0] < vars[1] < vars[2] <
+        // vars[3]).
+        regular(
+            &mut problem,
+            vars.clone(),
+            vec![vec![Some(0), Some(0)]],
+            0,
+            vec![0],
+        );
+        for _ in 0..3 {
+            let dummy = problem.add_variable(vec![0, 1], None);
+            not_equals(&mut problem, dummy, vars[3]);
+        }
+
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        // Should not panic -- see the doc above.
+        let mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
+
+        let positions: Vec<usize> = (0..mdd.number_layers() - 1)
+            .map(|layer| (mdd.decision_at_layer(layer), layer))
+            .filter(|(v, _)| vars.contains(v))
+            .map(|(_, layer)| layer)
+            .collect();
+        assert_eq!(positions.len(), vars.len());
+        assert!(
+            positions.windows(2).all(|w| w[0] < w[1]),
+            "Regular's declared scope order was not respected: layers {positions:?}"
+        );
+    }
+
+    /// Two `Regular` constraints declaring contradictory sequences over the same 2 variables
+    /// (v0 before v1, and v1 before v0) is a genuine modelling conflict no variable ordering can
+    /// satisfy -- `enforce_precedence_order` should detect the cycle and panic with a clear
+    /// message rather than silently picking one order and violating the other constraint.
+    #[test]
+    #[should_panic(expected = "conflicting precedence requirements")]
+    pub fn conflicting_regular_orderings_panics_with_a_clear_message() {
+        let mut problem = Problem::default();
+        let v0 = problem.add_variable(vec![0, 1], None);
+        let v1 = problem.add_variable(vec![0, 1], None);
+        let trivial = vec![vec![Some(0), Some(0)]];
+        regular(&mut problem, vec![v0, v1], trivial.clone(), 0, vec![0]);
+        regular(&mut problem, vec![v1, v0], trivial, 0, vec![0]);
+
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let _ = Mdd::new(
+            problem,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
     }
 
     #[test]

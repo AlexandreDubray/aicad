@@ -25,6 +25,15 @@ pub trait Constraint: DeepSizeOf + DynClone + Send + Sync {
     /// Update the variable ordering. `order[layer]` gives the variable branched at that layer;
     /// every variable in the constraint's own scope is guaranteed to appear in `order`.
     fn update_variable_ordering(&mut self, order: &[VariableIndex]);
+    /// Pairs `(before, after)` this constraint requires the chosen variable ordering to respect.
+    /// Most constraints don't care about relative order within their scope and use the default
+    /// empty list. However,for sequence dependent constraint (e.g., `Regular`), the order of
+    /// compilation is important.
+    /// `Mdd::new` collects these from every constraint being compiled and repairs the ordering
+    /// heuristic's output to satisfy all of them before any constraint's `update_variable_ordering` runs.
+    fn precedence_edges(&self) -> Vec<(VariableIndex, VariableIndex)> {
+        vec![]
+    }
     /// Returns true if the layer is in the scope of the constraint
     fn is_layer_in_scope(&self, layer: usize) -> bool;
     /// Returns an iterator on the constraint's scope
@@ -54,7 +63,12 @@ dyn_clone::clone_trait_object!(Constraint);
 
 pub trait ConstraintProperty: DeepSizeOf + DynClone + Send + Sync {
     fn update(&mut self, other: &dyn ConstraintProperty, assignment: isize, in_scope: bool);
-    fn update_backward(&mut self, other: &dyn ConstraintProperty, assignment: isize, in_scope: bool) {
+    fn update_backward(
+        &mut self,
+        other: &dyn ConstraintProperty,
+        assignment: isize,
+        in_scope: bool,
+    ) {
         self.update(other, assignment, in_scope);
     }
     fn merge(&mut self, other: &dyn ConstraintProperty);

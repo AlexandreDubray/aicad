@@ -106,9 +106,22 @@ impl Constraint for Regular {
             .into_iter()
             .map(|(_, variable)| variable)
             .collect();
+        // `Mdd::new` repairs the heuristic's order to satisfy `precedence_edges` (below) before
+        // calling this, so this should be unreachable in practice -- kept as a safety net (e.g.
+        // for a `Regular` compiled outside `Mdd::new`'s repair pass) rather than silently
+        // building a `layer_in_scope` bitset that doesn't match the automaton's actual sequence.
         if observed_order != self.variables {
             panic!("Regular constraint's variables must keep their declared relative order in the chosen variable ordering");
         }
+    }
+
+    /// The automaton is walked in the exact sequence `self.variables` was declared in, so each
+    /// consecutive pair must be branched in that order: variable `k` before variable `k+1`.
+    fn precedence_edges(&self) -> Vec<(VariableIndex, VariableIndex)> {
+        self.variables
+            .windows(2)
+            .map(|pair| (pair[0], pair[1]))
+            .collect()
     }
 
     fn is_layer_in_scope(&self, layer: usize) -> bool {
