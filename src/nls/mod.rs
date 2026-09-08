@@ -216,6 +216,7 @@ where
         let mut solutions: Vec<Option<Solution>> = vec![None; problems.len()];
 
         self.decode_op.prepare(&active_problems);
+        self.destroy_op.on_run_start(&active_problems);
 
         // Starts from a random assignment; note that each variable is sampled given its domain, so
         // assigned variables are taken into account
