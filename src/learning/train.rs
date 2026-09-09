@@ -70,6 +70,60 @@ pub struct TrainingConfig {
     /// step, if set. Ignored when `grad_clip_norm` is also set.
     #[config(default = "None")]
     pub grad_clip_value: Option<f64>,
+    /// If true, also save the best-so-far model at a decaying-density set of training-epoch
+    /// horizons (see `compute_horizons`), so a later sweep can evaluate performance as a function
+    /// of training budget without needing a separate run per budget. Off by default: purely
+    /// additive to the existing single-`weights` checkpoint, but costs one extra checkpoint file
+    /// per horizon on disk.
+    #[config(default = false)]
+    pub save_horizons: bool,
+    /// How many horizon checkpoints to save across `[0, num_epochs]` when `save_horizons` is set.
+    /// Spaced by geometric growth (dense early, sparse late) rather than evenly, since early
+    /// training changes the model much more per epoch than late training does.
+    #[config(default = 15)]
+    pub num_checkpoints: usize,
+}
+
+/// Generates a decaying-density set of training-epoch checkpoints: `h_0 = validation_interval`,
+/// `h_{i+1} = h_i * r`, snapped to the nearest validation event (checkpoints can only happen at
+/// validation events) and deduplicated, always ending at the final validation event on or before
+/// `num_epochs`. `r` is solved from `num_checkpoints` so the schedule always spans the full run
+/// regardless of `num_epochs`/`validation_interval`. Front-loaded by construction: consecutive
+/// horizons are a constant multiplicative step apart, so absolute spacing grows over the run
+/// (e.g. num_epochs=5000, validation_interval=10, num_checkpoints=15 gives roughly
+/// `[10, 20, 40, 60, 90, 140, 220, 350, 540, 850, 1320, 2060, 3210, 5000]`).
+fn compute_horizons(num_epochs: usize, validation_interval: usize, num_checkpoints: usize) -> Vec<usize> {
+    if validation_interval == 0 || num_checkpoints == 0 {
+        return Vec::new();
+    }
+    let final_epoch = (num_epochs / validation_interval) * validation_interval;
+    if final_epoch == 0 {
+        return Vec::new();
+    }
+    if num_checkpoints == 1 {
+        return vec![final_epoch];
+    }
+
+    let h0 = validation_interval as f64;
+    let target = final_epoch as f64;
+    if target <= h0 {
+        return vec![final_epoch];
+    }
+
+    let r = (target / h0).powf(1.0 / (num_checkpoints as f64 - 1.0));
+    let mut horizons = Vec::new();
+    let mut h = h0;
+    while h < target {
+        let snapped = ((h / validation_interval as f64).round() as usize) * validation_interval;
+        if snapped >= validation_interval && horizons.last().copied() != Some(snapped) {
+            horizons.push(snapped);
+        }
+        h *= r;
+    }
+    if horizons.last().copied() != Some(final_epoch) {
+        horizons.push(final_epoch);
+    }
+    horizons
 }
 
 /// Trains a model. Generic over the backend (B), the network configuration (NC), the training
@@ -151,6 +205,26 @@ where
     let mut optim = adam_config.init();
 
     let mut best_score = f64::INFINITY;
+    let mut best_network: Option<NC::N> = None;
+
+    let horizons: std::collections::HashSet<usize> = if training.save_horizons {
+        compute_horizons(
+            training.num_epochs,
+            training.validation_interval,
+            training.num_checkpoints,
+        )
+        .into_iter()
+        .collect()
+    } else {
+        std::collections::HashSet::new()
+    };
+    let horizons_dir = out_dir.join("horizons");
+    let mut horizon_manifest: Vec<serde_json::Value> = Vec::new();
+    if !horizons.is_empty() {
+        if let Err(e) = std::fs::create_dir_all(&horizons_dir) {
+            log::warn!("warning: failed to create horizons dir: {e}");
+        }
+    }
 
     for epoch in 0..training.num_epochs {
         let mut epoch_loss_sum = 0.0;
@@ -248,6 +322,7 @@ where
 
             if score < best_score {
                 best_score = score;
+                best_network = Some(network.clone());
                 if let Err(e) = network
                     .clone()
                     .save_file(out_dir.join("weights"), &CompactRecorder::new())
@@ -255,9 +330,78 @@ where
                     log::warn!("warning: failed to save checkpoint at epoch {epoch}: {e}");
                 }
             }
+
+            if horizons.contains(&(epoch + 1)) {
+                if let Some(best) = &best_network {
+                    let path = horizons_dir.join(format!("weights_epoch{:05}", epoch + 1));
+                    match best.clone().save_file(path, &CompactRecorder::new()) {
+                        Ok(_) => {
+                            horizon_manifest.push(serde_json::json!({
+                                "epoch": epoch + 1,
+                                "best_score_so_far": best_score,
+                            }));
+                            if let Err(e) = std::fs::write(
+                                horizons_dir.join("manifest.json"),
+                                serde_json::to_string_pretty(&horizon_manifest)
+                                    .unwrap_or_default(),
+                            ) {
+                                log::warn!("warning: failed to write horizons manifest: {e}");
+                            }
+                        }
+                        Err(e) => log::warn!(
+                            "warning: failed to save horizon checkpoint at epoch {epoch}: {e}"
+                        ),
+                    }
+                } else {
+                    log::warn!(
+                        "epoch {epoch}: horizon reached but no best model has been found yet -- skipping"
+                    );
+                }
+            }
         }
 
         log::info!("");
     }
     network
+}
+
+#[cfg(test)]
+mod test_compute_horizons {
+    use super::compute_horizons;
+
+    #[test]
+    fn matches_the_real_nurse_rostering_config() {
+        let horizons = compute_horizons(5000, 10, 15);
+        assert_eq!(
+            horizons,
+            vec![10, 20, 40, 60, 90, 140, 220, 350, 540, 850, 1320, 2060, 3210, 5000]
+        );
+    }
+
+    #[test]
+    fn is_front_loaded_and_ends_at_the_final_validation_event() {
+        let horizons = compute_horizons(1000, 10, 8);
+        assert!(horizons.windows(2).all(|w| w[0] < w[1]), "must be strictly increasing");
+        assert_eq!(*horizons.last().unwrap(), 1000);
+        // front-loaded: the gaps should grow monotonically (geometric spacing)
+        let gaps: Vec<i64> = horizons.windows(2).map(|w| w[1] as i64 - w[0] as i64).collect();
+        assert!(gaps.windows(2).all(|w| w[0] <= w[1]), "gaps should be non-decreasing: {gaps:?}");
+    }
+
+    #[test]
+    fn every_horizon_lands_on_a_validation_event() {
+        let horizons = compute_horizons(777, 25, 10);
+        assert!(horizons.iter().all(|h| h % 25 == 0));
+        assert!(horizons.iter().all(|h| *h <= 777));
+    }
+
+    #[test]
+    fn num_epochs_smaller_than_validation_interval_yields_no_horizons() {
+        assert!(compute_horizons(5, 10, 15).is_empty());
+    }
+
+    #[test]
+    fn single_checkpoint_is_just_the_final_validation_event() {
+        assert_eq!(compute_horizons(100, 10, 1), vec![100]);
+    }
 }

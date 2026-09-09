@@ -155,6 +155,12 @@ pub struct PyTrainingConfig {
     /// Clip each gradient element to `[-grad_clip_value, grad_clip_value]`, if set. Ignored when
     /// `grad_clip_norm` is also set.
     pub grad_clip_value: Option<f64>,
+    /// If true, also save the best-so-far model at a decaying-density set of training-epoch
+    /// horizons under `checkpoint_dir/horizons/`, so performance can later be swept as a function
+    /// of training budget. See `train::compute_horizons`.
+    pub save_horizons: bool,
+    /// How many horizon checkpoints to save across `[0, num_epochs]` when `save_horizons` is set.
+    pub num_checkpoints: usize,
 }
 
 #[pymethods]
@@ -162,7 +168,8 @@ impl PyTrainingConfig {
     #[new]
     #[pyo3(signature = (lr=3e-4, num_epochs=10, batch_size=32, validation_interval=10,
             model_selection=PyModelSelection::Loss, beta_1=0.9, beta_2=0.999, epsilon=1e-5,
-            amsgrad=false, weight_decay=None, grad_clip_norm=None, grad_clip_value=None))]
+            amsgrad=false, weight_decay=None, grad_clip_norm=None, grad_clip_value=None,
+            save_horizons=false, num_checkpoints=15))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         lr: f64,
@@ -177,6 +184,8 @@ impl PyTrainingConfig {
         weight_decay: Option<f64>,
         grad_clip_norm: Option<f64>,
         grad_clip_value: Option<f64>,
+        save_horizons: bool,
+        num_checkpoints: usize,
     ) -> Self {
         PyTrainingConfig {
             lr,
@@ -191,6 +200,8 @@ impl PyTrainingConfig {
             weight_decay,
             grad_clip_norm,
             grad_clip_value,
+            save_horizons,
+            num_checkpoints,
         }
     }
 }
@@ -210,6 +221,8 @@ impl From<&PyTrainingConfig> for TrainingConfig {
             weight_decay: c.weight_decay,
             grad_clip_norm: c.grad_clip_norm,
             grad_clip_value: c.grad_clip_value,
+            save_horizons: c.save_horizons,
+            num_checkpoints: c.num_checkpoints,
         }
     }
 }
