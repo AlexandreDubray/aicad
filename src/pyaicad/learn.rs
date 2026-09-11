@@ -387,9 +387,10 @@ fn run_training<B: AutodiffBackend>(
 /// Trains ConsFormer against the exact per-constraint MDD weighted model count (see
 /// `ConsFormerMddLoss`) instead of the classical hand-written per-constraint-type penalty --
 /// otherwise identical to `train_consformer`: same network architecture, same config, same
-/// checkpointing. No `epsilon`: the loss's WMC DP runs entirely in log space (see
-/// `ConsFormerMddLoss`'s doc), which needs no floor -- a constraint whose fixed context is already
-/// structurally unsatisfiable produces a literal `-log(0) = inf` loss instead. `pyordering`/
+/// checkpointing. No `epsilon`: the loss's gradient is computed by hand, walking each compiled
+/// `Mdd` directly (`crate::mdd::wmc`) instead of through Burn's autodiff, with its own small fixed
+/// floor (`loss::WMC_EPS`) on WMC -- a constraint whose fixed context is already structurally
+/// unsatisfiable reads back as `-log(WMC_EPS)` rather than `-log(0) = inf`. `pyordering`/
 /// `pymerge`/`pyselect` control how each constraint's MDD is compiled (`pymerge` is accepted for
 /// parity with `Compiler::compile` but has no effect here -- this recipe always refines to an
 /// exact, unbounded-width MDD, and `merge` only ever triggers once a width bound would be

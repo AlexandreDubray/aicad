@@ -1,6 +1,7 @@
 pub mod bp;
 pub mod solve;
 
+use crate::mdd::wmc::{partial_backward, partial_forward};
 use crate::mdd::Mdd;
 use crate::modelling::{ValueIndex, VariableIndex};
 
@@ -25,93 +26,6 @@ pub enum DecodeMode {
     Greedy,
 }
 
-/// Generalises the forward (WMC) pass over `mdd` up to `target_layer`: at a layer whose variable
-/// is `decided`, follows only the edge matching `assignment`'s current value for it. At a layer
-/// whose variable is not yet `decided`, sums over every outgoing edge instead.
-fn partial_alpha_at(
-    mdd: &Mdd,
-    target_layer: usize,
-    probs: &[Vec<f64>],
-    assignment: &[ValueIndex],
-    decided: &[bool],
-) -> Vec<f64> {
-    let mut alpha: Vec<f64> = vec![1.0];
-
-    for layer in 0..target_layer {
-        let variable = mdd.decision_at_layer(layer);
-        let mut next_alpha = vec![0.0; mdd.number_nodes_in_layer(layer + 1)];
-        for node in mdd.nodes_in_layer(layer) {
-            let mass = alpha[node.1];
-            if mass == 0.0 {
-                continue;
-            }
-            if decided[variable.0] {
-                let clamp_value = assignment[variable.0];
-                for edge in mdd[node].iter_children() {
-                    let value = mdd[edge].assignment();
-                    if value == clamp_value {
-                        let prob = probs[variable.0][value.0];
-                        next_alpha[mdd[edge].to().1] += mass * prob;
-                        break;
-                    }
-                }
-            } else {
-                for edge in mdd[node].iter_children() {
-                    let value = mdd[edge].assignment();
-                    let prob = probs[variable.0][value.0];
-                    next_alpha[mdd[edge].to().1] += mass * prob;
-                }
-            }
-        }
-        alpha = next_alpha;
-    }
-
-    alpha
-}
-
-/// The backward counterpart of `partial_alpha_at`: generalises the backward (WMC) pass over `mdd`
-/// down to `target_layer`, clamping a `decided` layer's variable to its assigned value and summing
-/// over every edge at an undecided one.
-fn partial_beta_at(
-    mdd: &Mdd,
-    target_layer: usize,
-    probs: &[Vec<f64>],
-    assignment: &[ValueIndex],
-    decided: &[bool],
-) -> Vec<f64> {
-    let last_layer = mdd.sink().0;
-    let mut beta: Vec<f64> = vec![1.0; mdd.number_nodes_in_layer(last_layer)];
-
-    for layer in (target_layer..last_layer).rev() {
-        let variable = mdd.decision_at_layer(layer);
-        let mut prev_beta = vec![0.0; mdd.number_nodes_in_layer(layer)];
-        for node in mdd.nodes_in_layer(layer) {
-            let mut mass = 0.0;
-            if decided[variable.0] {
-                let clamp_value = assignment[variable.0];
-                for edge in mdd[node].iter_children() {
-                    let value = mdd[edge].assignment();
-                    if value == clamp_value {
-                        let prob = probs[variable.0][value.0];
-                        mass += prob * beta[mdd[edge].to().1];
-                        break;
-                    }
-                }
-            } else {
-                for edge in mdd[node].iter_children() {
-                    let value = mdd[edge].assignment();
-                    let prob = probs[variable.0][value.0];
-                    mass += prob * beta[mdd[edge].to().1];
-                }
-            }
-            prev_beta[node.1] = mass;
-        }
-        beta = prev_beta;
-    }
-
-    beta
-}
-
 /// Computes the distribution of the variable at `target_layer`, conditioned on the MDD structure
 /// and whichever evidence `decided` supplies from `assignment` -- an undecided variable elsewhere
 /// in the MDD's scope is marginalised out.
@@ -125,8 +39,8 @@ fn partial_conditional(
     let variable = mdd.decision_at_layer(target_layer);
     let domain_size = probs[variable.0].len();
 
-    let alpha = partial_alpha_at(mdd, target_layer, probs, assignment, decided);
-    let beta = partial_beta_at(mdd, target_layer + 1, probs, assignment, decided);
+    let alpha = partial_forward(mdd, target_layer, probs, assignment, decided);
+    let beta = partial_backward(mdd, target_layer + 1, probs, assignment, decided);
 
     let mut weights = vec![0.0; domain_size];
     for node in mdd.nodes_in_layer(target_layer) {

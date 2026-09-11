@@ -3,6 +3,7 @@ pub mod heuristics;
 pub mod layer;
 pub mod mdd;
 pub mod node;
+pub mod wmc;
 
 // re-export modules
 pub use edge::Edge;

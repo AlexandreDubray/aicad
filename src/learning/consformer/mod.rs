@@ -13,7 +13,7 @@ pub use dataset::{
 pub use loss::{ConsFormerLoss, ConsFormerMddLoss, ConstraintLoss};
 pub use mdd_dataset::{
     ConsFormerMddBatch, ConsFormerMddBatcher, ConsFormerMddDataset, ConsFormerMddSample,
-    MddBucketBatch, MddBucketKey, MddCompilationConfig, MddInstance,
+    MddCompilationConfig,
 };
 
 use burn::config::Config;
@@ -65,12 +65,12 @@ pub struct ConsFormerConfig {
     pub mask_fraction: f64,
     /// Logit scaling factor
     pub tau: f64,
-    /// How the multi-head attention blocks apply the primal-graph attention mask.
-    /// Hard imposes a hard masking on unconnected variables in the primal graph, removing any
-    /// attention between them.
-    /// Learned starts with negative influence between unconnected variables, but still learns an
-    /// attention mask for each entry, allowing to adjust attention when many global constraints
-    /// exist in the problem.
+    /// How the multi-head attention blocks apply the primal-graph attention mask -- hard -inf
+    /// masking (ConsFormer's default, matching the official Sudoku/graph-colouring benchmarks)
+    /// or a learned per-head bias (see `architecture::MaskingKind`). The latter is useful when
+    /// the primal graph has large cliques (e.g. nurse rostering's per-day coverage constraints,
+    /// which link all N nurses) where hard masking still leaves each row attending near-
+    /// uniformly over many neighbours.
     #[config(default = "MaskingKind::Hard")]
     pub masking_kind: MaskingKind,
 }
@@ -78,14 +78,14 @@ pub struct ConsFormerConfig {
 /// The subset of `ConsFormerConfig` the data pipeline (a `ConsFormerMddDataset` and its
 /// `ConsFormerMddBatcher`) needs. Threading one value of this through both, instead of passing
 /// `domain_size`/`mask_fraction` as independent arguments, is what keeps a dataset and its batcher
-/// from ever being built against different `domain_size`s -- see `MddInstance`'s doc for what
-/// silently breaks if they diverge. Build one via `ConsFormerDataConfig::from(&network_config)`
-/// rather than constructing it by hand, so it's always sourced from the same `ConsFormerConfig`
-/// the network itself was built with.
+/// from ever being built against different `domain_size`s. Build one via
+/// `ConsFormerDataConfig::from(&network_config)` rather than constructing it by hand, so it's
+/// always sourced from the same `ConsFormerConfig` the network itself was built with.
 #[derive(Clone, Copy, Debug)]
 pub struct ConsFormerDataConfig {
-    /// Must match the network's `domain_size` -- the width of the per-variable probability vector
-    /// `ConsFormerMddDataset`'s gather indices are computed against.
+    /// Must match the network's `domain_size` -- every compiled MDD's edges are validated against
+    /// this at dataset-construction time (see `mdd_dataset::compile_constraint_mdds`), and the
+    /// training loss reads/writes the network's per-variable probability vector at this width.
     pub domain_size: usize,
     /// Fraction of free variables randomly marked eligible for update on each training step (see
     /// `ConsFormerBatcher::mask_fraction`).

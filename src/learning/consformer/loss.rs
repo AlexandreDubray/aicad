@@ -2,13 +2,18 @@ use std::collections::HashMap;
 
 use burn::tensor::activation::softmax;
 use burn::tensor::backend::Backend;
-use burn::tensor::{Bool, IndexingUpdateOp, Int, Tensor};
+use burn::tensor::{Bool, Int, Tensor};
+
+use rayon::prelude::*;
 
 use crate::constraints::{AllDifferent, Constraint, NotEquals};
 use crate::learning::{BatchProblems, Loss};
+use crate::mdd::wmc::wmc_and_gradient;
+use crate::mdd::Mdd;
+use crate::modelling::ValueIndex;
 
 use super::dataset::ConsFormerBatch;
-use super::mdd_dataset::{ConsFormerMddBatch, MddBucketBatch};
+use super::mdd_dataset::ConsFormerMddBatch;
 
 /// Loss trait for ConsFormer. Given a tensor (number_var, domain_size), computes a penalty term
 /// for the constraint. We assume that the probability tensor sent to the constraint is restricted
@@ -236,100 +241,124 @@ impl<B: Backend> Loss<B, ConsFormerBatch<B>> for ConsFormerLoss {
     }
 }
 
-#[allow(dead_code)]
-const WMC_LOG_FLOOR: f32 = -13.815511;
-const WMC_FLOOR: f32 = 1e-6;
-const MIN_EDGE_PROB: f32 = 1e-6;
+const WMC_EPS: f64 = 1e-6;
 
-fn bucket_log_wmc<B: Backend>(
-    bucket: &MddBucketBatch<B>,
-    flat_log_probs: &Tensor<B, 1>,
-) -> Tensor<B, 1> {
-    let device = flat_log_probs.device();
-    let num_instances = bucket.sample_index.dims()[0];
-    let max_nodes = bucket.key.max_nodes;
-    let max_edges = bucket.key.max_edges;
-    let num_layers = bucket.key.num_layers;
-
-    let mut root = vec![f32::NEG_INFINITY; num_instances * max_nodes];
-    for i in 0..num_instances {
-        root[i * max_nodes] = 0.0;
+/// One constraint MDD's contribution to a sample's loss and to `∂loss/∂weight`, computed by a
+/// plain sink-to-root chain-rule pass (`crate::mdd::wmc::wmc_and_gradient`) instead of
+/// automatic differentiation -- see the module-level design discussion this recipe replaces.
+/// `probs_for_sample` is that sample's flattened `(number_vars, domain_size)` probability slice,
+/// indexed by each variable's *raw domain value* (see `mdd_dataset::compile_constraint_mdds`'s
+/// doc), not by `ValueIndex` position; `grad` accumulates `∂(-log(wmc+eps))/∂probs_for_sample`
+/// into that same indexing, scaled by `chain` at the call site's discretion (left at the caller so
+/// the per-sample and per-batch averaging factors can be folded in once, in one place).
+fn mdd_loss_and_gradient(
+    mdd: &Mdd,
+    probs_for_sample: &[f32],
+    domain_size: usize,
+    grad: &mut [f32],
+) -> f64 {
+    let num_layers = mdd.number_layers() - 1;
+    let problem = mdd.problem();
+    let mut weights: Vec<Vec<f64>> = Vec::with_capacity(num_layers);
+    for layer in 0..num_layers {
+        let variable = mdd.decision_at_layer(layer);
+        let variable_domain_size = problem[variable].domain_size();
+        let mut layer_weights = vec![0.0; variable_domain_size];
+        for (k, w) in layer_weights.iter_mut().enumerate() {
+            let raw_value = problem[variable].value(ValueIndex(k)) as usize;
+            *w = probs_for_sample[variable.0 * domain_size + raw_value] as f64;
+        }
+        weights.push(layer_weights);
     }
-    let mut w: Tensor<B, 2> =
-        Tensor::<B, 1>::from_data(root.as_slice(), &device).reshape([num_instances, max_nodes]);
 
-    let flat_gather: Tensor<B, 1, Int> = bucket
-        .gather_index
-        .clone()
-        .reshape([num_instances * num_layers * max_edges]);
-    let log_probs_at_edges: Tensor<B, 3> = flat_log_probs.clone().select(0, flat_gather).reshape([
-        num_instances,
-        num_layers,
-        max_edges,
-    ]);
-    // Cast once for the whole tensor instead of once per layer.
-    let edge_mask_float: Tensor<B, 3> = bucket.edge_mask.clone().float();
+    let (wmc, gradient) = wmc_and_gradient(mdd, &weights);
+    let chain = -1.0 / (wmc + WMC_EPS);
 
     for layer in 0..num_layers {
-        let to_layer: Tensor<B, 2, Int> = bucket.edge_to.clone().narrow(1, layer, 1).squeeze_dim(1);
-        let from_layer: Tensor<B, 2, Int> =
-            bucket.edge_from.clone().narrow(1, layer, 1).squeeze_dim(1);
-        let log_probs_layer: Tensor<B, 2> = log_probs_at_edges
-            .clone()
-            .narrow(1, layer, 1)
-            .squeeze_dim(1);
-        let mask_layer_float: Tensor<B, 2> =
-            edge_mask_float.clone().narrow(1, layer, 1).squeeze_dim(1);
-
-        let w_from = w.clone().gather(1, from_layer);
-        let contributions = w_from + log_probs_layer;
-
-        let exp_contributions = contributions.exp() * mask_layer_float;
-
-        let next = Tensor::<B, 2>::zeros([num_instances, max_nodes], &device);
-        let next_linear = next.scatter(1, to_layer, exp_contributions, IndexingUpdateOp::Add);
-        w = next_linear.clamp_min(WMC_FLOOR).log();
+        let variable = mdd.decision_at_layer(layer);
+        for (k, &g) in gradient[layer].iter().enumerate() {
+            let raw_value = problem[variable].value(ValueIndex(k)) as usize;
+            grad[variable.0 * domain_size + raw_value] += (chain * g) as f32;
+        }
     }
 
-    // log(WMC) = the sink's log-weight, local node index 0 of the last layer -- same convention
-    // as root.
-    let sink_idx = Tensor::<B, 1, Int>::from_data([0i64], &device);
-    w.select(1, sink_idx).reshape([num_instances])
+    -(wmc + WMC_EPS).ln()
+}
+
+/// A sample's average `-log(wmc+eps)` over its constraint MDDs, plus `∂(that average)/∂probs`
+/// (`mdds` iterated sequentially -- parallelism is across samples, see `mdd_wmc_loss`).
+fn sample_loss_and_gradient(
+    mdds: &[Mdd],
+    probs_for_sample: &[f32],
+    number_vars: usize,
+    domain_size: usize,
+) -> (f64, Vec<f32>) {
+    let mut grad = vec![0.0f32; number_vars * domain_size];
+    let mut loss_sum = 0.0;
+    for mdd in mdds {
+        loss_sum += mdd_loss_and_gradient(mdd, probs_for_sample, domain_size, &mut grad);
+    }
+    let count = mdds.len().max(1) as f64;
+    loss_sum /= count;
+    for g in &mut grad {
+        *g /= count as f32;
+    }
+    (loss_sum, grad)
 }
 
 pub struct ConsFormerMddLoss;
 
+/// Computes the MDD-WMC loss and its exact gradient wrt `probs` by hand (see
+/// `mdd_loss_and_gradient`), then hands that gradient to Burn's autodiff via the standard
+/// stop-gradient identity `value + stop_gradient(desired_value - value)`, here as
+/// `grad_tensor * (probs - probs.detach())`: its *value* is always zero (`probs.clone()` and
+/// `probs.detach()` hold the same numbers), so the returned tensor's value is exactly
+/// `loss_value`, but its derivative wrt `probs` is exactly `grad_tensor`, since `grad_tensor` and
+/// `probs.detach()` are constants as far as autodiff is concerned. This keeps the whole hand-rolled
+/// backward pass outside Burn's graph -- nothing per-layer gets recorded or replayed -- while
+/// still letting `loss.backward()` reach every parameter upstream of `probs` normally.
 fn mdd_wmc_loss<B: Backend>(probs: Tensor<B, 3>, batch: &ConsFormerMddBatch<B>) -> Tensor<B, 1> {
-    let batch_size = batch.problems().len();
-    let [_, number_vars, domain_size] = probs.dims();
     let device = probs.device();
+    let [batch_size, number_vars, domain_size] = probs.dims();
 
-    let flat_log_probs: Tensor<B, 1> = probs
-        .clamp_min(MIN_EDGE_PROB)
-        .log()
-        .reshape([batch_size * number_vars * domain_size]);
+    let probs_data: Vec<f32> = probs
+        .clone()
+        .into_data()
+        .to_vec::<f32>()
+        .expect("probs should convert to f32");
 
-    let mut per_sample_sum = Tensor::<B, 1>::zeros([batch_size], &device);
-    let mut per_sample_count = Tensor::<B, 1>::zeros([batch_size], &device);
+    let results: Vec<(f64, Vec<f32>)> = crate::utils::worker_pool().install(|| {
+        batch
+            .mdds
+            .par_iter()
+            .enumerate()
+            .map(|(i, mdds)| {
+                let start = i * number_vars * domain_size;
+                let sample_probs = &probs_data[start..start + number_vars * domain_size];
+                sample_loss_and_gradient(mdds, sample_probs, number_vars, domain_size)
+            })
+            .collect()
+    });
 
-    for bucket in &batch.mdd_buckets {
-        let log_wmc = bucket_log_wmc(bucket, &flat_log_probs);
-        let neg_log_wmc = -log_wmc;
-        let num_instances = bucket.sample_index.dims()[0];
-        let ones = Tensor::<B, 1>::ones([num_instances], &device);
+    let loss_value: f64 =
+        results.iter().map(|(loss, _)| loss).sum::<f64>() / batch_size as f64;
 
-        per_sample_sum = per_sample_sum.scatter(
-            0,
-            bucket.sample_index.clone(),
-            neg_log_wmc,
-            IndexingUpdateOp::Add,
-        );
-        per_sample_count =
-            per_sample_count.scatter(0, bucket.sample_index.clone(), ones, IndexingUpdateOp::Add);
+    let mut grad_data = vec![0.0f32; batch_size * number_vars * domain_size];
+    for (i, (_, grad)) in results.iter().enumerate() {
+        let start = i * number_vars * domain_size;
+        for (j, &g) in grad.iter().enumerate() {
+            grad_data[start + j] = g / batch_size as f32;
+        }
     }
 
-    let per_sample_avg = per_sample_sum / per_sample_count.clamp_min(1.0);
-    per_sample_avg.mean()
+    let grad_tensor: Tensor<B, 3> = Tensor::<B, 1>::from_data(grad_data.as_slice(), &device)
+        .reshape([batch_size, number_vars, domain_size]);
+    let loss_tensor: Tensor<B, 1> = Tensor::from_data([loss_value as f32].as_slice(), &device);
+
+    (grad_tensor * (probs.clone() - probs.detach()))
+        .sum()
+        .reshape([1])
+        + loss_tensor
 }
 
 impl<B: Backend> Loss<B, ConsFormerMddBatch<B>> for ConsFormerMddLoss {
@@ -351,24 +380,15 @@ mod mdd_loss_tests {
     use crate::modelling::{all_different, not_equals, Problem};
 
     use super::super::mdd_dataset::{
-        ConsFormerMddBatcher, ConsFormerMddDataset, MddCompilationConfig,
+        ConsFormerMddBatcher, ConsFormerMddDataset, ConsFormerMddSample, MddCompilationConfig,
     };
     use super::super::ConsFormerDataConfig;
     use super::*;
 
-    /// Every problem is 3 variables, domain `{0,1,2}`, with an `AllDifferent` over all three (a
-    /// permutation-shaped MDD, 3 layers) and a `NotEquals` over the first two (2 layers) -- so a
-    /// batch of them exercises two distinct buckets, each with one instance per sample. Generic
-    /// over the backend so the same builder can be used both with plain `NdArray` (the WMC/loss
-    /// correctness tests) and `Autodiff<NdArray>` (the gradient-flow test).
-    ///
-    /// `mask_fraction` is exposed rather than fixed: the correctness tests use `0.0` since they
-    /// only care about `bucket_wmc`/`mdd_wmc_loss`'s own math and want deterministic
-    /// `probs`-derived values, but a gradient-flow test needs at least some variables actually
-    /// routed through the network's probabilities (`var_masks` true) -- with every variable
-    /// pinned to its fixed initial assignment (`blend_with_current`'s `mask_fraction = 0.0`
-    /// case), the loss wouldn't depend on `logits` at all, and the gradient would be trivially
-    /// zero for a reason that has nothing to do with `bucket_wmc`.
+    /// Every problem is 3 variables, domain `{0,1,2}`, with an `AllDifferent` over all three and
+    /// a `NotEquals` over the first two. Generic over the backend so the same builder can be used
+    /// both with plain `NdArray` (the WMC/loss correctness tests) and `Autodiff<NdArray>` (the
+    /// gradient-flow tests).
     fn two_sample_batch<B: Backend>(
         device: &B::Device,
         mask_fraction: f64,
@@ -426,223 +446,83 @@ mod mdd_loss_tests {
         brute
     }
 
-    /// `bucket_log_wmc` is the tensor-batched DP; this checks `.exp()` of its output against a
-    /// plain brute-force enumeration for every instance of every bucket in a two-sample batch,
-    /// using a different probability distribution per sample so a bug in the per-sample
-    /// `gather_index` offset (rather than the DP itself) would also be caught.
     #[test]
-    fn bucket_log_wmc_matches_brute_force_across_a_batch() {
+    fn sample_loss_and_gradient_matches_brute_force_average() {
         let device = NdArrayDevice::default();
-        let domain_size = 3;
-        let batch = two_sample_batch(&device, 0.0);
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(3, vec![0, 1, 2], None);
+        all_different(&mut problem, vars.clone());
+        not_equals(&mut problem, vars[0], vars[1]);
+        let problem = Arc::new(problem);
 
-        let per_sample_probs: Vec<Vec<f64>> = vec![
-            vec![0.2, 0.5, 0.3, 0.1, 0.3, 0.6, 0.4, 0.4, 0.2],
-            vec![0.6, 0.3, 0.1, 0.2, 0.2, 0.6, 0.5, 0.25, 0.25],
-        ];
-        let flat: Vec<f32> = per_sample_probs
-            .iter()
-            .flatten()
-            .map(|&v| v as f32)
-            .collect();
-        let flat_probs: Tensor<NdArray, 1> = Tensor::from_data(flat.as_slice(), &device);
-        let flat_log_probs = flat_probs.log();
+        let data_config = ConsFormerDataConfig {
+            domain_size: 3,
+            mask_fraction: 0.0,
+        };
+        let dataset = ConsFormerMddDataset::<NdArray>::new(
+            vec![problem],
+            MddCompilationConfig::default(),
+            data_config,
+            &device,
+        );
+        let sample: ConsFormerMddSample<NdArray> = dataset.get(0).unwrap();
+        let mdds = sample.mdds().clone();
 
-        assert_eq!(batch.mdd_buckets.len(), 2);
-        for bucket in &batch.mdd_buckets {
-            let wmc: Vec<f32> = bucket_log_wmc(bucket, &flat_log_probs)
-                .exp()
-                .into_data()
-                .to_vec::<f32>()
-                .expect("wmc should convert to f32");
-            let sample_indices: Vec<i64> = bucket
-                .sample_index
-                .clone()
-                .into_data()
-                .to_vec::<i64>()
-                .expect("sample_index should convert to i64");
+        let probs: Vec<f32> = vec![0.2, 0.5, 0.3, 0.1, 0.3, 0.6, 0.4, 0.4, 0.2];
+        let (loss, _grad) = sample_loss_and_gradient(&mdds, &probs, 3, 3);
 
-            for (instance_idx, &sample_idx) in sample_indices.iter().enumerate() {
-                let probs = &per_sample_probs[sample_idx as usize];
-                let expected = if bucket.key.num_layers == 2 {
-                    brute_force_not_equals(probs, domain_size)
-                } else {
-                    brute_force_all_different_permutation(probs, domain_size)
-                };
-                assert!(
-                    (wmc[instance_idx] as f64 - expected).abs() < 1e-5,
-                    "bucket num_layers={} instance {instance_idx} sample {sample_idx}: got {} expected {expected}",
-                    bucket.key.num_layers,
-                    wmc[instance_idx],
-                );
-            }
+        let probs_f64: Vec<f64> = probs.iter().map(|&v| v as f64).collect();
+        let not_equals_wmc = brute_force_not_equals(&probs_f64, 3);
+        let all_different_wmc = brute_force_all_different_permutation(&probs_f64, 3);
+        let expected = (-(not_equals_wmc + WMC_EPS).ln() - (all_different_wmc + WMC_EPS).ln()) / 2.0;
+
+        assert!((loss - expected).abs() < 1e-6, "got {loss} expected {expected}");
+    }
+
+    #[test]
+    fn sample_loss_and_gradient_matches_finite_differences() {
+        let device = NdArrayDevice::default();
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(3, vec![0, 1, 2], None);
+        all_different(&mut problem, vars.clone());
+        not_equals(&mut problem, vars[0], vars[1]);
+        let problem = Arc::new(problem);
+
+        let data_config = ConsFormerDataConfig {
+            domain_size: 3,
+            mask_fraction: 0.0,
+        };
+        let dataset = ConsFormerMddDataset::<NdArray>::new(
+            vec![problem],
+            MddCompilationConfig::default(),
+            data_config,
+            &device,
+        );
+        let sample: ConsFormerMddSample<NdArray> = dataset.get(0).unwrap();
+        let mdds = sample.mdds().clone();
+
+        let probs: Vec<f32> = vec![0.2, 0.5, 0.3, 0.1, 0.3, 0.6, 0.4, 0.4, 0.2];
+        let (base_loss, grad) = sample_loss_and_gradient(&mdds, &probs, 3, 3);
+
+        let eps = 1e-4f32;
+        for i in 0..probs.len() {
+            let mut bumped = probs.clone();
+            bumped[i] += eps;
+            let (bumped_loss, _) = sample_loss_and_gradient(&mdds, &bumped, 3, 3);
+            let finite_diff = (bumped_loss - base_loss) / eps as f64;
+            assert!(
+                (finite_diff - grad[i] as f64).abs() < 1e-2,
+                "index {i}: analytic={} finite_diff={finite_diff}",
+                grad[i],
+            );
         }
     }
 
-    /// Regression test for the f32-underflow bug the `WMC_LOG_FLOOR` clamp in `bucket_log_wmc`
-    /// fixes (see that function's doc): a Sudoku-shaped permutation constraint (scope 9, domain 9)
-    /// needs a 9-way product of per-edge probabilities to reach any valid assignment. With a
-    /// sharply peaked distribution -- exactly what `gumbel_softmax` plus a small
-    /// `ConsFormerConfig::tau` produce, even at initialization -- the "off-peak" probabilities are
-    /// small enough that an unclamped `f32` DP would underflow deep into this computation. Unlike
-    /// the log-space DP's very first version (still exact, but needed `f64` throughout to survive
-    /// this), the clamp intentionally trades exactness for staying in the cheaper, fusable `f32`:
-    /// this only checks that the result is finite and never drops below `WMC_LOG_FLOOR`, not that
-    /// it matches the true (here, ~2.16e-42, far below the floor) analytical value -- see
-    /// `bucket_log_wmc_matches_brute_force_across_a_batch`/the new accuracy test just below for
-    /// that, in a regime the floor doesn't touch.
-    #[test]
-    fn bucket_log_wmc_clamps_instead_of_underflowing_on_sharply_peaked_probabilities() {
-        let device = NdArrayDevice::default();
-        let domain_size = 9;
-
-        let mut problem = Problem::default();
-        let vars = problem.add_variables(domain_size, (0..domain_size as isize).collect(), None);
-        all_different(&mut problem, vars);
-        let problems = vec![Arc::new(problem)];
-
-        let data_config = ConsFormerDataConfig {
-            domain_size,
-            mask_fraction: 0.0,
-        };
-        let dataset = ConsFormerMddDataset::<NdArray>::new(
-            problems,
-            MddCompilationConfig::default(),
-            data_config,
-            &device,
-        );
-        let samples: Vec<_> = (0..dataset.len())
-            .map(|i| dataset.get(i).unwrap())
-            .collect();
-        let batcher = ConsFormerMddBatcher::new(data_config);
-        let batch = batcher.batch(samples, &device);
-
-        // Every one of the 9 variables puts 0.99999 on the *same* value (index 0) and splits the
-        // remaining 0.00001 evenly over the other 8 -- a degenerate-but-plausible early-training
-        // state (e.g. attention hasn't yet learned to differentiate the variables). Off-peak
-        // probability is ~1.25e-6. Since only one variable can actually take value 0 in any valid
-        // permutation, every one of the 9! permutations routes through 8 off-peak edges and just
-        // 1 on-peak edge -- there is no permutation that avoids the off-peak probabilities
-        // entirely (unlike e.g. a diagonal/identity permutation, which trivially would).
-        let dominant = 0.99999_f64;
-        let off_peak = (1.0 - dominant) / (domain_size as f64 - 1.0);
-        let mut single_var_probs = vec![off_peak as f32; domain_size];
-        single_var_probs[0] = dominant as f32;
-        let probs_data: Vec<f32> = single_var_probs.repeat(domain_size);
-        let probs: Tensor<NdArray, 3> =
-            Tensor::<NdArray, 1>::from_data(probs_data.as_slice(), &device).reshape([
-                1,
-                domain_size,
-                domain_size,
-            ]);
-        let flat_probs: Tensor<NdArray, 1> = probs.reshape([domain_size * domain_size]);
-        let flat_log_probs = flat_probs.log();
-
-        assert_eq!(
-            batch.mdd_buckets.len(),
-            1,
-            "a single AllDifferent has one bucket"
-        );
-        let log_wmc: Vec<f32> = bucket_log_wmc(&batch.mdd_buckets[0], &flat_log_probs)
-            .into_data()
-            .to_vec::<f32>()
-            .expect("log(wmc) should convert to f32");
-
-        assert!(
-            log_wmc[0].is_finite(),
-            "log(wmc) should be finite (no NaN/-inf), got {}",
-            log_wmc[0],
-        );
-        assert!(
-            log_wmc[0] >= WMC_LOG_FLOOR,
-            "log(wmc) should never drop below the floor {WMC_LOG_FLOOR}, got {}",
-            log_wmc[0],
-        );
-    }
-
-    /// Companion to the clamp test above: with a *mildly* peaked distribution -- true WMC still
-    /// comfortably above `exp(WMC_LOG_FLOOR)` (~1e-6) by a few orders of magnitude, so the clamp
-    /// never engages -- `bucket_log_wmc` should still recover the exact analytical WMC. Confirms
-    /// the floor is a genuine floor (only ever kicks in once the true value would fall below it),
-    /// not a general accuracy regression from dropping `f64`.
-    #[test]
-    fn bucket_log_wmc_matches_brute_force_when_comfortably_above_the_floor() {
-        let device = NdArrayDevice::default();
-        let domain_size = 9;
-
-        let mut problem = Problem::default();
-        let vars = problem.add_variables(domain_size, (0..domain_size as isize).collect(), None);
-        all_different(&mut problem, vars);
-        let problems = vec![Arc::new(problem)];
-
-        let data_config = ConsFormerDataConfig {
-            domain_size,
-            mask_fraction: 0.0,
-        };
-        let dataset = ConsFormerMddDataset::<NdArray>::new(
-            problems,
-            MddCompilationConfig::default(),
-            data_config,
-            &device,
-        );
-        let samples: Vec<_> = (0..dataset.len())
-            .map(|i| dataset.get(i).unwrap())
-            .collect();
-        let batcher = ConsFormerMddBatcher::new(data_config);
-        let batch = batcher.batch(samples, &device);
-
-        // Same "every variable prefers the same value" shape as the clamp test, but much milder:
-        // dominant = 0.2 (vs. uniform's 1/9 ~ 0.111), off_peak = 0.1 each. True WMC = 9! * 0.2 *
-        // 0.1^8 ~= 7.26e-4 -- about 700x above the floor, nowhere near clamping.
-        let dominant = 0.2_f64;
-        let off_peak = (1.0 - dominant) / (domain_size as f64 - 1.0);
-        let mut single_var_probs = vec![off_peak as f32; domain_size];
-        single_var_probs[0] = dominant as f32;
-        let probs_data: Vec<f32> = single_var_probs.repeat(domain_size);
-        let probs: Tensor<NdArray, 3> =
-            Tensor::<NdArray, 1>::from_data(probs_data.as_slice(), &device).reshape([
-                1,
-                domain_size,
-                domain_size,
-            ]);
-        let flat_probs: Tensor<NdArray, 1> = probs.reshape([domain_size * domain_size]);
-        let flat_log_probs = flat_probs.log();
-
-        let factorial_9 = (1..=9u32).product::<u32>() as f64;
-        let expected_wmc = factorial_9 * dominant * off_peak.powi(8);
-        assert!(
-            expected_wmc > 1e-4,
-            "sanity check: this test is only meaningful if expected_wmc is well above the floor"
-        );
-
-        assert_eq!(
-            batch.mdd_buckets.len(),
-            1,
-            "a single AllDifferent has one bucket"
-        );
-        let wmc: Vec<f32> = bucket_log_wmc(&batch.mdd_buckets[0], &flat_log_probs)
-            .exp()
-            .into_data()
-            .to_vec::<f32>()
-            .expect("wmc should convert to f32");
-
-        let relative_error = ((wmc[0] as f64 - expected_wmc) / expected_wmc).abs();
-        assert!(
-            relative_error < 0.05,
-            "wmc should be close to the analytically-expected {expected_wmc:e} -- got {}, \
-             relative error {relative_error:.4}",
-            wmc[0],
-        );
-    }
-
-    /// End-to-end aggregation check on `mdd_wmc_loss`: with deterministic `probs` (bypassing
-    /// `gumbel_softmax`'s randomness), the per-sample average and batch average should match a
-    /// plain scalar computation built from the same brute-force WMCs used above.
     #[test]
     fn mdd_wmc_loss_averages_per_sample_then_per_batch() {
         let device = NdArrayDevice::default();
         let domain_size = 3;
-        let batch = two_sample_batch(&device, 0.0);
+        let batch = two_sample_batch::<NdArray>(&device, 0.0);
 
         let per_sample_probs: Vec<Vec<f64>> = vec![
             vec![0.2, 0.5, 0.3, 0.1, 0.3, 0.6, 0.4, 0.4, 0.2],
@@ -659,13 +539,11 @@ mod mdd_loss_tests {
         let loss = mdd_wmc_loss(probs, &batch);
         let loss_value: f32 = loss.into_data().to_vec::<f32>().unwrap()[0];
 
-        // Each sample has exactly 2 constraints (AllDifferent, NotEquals): its own average is the
-        // mean of their `-log(wmc)`, and the batch loss is the mean of those two.
         let mut expected_per_sample = Vec::new();
         for probs in &per_sample_probs {
             let not_equals_wmc = brute_force_not_equals(probs, domain_size);
             let all_different_wmc = brute_force_all_different_permutation(probs, domain_size);
-            let sample_avg = (-(not_equals_wmc).ln() - (all_different_wmc).ln()) / 2.0;
+            let sample_avg = (-(not_equals_wmc + WMC_EPS).ln() - (all_different_wmc + WMC_EPS).ln()) / 2.0;
             expected_per_sample.push(sample_avg);
         }
         let expected = expected_per_sample.iter().sum::<f64>() / expected_per_sample.len() as f64;
@@ -676,14 +554,77 @@ mod mdd_loss_tests {
         );
     }
 
-    /// `bucket_log_wmc`'s DP leans on `gather`/`scatter`, which -- unlike the plain matmul the
-    /// classical `ConsFormerLoss` uses -- aren't things every autodiff backend is guaranteed to
-    /// support cleanly. This checks that burn's autodiff backend does back-propagate through the
-    /// whole batched WMC DP: with `logits` requiring grad, the full `Loss::loss` (including
-    /// `gumbel_softmax` and `blend_with_current`) should produce a finite, non-all-zero gradient
-    /// of the expected shape.
+    /// The custom gradient this loss hands to Burn's autodiff (`mdd_loss_and_gradient`'s
+    /// sink-to-root chain rule) bypasses Burn's own backward machinery entirely, so this checks it
+    /// against finite differences of `mdd_wmc_loss` itself -- computed on a plain, non-autodiff
+    /// `NdArray` backend at perturbed `probs` -- rather than against a second differentiation path
+    /// through Burn. `mdd_wmc_loss` is deterministic (no `gumbel_softmax` involved -- that's called
+    /// only by `Loss::loss`, above this function), so this is an exact check, not just a
+    /// finite/non-zero sanity check.
     #[test]
-    fn loss_backpropagates_through_the_batched_wmc_dp() {
+    fn mdd_wmc_loss_gradient_matches_finite_differences_via_autodiff() {
+        use burn::backend::Autodiff;
+
+        type ADBackend = Autodiff<NdArray>;
+        let ad_device = NdArrayDevice::default();
+        let plain_device = NdArrayDevice::default();
+        let domain_size = 3;
+
+        let batch_ad = two_sample_batch::<ADBackend>(&ad_device, 0.0);
+        let batch_plain = two_sample_batch::<NdArray>(&plain_device, 0.0);
+
+        let flat: Vec<f32> = vec![
+            0.2, 0.5, 0.3, 0.1, 0.3, 0.6, 0.4, 0.4, 0.2, 0.6, 0.3, 0.1, 0.2, 0.2, 0.6, 0.5, 0.25,
+            0.25,
+        ];
+
+        let probs_ad: Tensor<ADBackend, 3> =
+            Tensor::<ADBackend, 1>::from_data(flat.as_slice(), &ad_device)
+                .reshape([2, 3, domain_size])
+                .require_grad();
+        let loss = mdd_wmc_loss(probs_ad.clone(), &batch_ad);
+        let grads = loss.backward();
+        let grad = probs_ad
+            .grad(&grads)
+            .expect("probs should have a gradient after backward()");
+        let grad_values: Vec<f32> = grad.into_data().to_vec::<f32>().unwrap();
+
+        let base_tensor: Tensor<NdArray, 3> =
+            Tensor::<NdArray, 1>::from_data(flat.as_slice(), &plain_device)
+                .reshape([2, 3, domain_size]);
+        let base_loss: f32 = mdd_wmc_loss(base_tensor, &batch_plain)
+            .into_data()
+            .to_vec::<f32>()
+            .unwrap()[0];
+
+        let eps = 1e-4f32;
+        for i in 0..flat.len() {
+            let mut bumped = flat.clone();
+            bumped[i] += eps;
+            let bumped_tensor: Tensor<NdArray, 3> =
+                Tensor::<NdArray, 1>::from_data(bumped.as_slice(), &plain_device)
+                    .reshape([2, 3, domain_size]);
+            let bumped_loss: f32 = mdd_wmc_loss(bumped_tensor, &batch_plain)
+                .into_data()
+                .to_vec::<f32>()
+                .unwrap()[0];
+            let finite_diff = (bumped_loss - base_loss) / eps;
+            assert!(
+                (finite_diff - grad_values[i]).abs() < 1e-2,
+                "index {i}: analytic={} finite_diff={finite_diff}",
+                grad_values[i],
+            );
+        }
+    }
+
+    /// End-to-end through the full `Loss::loss` path (`gumbel_softmax` + `blend_with_current` +
+    /// `mdd_wmc_loss`): with `logits` requiring grad, `.backward()` should reach `logits` with a
+    /// finite, non-all-zero gradient of the expected shape. Unlike the test above, this can't be
+    /// checked against an exact finite-difference value -- `gumbel_softmax` draws fresh noise on
+    /// every call -- so it's a sanity check that the gradient actually flows end to end, not a
+    /// correctness check on the custom gradient math itself (that's covered above).
+    #[test]
+    fn loss_backpropagates_through_gumbel_and_blend() {
         use burn::backend::Autodiff;
         use burn::tensor::Distribution;
 
@@ -719,38 +660,30 @@ mod mdd_loss_tests {
         );
     }
 
-    /// Regression test for the `log(0)`-in-backward NaN bug fixed by clamping `bucket_log_wmc`'s
-    /// `next_linear` *before* `.log()` instead of clamping `.log()`'s own output afterward (see
-    /// `bucket_log_wmc`'s doc). Unlike `loss_backpropagates_through_the_batched_wmc_dp` above
-    /// (random, unpeaked logits -- the floor never engages, so that test can't catch this), this
-    /// drives the network's own output through `gumbel_softmax`/`blend_with_current` into the same
-    /// "everyone prefers the same value" sharply-peaked shape as
-    /// `bucket_log_wmc_clamps_instead_of_underflowing_on_sharply_peaked_probabilities`, so at least
-    /// one *real, still-referenced* DP node genuinely underflows to `WMC_LOG_FLOOR` -- the exact
-    /// condition the old post-`log` clamp ordering turned into a NaN gradient once that clamped
-    /// node's value was gathered by the next layer. The bug was intermittent by nature (it only
-    /// fires once training sharpens the network's confidence enough for a real, non-padding node
-    /// to underflow), which is why this test manufactures that condition directly rather than
-    /// relying on random initialization to eventually hit it.
+    /// A `NotEquals` constraint both of whose variables are pinned (`var_masks` all false) to the
+    /// *same* value is unconditionally violated: `wmc = 0` for that MDD regardless of what the
+    /// network predicts, so `mdd_loss_and_gradient`'s `-log(wmc+eps)`/`-1/(wmc+eps)` genuinely hit
+    /// their `WMC_EPS` floor rather than some comfortably-nonzero value. This checks the loss and
+    /// its gradient both stay finite in that regime -- the case `WMC_EPS` exists for.
     #[test]
-    fn loss_backpropagates_finite_gradients_when_the_floor_genuinely_engages() {
+    fn loss_stays_finite_when_a_pinned_assignment_violates_a_constraint() {
         use burn::backend::Autodiff;
 
         type ADBackend = Autodiff<NdArray>;
         let device = NdArrayDevice::default();
-        let domain_size = 9;
 
         let mut problem = Problem::default();
-        let vars = problem.add_variables(domain_size, (0..domain_size as isize).collect(), None);
-        all_different(&mut problem, vars);
-        let problems = vec![Arc::new(problem)];
+        let x = problem.add_variable(vec![0, 1, 2], None);
+        let y = problem.add_variable(vec![0, 1, 2], None);
+        not_equals(&mut problem, x, y);
+        let problem = Arc::new(problem);
 
         let data_config = ConsFormerDataConfig {
-            domain_size,
-            mask_fraction: 1.0,
+            domain_size: 3,
+            mask_fraction: 0.0,
         };
         let dataset = ConsFormerMddDataset::<ADBackend>::new(
-            problems,
+            vec![problem],
             MddCompilationConfig::default(),
             data_config,
             &device,
@@ -761,103 +694,36 @@ mod mdd_loss_tests {
         let batcher = ConsFormerMddBatcher::new(data_config);
         let batch = batcher.batch(samples, &device);
 
-        // Every variable's logits sharply favor value 0 -- a gap of 40 between the peak and every
-        // other logit survives `gumbel_softmax`'s noise easily, so post-softmax probabilities land
-        // in the same extreme regime as the forward-only clamp test, this time reached through the
-        // real logits -> gumbel_softmax -> blend_with_current -> loss path instead of a hand-built
-        // probability tensor.
-        let mut logits_data = vec![-20.0f32; domain_size * domain_size];
-        for v in 0..domain_size {
-            logits_data[v * domain_size] = 20.0;
-        }
-        let logits: Tensor<ADBackend, 3> =
-            Tensor::<ADBackend, 1>::from_data(logits_data.as_slice(), &device)
-                .reshape([1, domain_size, domain_size])
-                .require_grad();
-
-        let loss = ConsFormerMddLoss.loss(logits.clone(), &batch);
-        let loss_value: f32 = loss.clone().into_data().to_vec::<f32>().unwrap()[0];
-        assert!(
-            loss_value.is_finite(),
-            "loss should be finite, got {loss_value}"
-        );
-
-        let grads = loss.backward();
-        let grad = logits
-            .grad(&grads)
-            .expect("logits should have a gradient after backward()");
-
-        let grad_values: Vec<f32> = grad.into_data().to_vec::<f32>().unwrap();
-        assert!(
-            grad_values.iter().all(|v| v.is_finite()),
-            "every gradient entry should be finite even when the WMC floor genuinely engages -- got {:?}",
-            grad_values,
-        );
-    }
-    #[test]
-    fn loss_stays_finite_under_combined_extreme_conditions() {
-        use burn::backend::Autodiff;
-
-        type ADBackend = Autodiff<NdArray>;
-        let device = NdArrayDevice::default();
-        let domain_size = 9;
-
-        let mut problems = Vec::new();
-        for _ in 0..2 {
-            let mut problem = Problem::default();
-            let vars =
-                problem.add_variables(domain_size, (0..domain_size as isize).collect(), None);
-            all_different(&mut problem, vars.clone());
-            not_equals(&mut problem, vars[0], vars[1]);
-            problems.push(Arc::new(problem));
-        }
-
-        let data_config = ConsFormerDataConfig {
-            domain_size,
-            mask_fraction: 0.5,
+        // `mask_fraction = 0.0` above means `var_masks` is all-false, so `blend_with_current`
+        // pins every variable to `batch.assignments` regardless of `logits` -- setting both
+        // assignments to 0 violates `not_equals(x, y)` unconditionally.
+        let assignments: Tensor<ADBackend, 2, Int> =
+            Tensor::<ADBackend, 1, Int>::from_data([0i64, 0i64].as_slice(), &device)
+                .reshape([1, 2]);
+        let batch = ConsFormerMddBatch {
+            assignments,
+            ..batch
         };
-        let dataset = ConsFormerMddDataset::<ADBackend>::new(
-            problems,
-            MddCompilationConfig::default(),
-            data_config,
-            &device,
-        );
-        let samples: Vec<_> = (0..dataset.len())
-            .map(|i| dataset.get(i).unwrap())
-            .collect();
-        let batcher = ConsFormerMddBatcher::new(data_config);
-        let batch = batcher.batch(samples, &device);
 
-        // Every variable of every sample sharply favors value 0 -- whichever positions
-        // `blend_with_current` leaves network-predicted (per the random `mask_fraction = 0.5`
-        // draw) will underflow just as readily as the dedicated clamp tests above.
-        let mut logits_data = vec![-20.0f32; 2 * domain_size * domain_size];
-        for sample in 0..2 {
-            for v in 0..domain_size {
-                logits_data[sample * domain_size * domain_size + v * domain_size] = 20.0;
-            }
-        }
         let logits: Tensor<ADBackend, 3> =
-            Tensor::<ADBackend, 1>::from_data(logits_data.as_slice(), &device)
-                .reshape([2, domain_size, domain_size])
-                .require_grad();
+            Tensor::zeros([1, 2, 3], &device).require_grad();
 
         let loss = ConsFormerMddLoss.loss(logits.clone(), &batch);
         let loss_value: f32 = loss.clone().into_data().to_vec::<f32>().unwrap()[0];
+        assert!(loss_value.is_finite(), "loss should be finite, got {loss_value}");
         assert!(
-            loss_value.is_finite(),
-            "loss should be finite, got {loss_value}"
+            (loss_value as f64 - (-(WMC_EPS).ln())).abs() < 1e-3,
+            "an unconditionally-violated constraint should read back as -log(WMC_EPS), got {loss_value}",
         );
 
         let grads = loss.backward();
         let grad = logits
             .grad(&grads)
             .expect("logits should have a gradient after backward()");
-
         let grad_values: Vec<f32> = grad.into_data().to_vec::<f32>().unwrap();
         assert!(
             grad_values.iter().all(|v| v.is_finite()),
-            "every gradient entry should be finite under combined extreme conditions -- got {:?}",
+            "every gradient entry should be finite even when a constraint is unconditionally violated -- got {:?}",
             grad_values,
         );
     }

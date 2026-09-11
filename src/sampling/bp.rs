@@ -28,6 +28,7 @@
 //! full backward pass per MDD per iteration, with every layer's local belief read off the same pair
 //! of arrays in a single combined pass (`mdd_local_beliefs`).
 
+use crate::mdd::wmc::gradient as mdd_gradient;
 use crate::mdd::Mdd;
 use crate::modelling::ValueIndex;
 
@@ -43,89 +44,18 @@ fn one_hot(value: ValueIndex, domain_size: usize) -> Vec<f64> {
     weights
 }
 
-/// Full, unclamped forward (WMC) pass over `mdd`: `alpha[layer][node]` is the total mass reaching
-/// `node` (indexed within its layer) from the root, with each layer's edges weighted by
-/// `messages[layer][value]` -- `messages` is indexed *by layer within this MDD* (length
-/// `mdd.number_layers() - 1`), not by global variable id, since it's built per-MDD by
-/// `belief_propagation` from that MDD's own scope. Unlike `partial_alpha_at`, every layer sums over
-/// every outgoing edge -- there's no `decided`/clamped layer here -- and the *entire* array of
-/// per-layer vectors is kept (one entry per layer, root through sink) rather than only the value at
-/// one target layer, since belief propagation needs every layer's local belief out of one pass.
-fn unclamped_alpha(mdd: &Mdd, messages: &[Vec<f64>]) -> Vec<Vec<f64>> {
-    let last_layer = mdd.sink().0;
-    let mut alphas: Vec<Vec<f64>> = Vec::with_capacity(last_layer + 1);
-    alphas.push(vec![1.0; mdd.number_nodes_in_layer(0)]);
-
-    for layer in 0..last_layer {
-        let mut next_alpha = vec![0.0; mdd.number_nodes_in_layer(layer + 1)];
-        for node in mdd.nodes_in_layer(layer) {
-            let mass = alphas[layer][node.1];
-            if mass == 0.0 {
-                continue;
-            }
-            for edge in mdd[node].iter_children() {
-                let value = mdd[edge].assignment();
-                let weight = messages[layer][value.0];
-                next_alpha[mdd[edge].to().1] += mass * weight;
-            }
-        }
-        alphas.push(next_alpha);
-    }
-
-    alphas
-}
-
-/// The backward counterpart of `unclamped_alpha`: `beta[layer][node]` is the total mass from
-/// `node` to the sink, weighted the same way (`messages` indexed by layer, same convention).
-fn unclamped_beta(mdd: &Mdd, messages: &[Vec<f64>]) -> Vec<Vec<f64>> {
-    let last_layer = mdd.sink().0;
-    let mut betas: Vec<Vec<f64>> = vec![Vec::new(); last_layer + 1];
-    betas[last_layer] = vec![1.0; mdd.number_nodes_in_layer(last_layer)];
-
-    for layer in (0..last_layer).rev() {
-        let mut prev_beta = vec![0.0; mdd.number_nodes_in_layer(layer)];
-        for node in mdd.nodes_in_layer(layer) {
-            let mut mass = 0.0;
-            for edge in mdd[node].iter_children() {
-                let value = mdd[edge].assignment();
-                let weight = messages[layer][value.0];
-                mass += weight * betas[layer + 1][mdd[edge].to().1];
-            }
-            prev_beta[node.1] = mass;
-        }
-        betas[layer] = prev_beta;
-    }
-
-    betas
-}
-
-/// One MDD's local belief for every variable in its scope, computed in a single combined
-/// forward-backward pass -- Eq. 2, with `x`'s own message excluded from the product (its own
-/// layer's edges carry only structural existence; everything else is already folded into
-/// `alpha`/`beta` via every *other* layer's weighting). Returned as one probability vector per
-/// layer, indexed the same way as `mdd.decision_at_layer` (and the same way `messages` itself is
-/// indexed -- by layer within this MDD, not by global variable id).
+/// One MDD's local belief for every variable in its scope -- Eq. 2, with `x`'s own message
+/// excluded from the product (its own layer's edges carry only structural existence; everything
+/// else is already folded into the forward/backward pass via every *other* layer's weighting).
+/// `crate::mdd::wmc::gradient`'s `d(WMC)/d(messages[layer][value])` is exactly this quantity before
+/// normalization -- see that function's doc. Returned as one probability vector per layer, indexed
+/// the same way as `mdd.decision_at_layer` (and the same way `messages` itself is indexed -- by
+/// layer within this MDD, not by global variable id).
 fn mdd_local_beliefs(mdd: &Mdd, messages: &[Vec<f64>]) -> Vec<Vec<f64>> {
-    let alpha = unclamped_alpha(mdd, messages);
-    let beta = unclamped_beta(mdd, messages);
-    let last_layer = mdd.sink().0;
-
-    (0..last_layer)
-        .map(|layer| {
-            let domain_size = messages[layer].len();
-            let mut weights = vec![0.0; domain_size];
-            for node in mdd.nodes_in_layer(layer) {
-                let mass = alpha[layer][node.1];
-                if mass == 0.0 {
-                    continue;
-                }
-                for edge in mdd[node].iter_children() {
-                    let value = mdd[edge].assignment();
-                    weights[value.0] += mass * beta[layer + 1][mdd[edge].to().1];
-                }
-            }
-            normalize_or_uniform(weights, domain_size)
-        })
+    mdd_gradient(mdd, messages)
+        .into_iter()
+        .zip(messages)
+        .map(|(weights, m)| normalize_or_uniform(weights, m.len()))
         .collect()
 }
 
