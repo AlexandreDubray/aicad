@@ -156,8 +156,9 @@ pub struct PyTrainingConfig {
     /// `grad_clip_norm` is also set.
     pub grad_clip_value: Option<f64>,
     /// If true, also save the best-so-far model at a decaying-density set of training-epoch
-    /// horizons under `checkpoint_dir/horizons/`, so performance can later be swept as a function
-    /// of training budget. See `train::compute_horizons`.
+    /// horizons, each as its own `checkpoint_dir/epoch_<N>/{config.json, weights.mpk}` --
+    /// loadable directly, the same way as `checkpoint_dir` itself -- so performance can later be
+    /// swept as a function of training budget. See `train::compute_horizons`.
     pub save_horizons: bool,
     /// How many horizon checkpoints to save across `[0, num_epochs]` when `save_horizons` is set.
     pub num_checkpoints: usize,

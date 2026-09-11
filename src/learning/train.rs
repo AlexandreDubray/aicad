@@ -72,9 +72,11 @@ pub struct TrainingConfig {
     pub grad_clip_value: Option<f64>,
     /// If true, also save the best-so-far model at a decaying-density set of training-epoch
     /// horizons (see `compute_horizons`), so a later sweep can evaluate performance as a function
-    /// of training budget without needing a separate run per budget. Off by default: purely
-    /// additive to the existing single-`weights` checkpoint, but costs one extra checkpoint file
-    /// per horizon on disk.
+    /// of training budget without needing a separate run per budget. Each horizon is its own
+    /// self-contained `out_dir/epoch_<N>/{config.json, weights}` pair, loadable the same way as
+    /// the root checkpoint (`config.json` is just copied from `out_dir`, since it's the same for
+    /// every horizon of a run). Off by default: purely additive to the existing root checkpoint,
+    /// but costs one extra checkpoint directory per horizon on disk.
     #[config(default = false)]
     pub save_horizons: bool,
     /// How many horizon checkpoints to save across `[0, num_epochs]` when `save_horizons` is set.
@@ -218,13 +220,7 @@ where
     } else {
         std::collections::HashSet::new()
     };
-    let horizons_dir = out_dir.join("horizons");
     let mut horizon_manifest: Vec<serde_json::Value> = Vec::new();
-    if !horizons.is_empty() {
-        if let Err(e) = std::fs::create_dir_all(&horizons_dir) {
-            log::warn!("warning: failed to create horizons dir: {e}");
-        }
-    }
 
     for epoch in 0..training.num_epochs {
         let mut epoch_loss_sum = 0.0;
@@ -333,15 +329,24 @@ where
 
             if horizons.contains(&(epoch + 1)) {
                 if let Some(best) = &best_network {
-                    let path = horizons_dir.join(format!("weights_epoch{:05}", epoch + 1));
-                    match best.clone().save_file(path, &CompactRecorder::new()) {
+                    let epoch_dir = out_dir.join(format!("epoch_{:05}", epoch + 1));
+                    let saved = std::fs::create_dir_all(&epoch_dir)
+                        .and_then(|_| std::fs::copy(out_dir.join("config.json"), epoch_dir.join("config.json")))
+                        .map_err(|e| e.to_string())
+                        .and_then(|_| {
+                            best.clone()
+                                .save_file(epoch_dir.join("weights"), &CompactRecorder::new())
+                                .map_err(|e| e.to_string())
+                        });
+                    match saved {
                         Ok(_) => {
                             horizon_manifest.push(serde_json::json!({
                                 "epoch": epoch + 1,
                                 "best_score_so_far": best_score,
+                                "dir": epoch_dir.file_name().and_then(|n| n.to_str()),
                             }));
                             if let Err(e) = std::fs::write(
-                                horizons_dir.join("manifest.json"),
+                                out_dir.join("horizons_manifest.json"),
                                 serde_json::to_string_pretty(&horizon_manifest)
                                     .unwrap_or_default(),
                             ) {
@@ -403,5 +408,100 @@ mod test_compute_horizons {
     #[test]
     fn single_checkpoint_is_just_the_final_validation_event() {
         assert_eq!(compute_horizons(100, 10, 1), vec![100]);
+    }
+}
+
+#[cfg(test)]
+mod test_horizon_checkpoint_layout {
+    use super::*;
+
+    use burn::backend::ndarray::NdArrayDevice;
+    use burn::backend::{Autodiff, NdArray};
+
+    use crate::learning::consformer::{
+        ConsFormerBatcher, ConsFormerConfig, ConsFormerDataset, ConsFormerLoss,
+    };
+    use crate::modelling::{not_equals, Problem};
+    use crate::nls::load_network;
+
+    /// End-to-end: a horizon checkpoint must be its own self-contained, loadable directory --
+    /// `out_dir/epoch_<N>/{config.json, weights.mpk}` -- not just a bare weights file that needs
+    /// the root's `config.json` to load, and the root checkpoint (`out_dir/{config.json,
+    /// weights.mpk}`) must still be the best model directly, with nothing to search for.
+    #[test]
+    fn horizon_and_root_checkpoints_are_both_directly_loadable() {
+        type ADBackend = Autodiff<NdArray>;
+        let device = NdArrayDevice::default();
+
+        let out_dir = std::env::temp_dir().join(format!(
+            "aicad_test_horizon_checkpoint_layout_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&out_dir);
+
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1, 2], None);
+        let y = problem.add_variable(vec![0, 1, 2], None);
+        not_equals(&mut problem, x, y);
+        let problems = vec![Arc::new(problem)];
+
+        let network_config =
+            ConsFormerConfig::new(3, 4, 4, 1, 4, 0, 0.5, 1.0).with_num_layers(1);
+
+        // Mirrors `pyaicad::learn::prepare_checkpoint_dir`, called before `train_model` in every
+        // real caller -- `train_model` itself only ever reads `out_dir/config.json` (to copy it
+        // into each horizon dir), never writes it.
+        std::fs::create_dir_all(&out_dir).unwrap();
+        network_config.save(out_dir.join("config.json")).unwrap();
+
+        let train_dataset = ConsFormerDataset::<ADBackend>::new(problems.clone(), &device);
+        let valid_dataset = ConsFormerDataset::<NdArray>::new(problems.clone(), &device);
+        let batcher = ConsFormerBatcher { mask_fraction: 0.5 };
+
+        let training = TrainingConfig::new(ModelSelection::Loss)
+            .with_num_epochs(2)
+            .with_validation_interval(1)
+            .with_batch_size(1)
+            .with_save_horizons(true)
+            .with_num_checkpoints(1);
+
+        train_model::<
+            ADBackend,
+            ConsFormerConfig,
+            _,
+            _,
+            _,
+            ConsFormerLoss,
+            _,
+            _,
+        >(
+            network_config,
+            &problems,
+            train_dataset,
+            valid_dataset,
+            batcher,
+            ConsFormerLoss,
+            training,
+            &out_dir,
+            &device,
+        );
+
+        assert!(out_dir.join("config.json").is_file());
+        assert!(out_dir.join("weights.mpk").is_file());
+
+        // `num_checkpoints = 1` means exactly one horizon: the final validation event (epoch 2).
+        let epoch_dir = out_dir.join("epoch_00002");
+        assert!(epoch_dir.join("config.json").is_file());
+        assert!(epoch_dir.join("weights.mpk").is_file());
+        assert!(out_dir.join("horizons_manifest.json").is_file());
+
+        // The whole point: a horizon checkpoint loads on its own, the same way the root does --
+        // no need to reach back into `out_dir` for its `config.json`.
+        let _ = load_network::<NdArray, ConsFormerConfig>(&epoch_dir, &problems, &device)
+            .expect("a horizon checkpoint should be loadable directly, on its own");
+        let _ = load_network::<NdArray, ConsFormerConfig>(&out_dir, &problems, &device)
+            .expect("the root checkpoint should still be loadable directly");
+
+        std::fs::remove_dir_all(&out_dir).ok();
     }
 }
