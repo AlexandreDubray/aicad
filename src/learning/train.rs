@@ -84,6 +84,15 @@ pub struct TrainingConfig {
     /// training changes the model much more per epoch than late training does.
     #[config(default = 15)]
     pub num_checkpoints: usize,
+    /// Stop training once `model_selection`'s score hasn't improved by more than
+    /// `early_stopping_min_delta` for this many consecutive validation checks. `None` (the
+    /// default) disables early stopping, matching the previous always-run-`num_epochs` behavior.
+    #[config(default = "None")]
+    pub early_stopping_patience: Option<usize>,
+    /// How much `model_selection`'s score must improve over `best_score` at a validation check to
+    /// count as progress rather than stagnation. Only used when `early_stopping_patience` is set.
+    #[config(default = 1e-4)]
+    pub early_stopping_min_delta: f64,
 }
 
 /// Generates a decaying-density set of training-epoch checkpoints: `h_0 = validation_interval`,
@@ -208,6 +217,7 @@ where
 
     let mut best_score = f64::INFINITY;
     let mut best_network: Option<NC::N> = None;
+    let mut stagnant_checks = 0usize;
 
     let horizons: std::collections::HashSet<usize> = if training.save_horizons {
         compute_horizons(
@@ -312,9 +322,16 @@ where
                     avg_valid_loss
                 }
                 ModelSelection::ConstraintSatisfaction => {
-                    panic!("Constraint satisfaction for model selection is not implemented");
+                    let overall = valid_report
+                        .as_ref()
+                        .map(SatisfactionReport::overall_satisfaction)
+                        .unwrap_or(0.0);
+                    log::info!("epoch {epoch}: validation constraint satisfaction = {overall:.4}");
+                    1.0 - overall
                 }
             };
+
+            let improved = score < best_score - training.early_stopping_min_delta;
 
             if score < best_score {
                 best_score = score;
@@ -361,6 +378,27 @@ where
                     log::warn!(
                         "epoch {epoch}: horizon reached but no best model has been found yet -- skipping"
                     );
+                }
+            }
+
+            if let Some(patience) = training.early_stopping_patience {
+                if improved {
+                    stagnant_checks = 0;
+                } else {
+                    stagnant_checks += 1;
+                    log::info!(
+                        "epoch {epoch}: no improvement > {} for {stagnant_checks}/{patience} \
+                         validation checks",
+                        training.early_stopping_min_delta,
+                    );
+                    if stagnant_checks >= patience {
+                        log::info!(
+                            "epoch {epoch}: early stopping -- {stagnant_checks} validation \
+                             checks without improvement > {}",
+                            training.early_stopping_min_delta,
+                        );
+                        break;
+                    }
                 }
             }
         }
@@ -501,6 +539,132 @@ mod test_horizon_checkpoint_layout {
             .expect("a horizon checkpoint should be loadable directly, on its own");
         let _ = load_network::<NdArray, ConsFormerConfig>(&out_dir, &problems, &device)
             .expect("the root checkpoint should still be loadable directly");
+
+        std::fs::remove_dir_all(&out_dir).ok();
+    }
+
+    #[test]
+    fn early_stopping_stops_before_num_epochs_once_the_score_stops_improving() {
+        type ADBackend = Autodiff<NdArray>;
+        let device = NdArrayDevice::default();
+
+        let out_dir = std::env::temp_dir().join(format!(
+            "aicad_test_early_stopping_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&out_dir);
+
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1, 2], None);
+        let y = problem.add_variable(vec![0, 1, 2], None);
+        not_equals(&mut problem, x, y);
+        let problems = vec![Arc::new(problem)];
+
+        let network_config =
+            ConsFormerConfig::new(3, 4, 4, 1, 4, 0, 0.5, 1.0).with_num_layers(1);
+
+        std::fs::create_dir_all(&out_dir).unwrap();
+        network_config.save(out_dir.join("config.json")).unwrap();
+
+        let train_dataset = ConsFormerDataset::<ADBackend>::new(problems.clone(), &device);
+        let valid_dataset = ConsFormerDataset::<NdArray>::new(problems.clone(), &device);
+        let batcher = ConsFormerBatcher { mask_fraction: 0.5 };
+
+        // `early_stopping_min_delta` set unreasonably high so the very first improvement (from
+        // `best_score = INFINITY`) is the only one that will ever count -- every validation check
+        // after the first must register as stagnant, so training should stop at
+        // epoch `early_stopping_patience + 1`, well short of `num_epochs`.
+        let training = TrainingConfig::new(ModelSelection::Loss)
+            .with_num_epochs(10)
+            .with_validation_interval(1)
+            .with_batch_size(1)
+            .with_early_stopping_patience(Some(1))
+            .with_early_stopping_min_delta(1000.0)
+            .with_save_horizons(true)
+            .with_num_checkpoints(1);
+
+        train_model::<
+            ADBackend,
+            ConsFormerConfig,
+            _,
+            _,
+            _,
+            ConsFormerLoss,
+            _,
+            _,
+        >(
+            network_config,
+            &problems,
+            train_dataset,
+            valid_dataset,
+            batcher,
+            ConsFormerLoss,
+            training,
+            &out_dir,
+            &device,
+        );
+
+        // `num_checkpoints = 1` on a 10-epoch run means the only horizon is epoch 10 -- it must
+        // never be reached if early stopping actually cut the run short.
+        assert!(!out_dir.join("epoch_00010").exists());
+
+        std::fs::remove_dir_all(&out_dir).ok();
+    }
+
+    #[test]
+    fn constraint_satisfaction_model_selection_does_not_panic() {
+        type ADBackend = Autodiff<NdArray>;
+        let device = NdArrayDevice::default();
+
+        let out_dir = std::env::temp_dir().join(format!(
+            "aicad_test_constraint_satisfaction_selection_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&out_dir);
+
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1, 2], None);
+        let y = problem.add_variable(vec![0, 1, 2], None);
+        not_equals(&mut problem, x, y);
+        let problems = vec![Arc::new(problem)];
+
+        let network_config =
+            ConsFormerConfig::new(3, 4, 4, 1, 4, 0, 0.5, 1.0).with_num_layers(1);
+
+        std::fs::create_dir_all(&out_dir).unwrap();
+        network_config.save(out_dir.join("config.json")).unwrap();
+
+        let train_dataset = ConsFormerDataset::<ADBackend>::new(problems.clone(), &device);
+        let valid_dataset = ConsFormerDataset::<NdArray>::new(problems.clone(), &device);
+        let batcher = ConsFormerBatcher { mask_fraction: 0.5 };
+
+        let training = TrainingConfig::new(ModelSelection::ConstraintSatisfaction)
+            .with_num_epochs(2)
+            .with_validation_interval(1)
+            .with_batch_size(1);
+
+        train_model::<
+            ADBackend,
+            ConsFormerConfig,
+            _,
+            _,
+            _,
+            ConsFormerLoss,
+            _,
+            _,
+        >(
+            network_config,
+            &problems,
+            train_dataset,
+            valid_dataset,
+            batcher,
+            ConsFormerLoss,
+            training,
+            &out_dir,
+            &device,
+        );
+
+        assert!(out_dir.join("weights.mpk").is_file());
 
         std::fs::remove_dir_all(&out_dir).ok();
     }

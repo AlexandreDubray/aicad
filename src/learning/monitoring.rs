@@ -128,6 +128,20 @@ impl SatisfactionReport {
         }
     }
 
+    pub fn overall_satisfaction(&self) -> f64 {
+        let mut sum_rate = 0.0;
+        let mut count = 0usize;
+        for stats in self.by_constraint.values() {
+            sum_rate += stats.sum_rate;
+            count += stats.count;
+        }
+        if count == 0 {
+            0.0
+        } else {
+            sum_rate / count as f64
+        }
+    }
+
     pub fn print(&self, width: usize) {
         if self.by_constraint.is_empty() {
             log::warn!("Can not show constraint satisfaction: no constraints recorded.");

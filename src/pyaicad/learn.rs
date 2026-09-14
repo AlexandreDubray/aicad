@@ -162,6 +162,13 @@ pub struct PyTrainingConfig {
     pub save_horizons: bool,
     /// How many horizon checkpoints to save across `[0, num_epochs]` when `save_horizons` is set.
     pub num_checkpoints: usize,
+    /// Stop training once `model_selection`'s score hasn't improved by more than
+    /// `early_stopping_min_delta` for this many consecutive validation checks. `None` disables
+    /// early stopping.
+    pub early_stopping_patience: Option<usize>,
+    /// How much `model_selection`'s score must improve to count as progress rather than
+    /// stagnation. Only used when `early_stopping_patience` is set.
+    pub early_stopping_min_delta: f64,
 }
 
 #[pymethods]
@@ -170,7 +177,8 @@ impl PyTrainingConfig {
     #[pyo3(signature = (lr=3e-4, num_epochs=10, batch_size=32, validation_interval=10,
             model_selection=PyModelSelection::Loss, beta_1=0.9, beta_2=0.999, epsilon=1e-5,
             amsgrad=false, weight_decay=None, grad_clip_norm=None, grad_clip_value=None,
-            save_horizons=false, num_checkpoints=15))]
+            save_horizons=false, num_checkpoints=15, early_stopping_patience=None,
+            early_stopping_min_delta=1e-4))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         lr: f64,
@@ -187,6 +195,8 @@ impl PyTrainingConfig {
         grad_clip_value: Option<f64>,
         save_horizons: bool,
         num_checkpoints: usize,
+        early_stopping_patience: Option<usize>,
+        early_stopping_min_delta: f64,
     ) -> Self {
         PyTrainingConfig {
             lr,
@@ -203,6 +213,8 @@ impl PyTrainingConfig {
             grad_clip_value,
             save_horizons,
             num_checkpoints,
+            early_stopping_patience,
+            early_stopping_min_delta,
         }
     }
 }
@@ -224,6 +236,8 @@ impl From<&PyTrainingConfig> for TrainingConfig {
             grad_clip_value: c.grad_clip_value,
             save_horizons: c.save_horizons,
             num_checkpoints: c.num_checkpoints,
+            early_stopping_patience: c.early_stopping_patience,
+            early_stopping_min_delta: c.early_stopping_min_delta,
         }
     }
 }
