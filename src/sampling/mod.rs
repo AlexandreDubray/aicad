@@ -230,6 +230,33 @@ impl<'a> MddSampler<'a> {
         members
     }
 
+    pub fn feasible_domain(
+        &self,
+        var: VariableIndex,
+        assignment: &[ValueIndex],
+        decided: &[bool],
+    ) -> Vec<bool> {
+        let members = self.members_of(var);
+        let problem = self.mdds[members[0].0].problem();
+        let domain_size = problem[var].domain_size();
+        let weights: Vec<Vec<f64>> = (0..problem.number_variables())
+            .map(|v| vec![1.0; problem[VariableIndex(v)].domain_size()])
+            .collect();
+
+        let mut feasible = vec![true; domain_size];
+        for &(mdd_index, layer) in members {
+            let conditional =
+                partial_conditional(&self.mdds[mdd_index], layer, &weights, assignment, decided);
+            for (f, &c) in feasible.iter_mut().zip(conditional.iter()) {
+                *f = *f && c > 0.0;
+            }
+        }
+        if feasible.iter().all(|&f| !f) {
+            feasible = vec![true; domain_size];
+        }
+        feasible
+    }
+
     /// Combines every MDD's `partial_conditional` for `var`, given `decided` evidence from
     /// `assignment` -- a weighted product of experts in log-space, dividing out the network's own
     /// belief once per MDD so it isn't double-counted when several MDDs share `var`. An all-`false`

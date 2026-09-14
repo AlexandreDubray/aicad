@@ -19,7 +19,9 @@ use crate::learning::consformer::{
 use crate::learning::Network;
 use crate::mdd::heuristics::ConstraintGrouping;
 use crate::modelling::Problem;
-use crate::nls::decode::{Argmax, BeliefPropagationDecode, DecodingOperator, Sampling};
+use crate::nls::decode::{
+    Argmax, BeliefPropagationDecode, ConstraintPropagationDecode, DecodingOperator, Sampling,
+};
 use crate::nls::destroy::{
     DestroyOperator, RandomDestroy, RelatedDestroy, WeightedRelatedDestroy, WorstDestroy,
 };
@@ -148,6 +150,7 @@ impl PyDestroyKind {
 pub enum PyDecodeKind {
     Logits,
     BeliefPropagation,
+    ConstraintPropagation,
 }
 
 impl PyDecodeKind {
@@ -155,6 +158,7 @@ impl PyDecodeKind {
         match self {
             PyDecodeKind::Logits => "logits",
             PyDecodeKind::BeliefPropagation => "belief_propagation",
+            PyDecodeKind::ConstraintPropagation => "constraint_propagation",
         }
     }
 
@@ -162,6 +166,7 @@ impl PyDecodeKind {
         match tag {
             "logits" => Ok(PyDecodeKind::Logits),
             "belief_propagation" => Ok(PyDecodeKind::BeliefPropagation),
+            "constraint_propagation" => Ok(PyDecodeKind::ConstraintPropagation),
             other => Err(PyValueError::new_err(format!(
                 "unknown decode_kind {other:?}"
             ))),
@@ -205,6 +210,13 @@ fn build_decode_op<B: Backend>(
                 bp_iterations,
                 mode,
             ))
+        }
+        PyDecodeKind::ConstraintPropagation => {
+            let compilation = MddCompilationConfig {
+                grouping: ConstraintGrouping::new_rolling(mdd_grouping_window_size),
+                ..MddCompilationConfig::default()
+            };
+            Box::new(ConstraintPropagationDecode::new(compilation))
         }
     }
 }

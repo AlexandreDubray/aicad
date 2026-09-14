@@ -20,7 +20,7 @@ use crate::mdd::Mdd;
 use crate::modelling::{Problem, ValueIndex, VariableIndex};
 use crate::sampling::bp::belief_propagation;
 use crate::sampling::solve::value_to_index;
-use crate::sampling::{argmax, sample_categorical, DecodeMode};
+use crate::sampling::{argmax, sample_categorical, DecodeMode, MddSampler};
 use crate::utils::tensor::to_rows;
 
 /// Turns this iteration's logits into the next assignment. Only positions
@@ -101,19 +101,15 @@ fn compile_mdds_for(problem: &Arc<Problem>, compilation: &MddCompilationConfig) 
         .collect()
 }
 
-pub struct BeliefPropagationDecode {
+struct MddCache {
     compilation: MddCompilationConfig,
-    iterations: usize,
-    mode: DecodeMode,
     cache: Mutex<HashMap<usize, Arc<Vec<Mdd>>>>,
 }
 
-impl BeliefPropagationDecode {
-    pub fn new(compilation: MddCompilationConfig, iterations: usize, mode: DecodeMode) -> Self {
+impl MddCache {
+    fn new(compilation: MddCompilationConfig) -> Self {
         Self {
             compilation,
-            iterations,
-            mode,
             cache: Mutex::new(HashMap::new()),
         }
     }
@@ -132,6 +128,53 @@ impl BeliefPropagationDecode {
             .expect("mdd cache lock poisoned")
             .insert(key, Arc::clone(&mdds));
         mdds
+    }
+
+    fn prepare(&self, problems: &[Arc<Problem>]) {
+        let mut seen = HashSet::new();
+        let unique: Vec<&Arc<Problem>> = problems
+            .iter()
+            .filter(|p| seen.insert(Arc::as_ptr(*p) as usize))
+            .collect();
+
+        let progress = ProgressBar::new(unique.len() as u64);
+        progress.set_style(
+            ProgressStyle::with_template(
+                "{msg} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+            )
+            .expect("hard-coded progress bar template should always be valid"),
+        );
+        progress.set_message("Compiling MDDs");
+
+        crate::utils::worker_pool().install(|| {
+            unique
+                .into_par_iter()
+                .progress_with(progress.clone())
+                .for_each(|problem| {
+                    self.mdds_for(problem);
+                });
+            progress.finish_and_clear();
+        });
+    }
+}
+
+pub struct BeliefPropagationDecode {
+    mdds: MddCache,
+    iterations: usize,
+    mode: DecodeMode,
+}
+
+impl BeliefPropagationDecode {
+    pub fn new(compilation: MddCompilationConfig, iterations: usize, mode: DecodeMode) -> Self {
+        Self {
+            mdds: MddCache::new(compilation),
+            iterations,
+            mode,
+        }
+    }
+
+    fn mdds_for(&self, problem: &Arc<Problem>) -> Arc<Vec<Mdd>> {
+        self.mdds.mdds_for(problem)
     }
 }
 
@@ -213,30 +256,85 @@ impl<B: Backend> DecodingOperator<B> for BeliefPropagationDecode {
     }
 
     fn prepare(&self, problems: &[Arc<Problem>]) {
-        let mut seen = HashSet::new();
-        let unique: Vec<&Arc<Problem>> = problems
-            .iter()
-            .filter(|p| seen.insert(Arc::as_ptr(*p) as usize))
-            .collect();
+        self.mdds.prepare(problems);
+    }
+}
 
-        let progress = ProgressBar::new(unique.len() as u64);
-        progress.set_style(
-            ProgressStyle::with_template(
-                "{msg} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
-            )
-            .expect("hard-coded progress bar template should always be valid"),
-        );
-        progress.set_message("Compiling MDDs");
+pub struct ConstraintPropagationDecode {
+    mdds: MddCache,
+}
 
+impl ConstraintPropagationDecode {
+    pub fn new(compilation: MddCompilationConfig) -> Self {
+        Self {
+            mdds: MddCache::new(compilation),
+        }
+    }
+
+    fn mdds_for(&self, problem: &Arc<Problem>) -> Arc<Vec<Mdd>> {
+        self.mdds.mdds_for(problem)
+    }
+}
+
+impl<B: Backend> DecodingOperator<B> for ConstraintPropagationDecode {
+    fn decode(
+        &self,
+        _logits: Tensor<B, 3>,
+        destroy_mask: Tensor<B, 2, Int>,
+        current: Tensor<B, 2, Int>,
+        problems: &[Arc<Problem>],
+    ) -> Tensor<B, 2, Int> {
+        let device = current.device();
+        let dims = current.dims();
+        let (rows, n) = (dims[0], dims[1]);
+
+        let current_rows = to_rows(&current, rows, n);
+        let mask_rows = to_rows(&destroy_mask, rows, n);
+
+        let mut next_data = vec![0i64; rows * n];
         crate::utils::worker_pool().install(|| {
-            unique
-                .into_par_iter()
-                .progress_with(progress.clone())
-                .for_each(|problem| {
-                    self.mdds_for(problem);
+            next_data
+                .par_chunks_mut(n)
+                .enumerate()
+                .for_each(|(row, next_row)| {
+                    let problem = &problems[row];
+                    let mdds = self.mdds_for(problem);
+                    let sampler = MddSampler::new(&mdds);
+
+                    let mut assignment = vec![ValueIndex(0); n];
+                    let mut decided = vec![false; n];
+                    for v in 0..n {
+                        let variable = VariableIndex(v);
+                        assignment[v] = value_to_index(problem, variable, current_rows[row][v]);
+                        decided[v] = mask_rows[row][v] == 0;
+                    }
+
+                    for v in 0..n {
+                        if mask_rows[row][v] == 0 {
+                            next_row[v] = current_rows[row][v] as i64;
+                            continue;
+                        }
+                        let variable = VariableIndex(v);
+                        let feasible = sampler.feasible_domain(variable, &assignment, &decided);
+                        let weights: Vec<f64> = feasible
+                            .iter()
+                            .map(|&f| if f { 1.0 } else { 0.0 })
+                            .collect();
+                        let chosen = sample_categorical(&weights);
+                        next_row[v] = problem[variable].value(ValueIndex(chosen)) as i64;
+                    }
                 });
-            progress.finish_and_clear();
         });
+
+        Tensor::<B, 1, Int>::from_data(next_data.as_slice(), &device).reshape([rows, n])
+    }
+
+    fn detect_unsat(&self, problem: &Arc<Problem>) -> bool {
+        self.mdds_for(problem).iter().any(Mdd::is_unsat)
+    }
+
+    fn prepare(&self, problems: &[Arc<Problem>]) {
+        self.mdds.prepare(problems);
     }
 }
 
@@ -321,6 +419,49 @@ mod tests {
             &[a.clone(), a.clone(), a.clone(), b.clone()],
         );
 
-        assert_eq!(op.cache.lock().unwrap().len(), 2);
+        assert_eq!(op.mdds.cache.lock().unwrap().len(), 2);
+    }
+
+    fn constraint_propagation_decode() -> ConstraintPropagationDecode {
+        ConstraintPropagationDecode::new(MddCompilationConfig {
+            grouping: ConstraintGrouping::new_rolling(1),
+            ..MddCompilationConfig::default()
+        })
+    }
+
+    #[test]
+    fn constraint_propagation_detect_unsat_is_true_when_a_clique_has_fewer_colours_than_variables()
+    {
+        let problem = clique_problem(6, 5);
+        let op = constraint_propagation_decode();
+        assert!(
+            <ConstraintPropagationDecode as DecodingOperator<NdArray>>::detect_unsat(
+                &op, &problem
+            )
+        );
+    }
+
+    #[test]
+    fn constraint_propagation_decode_never_returns_a_value_violating_a_still_satisfiable_all_different()
+     {
+        let problem = clique_problem(4, 6);
+        let op = constraint_propagation_decode();
+
+        let device = Default::default();
+        let current = Tensor::<NdArray, 1, Int>::from_data([0i64, 0, 2, 3].as_slice(), &device)
+            .reshape([1, 4]);
+        let destroy_mask = Tensor::<NdArray, 1, Int>::from_data([1i64, 0, 0, 0].as_slice(), &device)
+            .reshape([1, 4]);
+        let logits = Tensor::<NdArray, 1>::zeros([6], &device).reshape([1, 1, 6]);
+
+        let next = DecodingOperator::<NdArray>::decode(
+            &op,
+            logits,
+            destroy_mask,
+            current,
+            std::slice::from_ref(&problem),
+        );
+        let chosen = next.into_data().to_vec::<i64>().unwrap()[0];
+        assert!(chosen != 0 && chosen != 2 && chosen != 3);
     }
 }
