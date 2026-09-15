@@ -118,6 +118,42 @@ impl DestroyOperator for RelatedDestroy {
     }
 }
 
+pub struct UnsatRelatedDestroy {
+    pub fraction: f64,
+}
+
+impl DestroyOperator for UnsatRelatedDestroy {
+    fn destroy(&self, problem: &Problem, assignment: &[isize], rng: &mut StdRng) -> Vec<usize> {
+        let n = problem.number_variables().max(1);
+
+        let violated: Vec<_> = problem
+            .iter_constraints()
+            .filter(|&c| !problem[c].is_satisfied(assignment))
+            .collect();
+        if violated.is_empty() {
+            return Vec::new();
+        }
+        let m = violated.len();
+
+        let total_scope: usize = violated.iter().map(|&c| problem[c].iter_scope().count()).sum();
+        let avg_scope = (total_scope as f64 / m as f64).max(1.0);
+
+        let p_constraint = (self.fraction * n as f64 / (m as f64 * avg_scope)).clamp(0.0, 1.0);
+
+        let mut destroyed = HashSet::new();
+        for c in violated {
+            if rng.random_bool(p_constraint) {
+                for v in problem[c].iter_scope() {
+                    if problem[v].domain_size() > 1 {
+                        destroyed.insert(v.0);
+                    }
+                }
+            }
+        }
+        destroyed.into_iter().collect()
+    }
+}
+
 /// Stochastic related removal (Shaw) with adaptive per-constraint weights, in the spirit of
 /// Guided Local Search's penalised "features" and SAT clause-weighting local search: rather than
 /// firing every constraint with the same probability regardless of how hard it actually is to
@@ -333,5 +369,69 @@ mod test_weighted_related_destroy {
         let weights = op.weights.lock().unwrap();
         let w = &weights[&WeightedRelatedDestroy::key(&problem)];
         assert_eq!(w, &vec![1.0, 1.0]);
+    }
+}
+
+#[cfg(test)]
+mod test_unsat_related_destroy {
+    use super::*;
+    use crate::modelling::not_equals;
+    use rand::SeedableRng;
+
+    fn two_constraint_problem() -> Arc<Problem> {
+        let mut problem = Problem::default();
+        let x0 = problem.add_variable(vec![0, 1], None);
+        let x1 = problem.add_variable(vec![0, 1], None);
+        let x2 = problem.add_variable(vec![0, 1], None);
+        let x3 = problem.add_variable(vec![0, 1], None);
+        not_equals(&mut problem, x0, x1);
+        not_equals(&mut problem, x2, x3);
+        Arc::new(problem)
+    }
+
+    #[test]
+    fn only_the_violated_constraints_scope_is_ever_destroyed() {
+        let problem = two_constraint_problem();
+        let assignment = [0isize, 0, 0, 1];
+
+        let op = UnsatRelatedDestroy { fraction: 0.5 };
+        let mut rng = StdRng::seed_from_u64(42);
+
+        for _ in 0..200 {
+            let destroyed = op.destroy(&problem, &assignment, &mut rng);
+            assert!(
+                !destroyed.contains(&2) && !destroyed.contains(&3),
+                "satisfied constraint b's scope should never be destroyed: {destroyed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fully_satisfied_assignment_destroys_nothing() {
+        let problem = two_constraint_problem();
+        let assignment = [0isize, 1, 0, 1];
+
+        let op = UnsatRelatedDestroy { fraction: 0.5 };
+        let mut rng = StdRng::seed_from_u64(1);
+
+        assert!(op.destroy(&problem, &assignment, &mut rng).is_empty());
+    }
+
+    #[test]
+    fn fixing_one_violation_immediately_makes_the_newly_broken_one_eligible() {
+        let problem = two_constraint_problem();
+        let op = UnsatRelatedDestroy { fraction: 1.0 };
+        let mut rng = StdRng::seed_from_u64(3);
+
+        let now_violates_b = [0isize, 1, 0, 0];
+        let mut saw_b = false;
+        for _ in 0..50 {
+            let destroyed = op.destroy(&problem, &now_violates_b, &mut rng);
+            if destroyed.contains(&2) || destroyed.contains(&3) {
+                saw_b = true;
+                break;
+            }
+        }
+        assert!(saw_b, "newly-violated constraint should be an eligible target right away");
     }
 }

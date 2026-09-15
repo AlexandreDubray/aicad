@@ -23,7 +23,8 @@ use crate::nls::decode::{
     Argmax, BeliefPropagationDecode, ConstraintPropagationDecode, DecodingOperator, Sampling,
 };
 use crate::nls::destroy::{
-    DestroyOperator, RandomDestroy, RelatedDestroy, WeightedRelatedDestroy, WorstDestroy,
+    DestroyOperator, RandomDestroy, RelatedDestroy, UnsatRelatedDestroy, WeightedRelatedDestroy,
+    WorstDestroy,
 };
 use crate::nls::{load_network, Budget, NeuralLocalSearch, Solution, SolveConfig, Status};
 use crate::sampling::DecodeMode;
@@ -106,6 +107,7 @@ pub enum PyDestroyKind {
     /// `nls::destroy::WeightedRelatedDestroy`'s doc. Governed by `PySolveConfig`'s
     /// `destroy_weight_bump`/`destroy_weight_decay`.
     WeightedRelated,
+    UnsatRelated,
 }
 
 impl PyDestroyKind {
@@ -119,6 +121,7 @@ impl PyDestroyKind {
                 weight_bump,
                 weight_decay,
             )),
+            PyDestroyKind::UnsatRelated => Box::new(UnsatRelatedDestroy { fraction }),
         }
     }
 
@@ -128,6 +131,7 @@ impl PyDestroyKind {
             PyDestroyKind::Worst => "worst",
             PyDestroyKind::Related => "related",
             PyDestroyKind::WeightedRelated => "weighted_related",
+            PyDestroyKind::UnsatRelated => "unsat_related",
         }
     }
 
@@ -137,6 +141,7 @@ impl PyDestroyKind {
             "worst" => Ok(PyDestroyKind::Worst),
             "related" => Ok(PyDestroyKind::Related),
             "weighted_related" => Ok(PyDestroyKind::WeightedRelated),
+            "unsat_related" => Ok(PyDestroyKind::UnsatRelated),
             other => Err(PyValueError::new_err(format!(
                 "unknown destroy_kind {other:?}"
             ))),
