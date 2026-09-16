@@ -2,8 +2,8 @@
 //! The following decoding strategies are implemented:
 //!     - Use an argmax: Always select the value associated with the highest logit
 //!     - Use a softmax: sample proportionnaly to the logits
-//!     - Use belief propagation over the problem's compiled MDDs to turn the network's raw,
-//!       per-position logits into constraint-propagated marginals before decoding
+//!     - Mdd-sampling: combine the network's raw, per-position logits with one round of belief
+//!       propagation over the problem's compiled MDDs before decoding
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -20,7 +20,7 @@ use crate::mdd::Mdd;
 use crate::modelling::{Problem, ValueIndex, VariableIndex};
 use crate::sampling::bp::belief_propagation;
 use crate::sampling::solve::value_to_index;
-use crate::sampling::{argmax, sample_categorical, DecodeMode, MddSampler};
+use crate::sampling::{argmax, sample_categorical, DecodeMode};
 use crate::utils::tensor::to_rows;
 
 /// Turns this iteration's logits into the next assignment. Only positions
@@ -158,17 +158,15 @@ impl MddCache {
     }
 }
 
-pub struct BeliefPropagationDecode {
+pub struct MddSamplingDecode {
     mdds: MddCache,
-    iterations: usize,
     mode: DecodeMode,
 }
 
-impl BeliefPropagationDecode {
-    pub fn new(compilation: MddCompilationConfig, iterations: usize, mode: DecodeMode) -> Self {
+impl MddSamplingDecode {
+    pub fn new(compilation: MddCompilationConfig, mode: DecodeMode) -> Self {
         Self {
             mdds: MddCache::new(compilation),
-            iterations,
             mode,
         }
     }
@@ -178,7 +176,7 @@ impl BeliefPropagationDecode {
     }
 }
 
-impl<B: Backend> DecodingOperator<B> for BeliefPropagationDecode {
+impl<B: Backend> DecodingOperator<B> for MddSamplingDecode {
     fn decode(
         &self,
         logits: Tensor<B, 3>,
@@ -229,8 +227,7 @@ impl<B: Backend> DecodingOperator<B> for BeliefPropagationDecode {
                         probs.push(probs_v);
                     }
 
-                    let marginals =
-                        belief_propagation(&mdds, &probs, &assignment, &decided, self.iterations);
+                    let marginals = belief_propagation(&mdds, &probs, &assignment, &decided, 1);
 
                     for v in 0..n {
                         if mask_rows[row][v] == 0 {
@@ -244,84 +241,6 @@ impl<B: Backend> DecodingOperator<B> for BeliefPropagationDecode {
                             DecodeMode::Sample => sample_categorical(&marginals[v]),
                         };
                         next_row[v] = problem[VariableIndex(v)].value(ValueIndex(chosen)) as i64;
-                    }
-                });
-        });
-
-        Tensor::<B, 1, Int>::from_data(next_data.as_slice(), &device).reshape([rows, n])
-    }
-
-    fn detect_unsat(&self, problem: &Arc<Problem>) -> bool {
-        self.mdds_for(problem).iter().any(Mdd::is_unsat)
-    }
-
-    fn prepare(&self, problems: &[Arc<Problem>]) {
-        self.mdds.prepare(problems);
-    }
-}
-
-pub struct ConstraintPropagationDecode {
-    mdds: MddCache,
-}
-
-impl ConstraintPropagationDecode {
-    pub fn new(compilation: MddCompilationConfig) -> Self {
-        Self {
-            mdds: MddCache::new(compilation),
-        }
-    }
-
-    fn mdds_for(&self, problem: &Arc<Problem>) -> Arc<Vec<Mdd>> {
-        self.mdds.mdds_for(problem)
-    }
-}
-
-impl<B: Backend> DecodingOperator<B> for ConstraintPropagationDecode {
-    fn decode(
-        &self,
-        _logits: Tensor<B, 3>,
-        destroy_mask: Tensor<B, 2, Int>,
-        current: Tensor<B, 2, Int>,
-        problems: &[Arc<Problem>],
-    ) -> Tensor<B, 2, Int> {
-        let device = current.device();
-        let dims = current.dims();
-        let (rows, n) = (dims[0], dims[1]);
-
-        let current_rows = to_rows(&current, rows, n);
-        let mask_rows = to_rows(&destroy_mask, rows, n);
-
-        let mut next_data = vec![0i64; rows * n];
-        crate::utils::worker_pool().install(|| {
-            next_data
-                .par_chunks_mut(n)
-                .enumerate()
-                .for_each(|(row, next_row)| {
-                    let problem = &problems[row];
-                    let mdds = self.mdds_for(problem);
-                    let sampler = MddSampler::new(&mdds);
-
-                    let mut assignment = vec![ValueIndex(0); n];
-                    let mut decided = vec![false; n];
-                    for v in 0..n {
-                        let variable = VariableIndex(v);
-                        assignment[v] = value_to_index(problem, variable, current_rows[row][v]);
-                        decided[v] = mask_rows[row][v] == 0;
-                    }
-
-                    for v in 0..n {
-                        if mask_rows[row][v] == 0 {
-                            next_row[v] = current_rows[row][v] as i64;
-                            continue;
-                        }
-                        let variable = VariableIndex(v);
-                        let feasible = sampler.feasible_domain(variable, &assignment, &decided);
-                        let weights: Vec<f64> = feasible
-                            .iter()
-                            .map(|&f| if f { 1.0 } else { 0.0 })
-                            .collect();
-                        let chosen = sample_categorical(&weights);
-                        next_row[v] = problem[variable].value(ValueIndex(chosen)) as i64;
                     }
                 });
         });
@@ -355,13 +274,12 @@ mod tests {
         Arc::new(problem)
     }
 
-    fn belief_propagation_decode() -> BeliefPropagationDecode {
-        BeliefPropagationDecode::new(
+    fn mdd_sampling_decode() -> MddSamplingDecode {
+        MddSamplingDecode::new(
             MddCompilationConfig {
                 grouping: ConstraintGrouping::new_rolling(1),
                 ..MddCompilationConfig::default()
             },
-            5,
             DecodeMode::Greedy,
         )
     }
@@ -369,25 +287,23 @@ mod tests {
     #[test]
     fn detect_unsat_is_true_when_a_clique_has_fewer_colours_than_variables() {
         let problem = clique_problem(6, 5);
-        let op = belief_propagation_decode();
-        assert!(
-            <BeliefPropagationDecode as DecodingOperator<NdArray>>::detect_unsat(&op, &problem)
-        );
+        let op = mdd_sampling_decode();
+        assert!(<MddSamplingDecode as DecodingOperator<NdArray>>::detect_unsat(&op, &problem));
     }
 
     #[test]
     fn detect_unsat_is_false_when_a_clique_has_enough_colours() {
         let problem = clique_problem(6, 6);
-        let op = belief_propagation_decode();
+        let op = mdd_sampling_decode();
         assert!(
-            !<BeliefPropagationDecode as DecodingOperator<NdArray>>::detect_unsat(&op, &problem)
+            !<MddSamplingDecode as DecodingOperator<NdArray>>::detect_unsat(&op, &problem)
         );
     }
 
     #[test]
     fn detect_unsat_caches_so_a_second_call_does_not_recompile() {
         let problem = clique_problem(6, 5);
-        let op = belief_propagation_decode();
+        let op = mdd_sampling_decode();
         let first = op.mdds_for(&problem);
         let second = op.mdds_for(&problem);
         assert!(Arc::ptr_eq(&first, &second));
@@ -396,8 +312,8 @@ mod tests {
     #[test]
     fn prepare_warms_the_cache_so_decode_never_needs_to_compile() {
         let problem = clique_problem(6, 5);
-        let op = belief_propagation_decode();
-        <BeliefPropagationDecode as DecodingOperator<NdArray>>::prepare(&op, &[problem.clone()]);
+        let op = mdd_sampling_decode();
+        <MddSamplingDecode as DecodingOperator<NdArray>>::prepare(&op, &[problem.clone()]);
 
         // `mdds_for` after `prepare` must be a pure cache hit -- calling it twice more should
         // keep returning the exact same `Arc`, never a freshly compiled one.
@@ -410,58 +326,15 @@ mod tests {
     fn prepare_compiles_each_distinct_problem_once_even_with_duplicates() {
         let a = clique_problem(6, 5);
         let b = clique_problem(4, 4);
-        let op = belief_propagation_decode();
+        let op = mdd_sampling_decode();
 
         // `a` repeated three times (multiple search samples of the same problem) plus `b` once --
         // `prepare` must still only compile 2 distinct problems, not 4.
-        <BeliefPropagationDecode as DecodingOperator<NdArray>>::prepare(
+        <MddSamplingDecode as DecodingOperator<NdArray>>::prepare(
             &op,
             &[a.clone(), a.clone(), a.clone(), b.clone()],
         );
 
         assert_eq!(op.mdds.cache.lock().unwrap().len(), 2);
-    }
-
-    fn constraint_propagation_decode() -> ConstraintPropagationDecode {
-        ConstraintPropagationDecode::new(MddCompilationConfig {
-            grouping: ConstraintGrouping::new_rolling(1),
-            ..MddCompilationConfig::default()
-        })
-    }
-
-    #[test]
-    fn constraint_propagation_detect_unsat_is_true_when_a_clique_has_fewer_colours_than_variables()
-    {
-        let problem = clique_problem(6, 5);
-        let op = constraint_propagation_decode();
-        assert!(
-            <ConstraintPropagationDecode as DecodingOperator<NdArray>>::detect_unsat(
-                &op, &problem
-            )
-        );
-    }
-
-    #[test]
-    fn constraint_propagation_decode_never_returns_a_value_violating_a_still_satisfiable_all_different()
-     {
-        let problem = clique_problem(4, 6);
-        let op = constraint_propagation_decode();
-
-        let device = Default::default();
-        let current = Tensor::<NdArray, 1, Int>::from_data([0i64, 0, 2, 3].as_slice(), &device)
-            .reshape([1, 4]);
-        let destroy_mask = Tensor::<NdArray, 1, Int>::from_data([1i64, 0, 0, 0].as_slice(), &device)
-            .reshape([1, 4]);
-        let logits = Tensor::<NdArray, 1>::zeros([6], &device).reshape([1, 1, 6]);
-
-        let next = DecodingOperator::<NdArray>::decode(
-            &op,
-            logits,
-            destroy_mask,
-            current,
-            std::slice::from_ref(&problem),
-        );
-        let chosen = next.into_data().to_vec::<i64>().unwrap()[0];
-        assert!(chosen != 0 && chosen != 2 && chosen != 3);
     }
 }

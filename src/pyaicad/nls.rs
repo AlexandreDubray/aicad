@@ -19,13 +19,8 @@ use crate::learning::consformer::{
 use crate::learning::Network;
 use crate::mdd::heuristics::ConstraintGrouping;
 use crate::modelling::Problem;
-use crate::nls::decode::{
-    Argmax, BeliefPropagationDecode, ConstraintPropagationDecode, DecodingOperator, Sampling,
-};
-use crate::nls::destroy::{
-    DestroyOperator, RandomDestroy, RelatedDestroy, UnsatRelatedDestroy, WeightedRelatedDestroy,
-    WorstDestroy,
-};
+use crate::nls::decode::{Argmax, DecodingOperator, MddSamplingDecode, Sampling};
+use crate::nls::destroy::{DestroyOperator, RandomDestroy, RelatedDestroy, WorstDestroy};
 use crate::nls::{load_network, Budget, NeuralLocalSearch, Solution, SolveConfig, Status};
 use crate::sampling::DecodeMode;
 
@@ -103,25 +98,14 @@ pub enum PyDestroyKind {
     Random,
     Worst,
     Related,
-    /// `RelatedDestroy` with adaptive per-constraint weights -- see
-    /// `nls::destroy::WeightedRelatedDestroy`'s doc. Governed by `PySolveConfig`'s
-    /// `destroy_weight_bump`/`destroy_weight_decay`.
-    WeightedRelated,
-    UnsatRelated,
 }
 
 impl PyDestroyKind {
-    fn build(&self, fraction: f64, weight_bump: f64, weight_decay: f64) -> Box<dyn DestroyOperator> {
+    fn build(&self, fraction: f64) -> Box<dyn DestroyOperator> {
         match self {
             PyDestroyKind::Random => Box::new(RandomDestroy { fraction }),
             PyDestroyKind::Worst => Box::new(WorstDestroy { fraction }),
             PyDestroyKind::Related => Box::new(RelatedDestroy { fraction }),
-            PyDestroyKind::WeightedRelated => Box::new(WeightedRelatedDestroy::new(
-                fraction,
-                weight_bump,
-                weight_decay,
-            )),
-            PyDestroyKind::UnsatRelated => Box::new(UnsatRelatedDestroy { fraction }),
         }
     }
 
@@ -130,8 +114,6 @@ impl PyDestroyKind {
             PyDestroyKind::Random => "random",
             PyDestroyKind::Worst => "worst",
             PyDestroyKind::Related => "related",
-            PyDestroyKind::WeightedRelated => "weighted_related",
-            PyDestroyKind::UnsatRelated => "unsat_related",
         }
     }
 
@@ -140,8 +122,6 @@ impl PyDestroyKind {
             "random" => Ok(PyDestroyKind::Random),
             "worst" => Ok(PyDestroyKind::Worst),
             "related" => Ok(PyDestroyKind::Related),
-            "weighted_related" => Ok(PyDestroyKind::WeightedRelated),
-            "unsat_related" => Ok(PyDestroyKind::UnsatRelated),
             other => Err(PyValueError::new_err(format!(
                 "unknown destroy_kind {other:?}"
             ))),
@@ -154,24 +134,21 @@ impl PyDestroyKind {
 #[derive(Clone)]
 pub enum PyDecodeKind {
     Logits,
-    BeliefPropagation,
-    ConstraintPropagation,
+    MddSampling,
 }
 
 impl PyDecodeKind {
     fn tag(&self) -> &'static str {
         match self {
             PyDecodeKind::Logits => "logits",
-            PyDecodeKind::BeliefPropagation => "belief_propagation",
-            PyDecodeKind::ConstraintPropagation => "constraint_propagation",
+            PyDecodeKind::MddSampling => "mdd_sampling",
         }
     }
 
     fn parse(tag: &str) -> PyResult<Self> {
         match tag {
             "logits" => Ok(PyDecodeKind::Logits),
-            "belief_propagation" => Ok(PyDecodeKind::BeliefPropagation),
-            "constraint_propagation" => Ok(PyDecodeKind::ConstraintPropagation),
+            "mdd_sampling" => Ok(PyDecodeKind::MddSampling),
             other => Err(PyValueError::new_err(format!(
                 "unknown decode_kind {other:?}"
             ))),
@@ -181,15 +158,13 @@ impl PyDecodeKind {
 
 /// Builds the decode operator for neural local search. `decode_kind == "logits"` picks greedy
 /// (`Argmax`) vs. stochastic (`Sampling`) decoding of the network's raw logits, per
-/// `stochastic_decode`; `decode_kind == "belief_propagation"` instead refines those same logits
-/// through a few rounds of `sampling::bp::belief_propagation` over the problem's compiled MDDs
-/// before decoding -- see `BeliefPropagationDecode`'s doc.
-#[allow(clippy::too_many_arguments)]
+/// `stochastic_decode`; `decode_kind == "mdd_sampling"` instead refines those same logits through
+/// one round of `sampling::bp::belief_propagation` over the problem's compiled MDDs before
+/// decoding -- see `MddSamplingDecode`'s doc.
 fn build_decode_op<B: Backend>(
     decode_kind: &PyDecodeKind,
     stochastic_decode: bool,
     temperature: f64,
-    bp_iterations: usize,
     mdd_grouping_window_size: usize,
 ) -> Box<dyn DecodingOperator<B>> {
     match decode_kind {
@@ -200,7 +175,7 @@ fn build_decode_op<B: Backend>(
                 Box::new(Argmax)
             }
         }
-        PyDecodeKind::BeliefPropagation => {
+        PyDecodeKind::MddSampling => {
             let compilation = MddCompilationConfig {
                 grouping: ConstraintGrouping::new_rolling(mdd_grouping_window_size),
                 ..MddCompilationConfig::default()
@@ -210,18 +185,7 @@ fn build_decode_op<B: Backend>(
             } else {
                 DecodeMode::Greedy
             };
-            Box::new(BeliefPropagationDecode::new(
-                compilation,
-                bp_iterations,
-                mode,
-            ))
-        }
-        PyDecodeKind::ConstraintPropagation => {
-            let compilation = MddCompilationConfig {
-                grouping: ConstraintGrouping::new_rolling(mdd_grouping_window_size),
-                ..MddCompilationConfig::default()
-            };
-            Box::new(ConstraintPropagationDecode::new(compilation))
+            Box::new(MddSamplingDecode::new(compilation, mode))
         }
     }
 }
@@ -246,14 +210,6 @@ pub struct PySolveConfig {
     pub destroy_kind: PyDestroyKind,
     #[pyo3(get, set)]
     pub destroy_fraction: f64,
-    /// Only used by `destroy_kind = WeightedRelated`. See
-    /// `nls::destroy::WeightedRelatedDestroy::bump`.
-    #[pyo3(get, set)]
-    pub destroy_weight_bump: f64,
-    /// Only used by `destroy_kind = WeightedRelated`. See
-    /// `nls::destroy::WeightedRelatedDestroy::decay`.
-    #[pyo3(get, set)]
-    pub destroy_weight_decay: f64,
     #[pyo3(get, set)]
     pub stochastic_decode: bool,
     #[pyo3(get, set)]
@@ -261,8 +217,6 @@ pub struct PySolveConfig {
     /// Which decode operator to use
     #[pyo3(get, set)]
     pub decode_kind: PyDecodeKind,
-    #[pyo3(get, set)]
-    pub bp_iterations: usize,
     #[pyo3(get, set)]
     pub mdd_grouping_window_size: usize,
     #[pyo3(get, set)]
@@ -281,12 +235,9 @@ impl PySolveConfig {
         batch_size=None,
         destroy_kind=PyDestroyKind::Random,
         destroy_fraction=1.0,
-        destroy_weight_bump=1.0,
-        destroy_weight_decay=0.9,
         stochastic_decode=false,
         temperature=1.0,
         decode_kind=PyDecodeKind::Logits,
-        bp_iterations=1,
         mdd_grouping_window_size=1,
         time_limit=None,
         iteration_limit=None,
@@ -298,12 +249,9 @@ impl PySolveConfig {
         batch_size: Option<usize>,
         destroy_kind: PyDestroyKind,
         destroy_fraction: f64,
-        destroy_weight_bump: f64,
-        destroy_weight_decay: f64,
         stochastic_decode: bool,
         temperature: f64,
         decode_kind: PyDecodeKind,
-        bp_iterations: usize,
         mdd_grouping_window_size: usize,
         time_limit: Option<u64>,
         iteration_limit: Option<usize>,
@@ -314,12 +262,9 @@ impl PySolveConfig {
             batch_size,
             destroy_kind,
             destroy_fraction,
-            destroy_weight_bump,
-            destroy_weight_decay,
             stochastic_decode,
             temperature,
             decode_kind,
-            bp_iterations,
             mdd_grouping_window_size,
             time_limit,
             iteration_limit,
@@ -349,12 +294,9 @@ impl From<&PySolveConfig> for SolveConfig {
             batch_size: c.batch_size,
             destroy_kind: c.destroy_kind.tag().to_string(),
             destroy_fraction: c.destroy_fraction,
-            destroy_weight_bump: c.destroy_weight_bump,
-            destroy_weight_decay: c.destroy_weight_decay,
             stochastic_decode: c.stochastic_decode,
             temperature: c.temperature,
             decode_kind: c.decode_kind.tag().to_string(),
-            bp_iterations: c.bp_iterations,
             mdd_grouping_window_size: c.mdd_grouping_window_size,
             time_limit: c.time_limit,
             iteration_limit: c.iteration_limit,
@@ -372,12 +314,9 @@ impl TryFrom<&SolveConfig> for PySolveConfig {
             batch_size: c.batch_size,
             destroy_kind: PyDestroyKind::parse(&c.destroy_kind)?,
             destroy_fraction: c.destroy_fraction,
-            destroy_weight_bump: c.destroy_weight_bump,
-            destroy_weight_decay: c.destroy_weight_decay,
             stochastic_decode: c.stochastic_decode,
             temperature: c.temperature,
             decode_kind: PyDecodeKind::parse(&c.decode_kind)?,
-            bp_iterations: c.bp_iterations,
             mdd_grouping_window_size: c.mdd_grouping_window_size,
             time_limit: c.time_limit,
             iteration_limit: c.iteration_limit,
@@ -511,17 +450,12 @@ fn run<B: Backend>(
                         ))
                     },
                 )?;
-            let destroy_op = destroy_kind.build(
-                config.destroy_fraction,
-                config.destroy_weight_bump,
-                config.destroy_weight_decay,
-            );
+            let destroy_op = destroy_kind.build(config.destroy_fraction);
             let decode_kind = PyDecodeKind::parse(&config.decode_kind)?;
             let decode_op = build_decode_op::<B>(
                 &decode_kind,
                 config.stochastic_decode,
                 config.temperature,
-                config.bp_iterations,
                 config.mdd_grouping_window_size,
             );
 

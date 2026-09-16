@@ -147,6 +147,39 @@ where
     Ok((config, network))
 }
 
+fn satisfaction_report_line(problem: &Problem, row: &[isize]) -> String {
+    let mut per_type: Vec<(&'static str, usize, usize)> = Vec::new();
+    for c in problem.iter_constraints() {
+        let constraint = &problem[c];
+        let name = constraint.name();
+        let satisfied = constraint.is_satisfied(row);
+        match per_type.iter_mut().find(|(n, _, _)| *n == name) {
+            Some(entry) => {
+                entry.2 += 1;
+                if satisfied {
+                    entry.1 += 1;
+                }
+            }
+            None => per_type.push((name, satisfied as usize, 1)),
+        }
+    }
+    per_type
+        .iter()
+        .map(|(name, satisfied, total)| format!("{name}={satisfied}/{total}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn destroyed_constraints_line(problem: &Problem, destroyed: &[usize]) -> String {
+    let destroyed: std::collections::HashSet<usize> = destroyed.iter().copied().collect();
+    problem
+        .iter_constraints()
+        .filter(|&c| problem[c].iter_scope().all(|v| destroyed.contains(&v.0)))
+        .map(|c| format!("{}#{}", problem[c].name(), c.0))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn resolve_status<B: Backend>(
     decode_op: &dyn DecodingOperator<B>,
     problem: &Arc<Problem>,
@@ -233,7 +266,26 @@ where
                     continue;
                 }
                 let problem = &active_problems[row_idx];
-                for var in self.destroy_op.destroy(problem, row, &mut rng) {
+
+                if row_idx == 0 && log::log_enabled!(log::Level::Debug) {
+                    log::debug!(
+                        "iter {}: problem 0 satisfaction -- {}",
+                        stop.iters_done + 1,
+                        satisfaction_report_line(problem, row),
+                    );
+                }
+
+                let destroyed = self.destroy_op.destroy(problem, row, &mut rng);
+
+                if row_idx == 0 && log::log_enabled!(log::Level::Debug) {
+                    log::debug!(
+                        "iter {}: problem 0 destroying -- {}",
+                        stop.iters_done + 1,
+                        destroyed_constraints_line(problem, &destroyed),
+                    );
+                }
+
+                for var in destroyed {
                     destroy_mask_data[row_idx * n + var] = 1;
                 }
             }

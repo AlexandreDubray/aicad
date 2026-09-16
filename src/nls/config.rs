@@ -17,23 +17,12 @@ pub struct SolveConfig {
     pub destroy_kind: String,
     #[config(default = 1.0)]
     pub destroy_fraction: f64,
-    /// Only used by `destroy_kind = "weighted_related"`: how much a still-violated constraint's
-    /// weight grows each destroy call. See `nls::destroy::WeightedRelatedDestroy`.
-    #[config(default = 1.0)]
-    pub destroy_weight_bump: f64,
-    /// Only used by `destroy_kind = "weighted_related"`: per-call decay of a satisfied
-    /// constraint's weight back towards the 1.0 baseline, in `[0, 1]`. See
-    /// `nls::destroy::WeightedRelatedDestroy`.
-    #[config(default = 0.9)]
-    pub destroy_weight_decay: f64,
     #[config(default = false)]
     pub stochastic_decode: bool,
     #[config(default = 1.0)]
     pub temperature: f64,
     #[config(default = "String::from(\"logits\")")]
     pub decode_kind: String,
-    #[config(default = 5)]
-    pub bp_iterations: usize,
     #[config(default = 1)]
     pub mdd_grouping_window_size: usize,
 }
@@ -73,12 +62,9 @@ impl Default for SolveConfig {
             batch_size: None,
             destroy_kind: String::from("random"),
             destroy_fraction: 1.0,
-            destroy_weight_bump: 1.0,
-            destroy_weight_decay: 0.9,
             stochastic_decode: false,
             temperature: 1.0,
             decode_kind: String::from("logits"),
-            bp_iterations: 5,
             mdd_grouping_window_size: 0,
         }
     }
