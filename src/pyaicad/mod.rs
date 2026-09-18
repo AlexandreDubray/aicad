@@ -11,7 +11,8 @@ mod sequential_imputation;
 pub use compiler::{Compiler, PyMdd};
 pub use heuristics::{PyMergeHeuristic, PyOrderingHeuristic, PySelectHeuristic};
 pub use learn::{
-    PyConsFormerConfig, PyTrainingConfig, set_seed, train_consformer, train_consformer_mdd,
+    PyConsFormerConfig, PyModelSelection, PyTrainingConfig, set_seed, train_consformer,
+    train_consformer_mdd,
 };
 pub use logging::{
     disable_data_log, enable_console_logging, enable_data_log, set_verbosity_debug,
@@ -58,6 +59,7 @@ fn pyaicad(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMergeHeuristic>()?;
     m.add_class::<PySelectHeuristic>()?;
     m.add_class::<PyConsFormerConfig>()?;
+    m.add_class::<PyModelSelection>()?;
     m.add_class::<PyTrainingConfig>()?;
     m.add_class::<PyNetworkKind>()?;
     m.add_class::<PyDestroyKind>()?;
