@@ -161,13 +161,15 @@ impl MddCache {
 pub struct MddSamplingDecode {
     mdds: MddCache,
     mode: DecodeMode,
+    bp_iterations: usize,
 }
 
 impl MddSamplingDecode {
-    pub fn new(compilation: MddCompilationConfig, mode: DecodeMode) -> Self {
+    pub fn new(compilation: MddCompilationConfig, mode: DecodeMode, bp_iterations: usize) -> Self {
         Self {
             mdds: MddCache::new(compilation),
             mode,
+            bp_iterations,
         }
     }
 
@@ -227,7 +229,13 @@ impl<B: Backend> DecodingOperator<B> for MddSamplingDecode {
                         probs.push(probs_v);
                     }
 
-                    let marginals = belief_propagation(&mdds, &probs, &assignment, &decided, 1);
+                    let marginals = belief_propagation(
+                        &mdds,
+                        &probs,
+                        &assignment,
+                        &decided,
+                        self.bp_iterations,
+                    );
 
                     for v in 0..n {
                         if mask_rows[row][v] == 0 {
@@ -281,6 +289,7 @@ mod tests {
                 ..MddCompilationConfig::default()
             },
             DecodeMode::Greedy,
+            1,
         )
     }
 

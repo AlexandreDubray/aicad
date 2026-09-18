@@ -166,6 +166,7 @@ fn build_decode_op<B: Backend>(
     stochastic_decode: bool,
     temperature: f64,
     mdd_grouping_window_size: usize,
+    bp_iterations: usize,
 ) -> Box<dyn DecodingOperator<B>> {
     match decode_kind {
         PyDecodeKind::Logits => {
@@ -185,7 +186,7 @@ fn build_decode_op<B: Backend>(
             } else {
                 DecodeMode::Greedy
             };
-            Box::new(MddSamplingDecode::new(compilation, mode))
+            Box::new(MddSamplingDecode::new(compilation, mode, bp_iterations))
         }
     }
 }
@@ -219,6 +220,10 @@ pub struct PySolveConfig {
     pub decode_kind: PyDecodeKind,
     #[pyo3(get, set)]
     pub mdd_grouping_window_size: usize,
+    /// Number of loopy belief propagation rounds `MddSamplingDecode` runs over the problem's
+    /// compiled MDDs before decoding -- see `belief_propagation`'s doc.
+    #[pyo3(get, set)]
+    pub bp_iterations: usize,
     #[pyo3(get, set)]
     pub time_limit: Option<u64>,
     #[pyo3(get, set)]
@@ -239,6 +244,7 @@ impl PySolveConfig {
         temperature=1.0,
         decode_kind=PyDecodeKind::Logits,
         mdd_grouping_window_size=1,
+        bp_iterations=1,
         time_limit=None,
         iteration_limit=None,
         seed=None,
@@ -253,6 +259,7 @@ impl PySolveConfig {
         temperature: f64,
         decode_kind: PyDecodeKind,
         mdd_grouping_window_size: usize,
+        bp_iterations: usize,
         time_limit: Option<u64>,
         iteration_limit: Option<usize>,
         seed: Option<u64>,
@@ -266,6 +273,7 @@ impl PySolveConfig {
             temperature,
             decode_kind,
             mdd_grouping_window_size,
+            bp_iterations,
             time_limit,
             iteration_limit,
             seed,
@@ -298,6 +306,7 @@ impl From<&PySolveConfig> for SolveConfig {
             temperature: c.temperature,
             decode_kind: c.decode_kind.tag().to_string(),
             mdd_grouping_window_size: c.mdd_grouping_window_size,
+            bp_iterations: c.bp_iterations,
             time_limit: c.time_limit,
             iteration_limit: c.iteration_limit,
             seed: c.seed,
@@ -318,6 +327,7 @@ impl TryFrom<&SolveConfig> for PySolveConfig {
             temperature: c.temperature,
             decode_kind: PyDecodeKind::parse(&c.decode_kind)?,
             mdd_grouping_window_size: c.mdd_grouping_window_size,
+            bp_iterations: c.bp_iterations,
             time_limit: c.time_limit,
             iteration_limit: c.iteration_limit,
             seed: c.seed,
@@ -457,6 +467,7 @@ fn run<B: Backend>(
                 config.stochastic_decode,
                 config.temperature,
                 config.mdd_grouping_window_size,
+                config.bp_iterations,
             );
 
             let nls = NeuralLocalSearch::<B, ConsFormer<B>, ConsFormerBatch<B>>::new(

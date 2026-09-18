@@ -25,6 +25,8 @@ pub struct SolveConfig {
     pub decode_kind: String,
     #[config(default = 1)]
     pub mdd_grouping_window_size: usize,
+    #[config(default = 1)]
+    pub bp_iterations: usize,
 }
 
 impl SolveConfig {
@@ -66,6 +68,7 @@ impl Default for SolveConfig {
             temperature: 1.0,
             decode_kind: String::from("logits"),
             mdd_grouping_window_size: 0,
+            bp_iterations: 1,
         }
     }
 }

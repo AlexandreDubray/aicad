@@ -416,7 +416,8 @@ fn run_training<B: AutodiffBackend>(
 #[pyo3(signature = (problems, config, training, checkpoint_dir,
         pyordering=PyOrderingHeuristic::MinDomMaxLinked(),
         pymerge=PyMergeHeuristic::LessRelaxed,
-        pyselect=PySelectHeuristic::Greedy))]
+        pyselect=PySelectHeuristic::Greedy,
+        gamma=1.0))]
 #[allow(clippy::too_many_arguments)]
 pub fn train_consformer_mdd(
     py: Python<'_>,
@@ -427,6 +428,7 @@ pub fn train_consformer_mdd(
     pyordering: PyOrderingHeuristic,
     pymerge: PyMergeHeuristic,
     pyselect: PySelectHeuristic,
+    gamma: f64,
 ) -> PyResult<()> {
     let problems: Vec<Arc<Problem>> = problems.iter().map(|p| p.arc()).collect();
     let network_config: ConsFormerConfig = config.into();
@@ -448,6 +450,7 @@ pub fn train_consformer_mdd(
             training_config,
             compilation,
             &checkpoint_dir,
+            gamma,
         )
     })
 }
@@ -465,6 +468,7 @@ fn run_training_mdd<B: AutodiffBackend>(
     training_config: TrainingConfig,
     compilation: MddCompilationConfig,
     checkpoint_dir: &Path,
+    gamma: f64,
 ) -> PyResult<()> {
     let (all_problems, problems, validation_problems) = split_train_validation(problems);
 
@@ -497,7 +501,7 @@ fn run_training_mdd<B: AutodiffBackend>(
         train_dataset,
         validation_dataset,
         batcher,
-        ConsFormerMddLoss,
+        ConsFormerMddLoss { gamma },
         training_config,
         checkpoint_dir,
         &device,
