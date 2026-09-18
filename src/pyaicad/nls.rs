@@ -12,6 +12,7 @@ use burn::config::Config;
 use burn::tensor::backend::Backend;
 
 use rand::RngExt;
+use rayon::prelude::*;
 
 use crate::learning::consformer::{
     ConsFormer, ConsFormerBatch, ConsFormerConfig, MddCompilationConfig,
@@ -224,6 +225,13 @@ pub struct PySolveConfig {
     /// compiled MDDs before decoding -- see `belief_propagation`'s doc.
     #[pyo3(get, set)]
     pub bp_iterations: usize,
+    /// Upper bound on how many `batch_size`-sized chunks may run concurrently -- a separate knob
+    /// from the CPU worker pool's thread count, since GPU memory (not CPU cores) is the resource
+    /// this bounds. Default `1`: fully sequential over chunks.
+    /// Raise it only when `batch_size` is small enough that several chunks resident on
+    /// the device at once is safe.
+    #[pyo3(get, set)]
+    pub max_concurrent_chunks: usize,
     #[pyo3(get, set)]
     pub time_limit: Option<u64>,
     #[pyo3(get, set)]
@@ -245,6 +253,7 @@ impl PySolveConfig {
         decode_kind=PyDecodeKind::Logits,
         mdd_grouping_window_size=1,
         bp_iterations=1,
+        max_concurrent_chunks=1,
         time_limit=None,
         iteration_limit=None,
         seed=None,
@@ -260,6 +269,7 @@ impl PySolveConfig {
         decode_kind: PyDecodeKind,
         mdd_grouping_window_size: usize,
         bp_iterations: usize,
+        max_concurrent_chunks: usize,
         time_limit: Option<u64>,
         iteration_limit: Option<usize>,
         seed: Option<u64>,
@@ -274,6 +284,7 @@ impl PySolveConfig {
             decode_kind,
             mdd_grouping_window_size,
             bp_iterations,
+            max_concurrent_chunks,
             time_limit,
             iteration_limit,
             seed,
@@ -307,6 +318,7 @@ impl From<&PySolveConfig> for SolveConfig {
             decode_kind: c.decode_kind.tag().to_string(),
             mdd_grouping_window_size: c.mdd_grouping_window_size,
             bp_iterations: c.bp_iterations,
+            max_concurrent_chunks: c.max_concurrent_chunks,
             time_limit: c.time_limit,
             iteration_limit: c.iteration_limit,
             seed: c.seed,
@@ -328,6 +340,7 @@ impl TryFrom<&SolveConfig> for PySolveConfig {
             decode_kind: PyDecodeKind::parse(&c.decode_kind)?,
             mdd_grouping_window_size: c.mdd_grouping_window_size,
             bp_iterations: c.bp_iterations,
+            max_concurrent_chunks: c.max_concurrent_chunks,
             time_limit: c.time_limit,
             iteration_limit: c.iteration_limit,
             seed: c.seed,
@@ -477,6 +490,7 @@ fn run<B: Backend>(
                 &nls,
                 &problems,
                 config.batch_size,
+                config.max_concurrent_chunks,
                 budget,
                 seed,
             ))
@@ -484,25 +498,54 @@ fn run<B: Backend>(
     }
 }
 
-fn chunked_run<B: Backend, N: Network<B, Ba>, Ba: crate::learning::Batch<B>>(
+/// Runs one `NeuralLocalSearch::run` call per chunk, with up to `max_concurrent_chunks` of them
+/// in flight at once over `crate::utils::worker_pool()` (the same capped-size rayon pool
+/// `MddSamplingDecode::decode` already uses for its per-row belief-propagation work) rather than
+/// strictly sequentially.
+///
+/// Seeds are assigned by chunk index, not by completion order, so the destroy sequence for a
+/// given problem stays reproducible regardless of how the scheduler happens to interleave chunks
+/// within a group; `.collect()` likewise preserves chunk order in the returned `Vec` even though
+/// chunks within a group may finish out of order.
+fn chunked_run<B: Backend, N: Network<B, Ba> + Sync, Ba: crate::learning::Batch<B>>(
     nls: &NeuralLocalSearch<B, N, Ba>,
     problems: &[Arc<Problem>],
     batch_size: Option<usize>,
+    max_concurrent_chunks: usize,
     budget: Budget,
     seed: u64,
 ) -> Vec<Solution> {
     let chunk_size = batch_size.unwrap_or(problems.len()).max(1);
-    let mut solutions = Vec::with_capacity(problems.len());
+    let max_concurrent_chunks = max_concurrent_chunks.max(1);
+    let chunks: Vec<&[Arc<Problem>]> = problems.chunks(chunk_size).collect();
     log::info!(
-        "Solving {} problems by chunk of size {}",
+        "Solving {} problems by chunk of size {} ({} chunks, at most {} running concurrently, worker pool has {} threads)",
         problems.len(),
-        chunk_size
+        chunk_size,
+        chunks.len(),
+        max_concurrent_chunks,
+        crate::utils::worker_pool().current_num_threads(),
     );
-    for (chunk_idx, chunk) in problems.chunks(chunk_size).enumerate() {
-        log::info!("Solving chunk {}", chunk_idx);
-        // Vary the seed per chunk so chunks don't replay the exact same destroy sequence.
-        let chunk_seed = seed.wrapping_add(chunk_idx as u64);
-        solutions.extend(nls.run(chunk, budget, chunk_seed));
+
+    let mut solutions = Vec::with_capacity(problems.len());
+    for (group_idx, group) in chunks.chunks(max_concurrent_chunks).enumerate() {
+        let group_start = group_idx * max_concurrent_chunks;
+        let group_solutions: Vec<Vec<Solution>> = crate::utils::worker_pool().install(|| {
+            group
+                .par_iter()
+                .enumerate()
+                .map(|(local_idx, chunk)| {
+                    let chunk_idx = group_start + local_idx;
+                    log::info!("Solving chunk {}", chunk_idx);
+                    // Vary the seed per chunk so chunks don't replay the exact same destroy
+                    // sequence -- keyed by chunk_idx (not completion order) so this stays
+                    // reproducible under concurrent scheduling.
+                    let chunk_seed = seed.wrapping_add(chunk_idx as u64);
+                    nls.run(chunk, budget, chunk_seed)
+                })
+                .collect()
+        });
+        solutions.extend(group_solutions.into_iter().flatten());
     }
 
     solutions

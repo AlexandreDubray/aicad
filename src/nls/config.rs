@@ -27,6 +27,14 @@ pub struct SolveConfig {
     pub mdd_grouping_window_size: usize,
     #[config(default = 1)]
     pub bp_iterations: usize,
+    /// Upper bound on how many `batch_size`-sized chunks `chunked_run` may have in flight on the
+    /// GPU/device at once -- independent of `crate::utils::worker_pool`'s (CPU-sized) thread
+    /// count, which bounds a different resource (CPU cores for belief-propagation work) and would
+    /// otherwise let e.g. two 750-problem chunks run concurrently and double peak device memory.
+    /// Default `1` keeps the pre-existing fully-sequential-over-chunks behaviour; raise it only
+    /// when `batch_size` is small enough that several chunks resident at once is safe.
+    #[config(default = 1)]
+    pub max_concurrent_chunks: usize,
 }
 
 impl SolveConfig {
@@ -69,6 +77,7 @@ impl Default for SolveConfig {
             decode_kind: String::from("logits"),
             mdd_grouping_window_size: 0,
             bp_iterations: 1,
+            max_concurrent_chunks: 1,
         }
     }
 }
