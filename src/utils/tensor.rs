@@ -1,9 +1,9 @@
-//! Small tensor <-> `Vec<Vec<isize>>` conversion helpers shared by every batched, tensor-driven
-//! solver (`nls::NeuralLocalSearch`, `sampling::solve::SequentialImputationSolver`). Both represent
-//! a batch of rows -- one per (problem, population member) pair -- as a `[rows, n]` integer tensor
-//! holding each variable's raw problem value directly (not a domain index), and need to move back
-//! and forth between that and plain Rust data to do CPU-side bookkeeping (constraint checking,
-//! destroy-operator heuristics, MDD-based conditionals, ...) that has no tensor equivalent.
+//! Small tensor <-> `Vec<Vec<isize>>` conversion helpers used by `nls::NeuralLocalSearch`, which
+//! represents a batch of rows -- one per (problem, population member) pair -- as a `[rows, n]`
+//! integer tensor holding each variable's raw problem value directly (not a domain index), and
+//! needs to move back and forth between that and plain Rust data to do CPU-side bookkeeping
+//! (constraint checking, destroy-operator heuristics, MDD-based conditionals, ...) that has no
+//! tensor equivalent.
 
 use burn::prelude::ElementConversion;
 use burn::tensor::backend::Backend;

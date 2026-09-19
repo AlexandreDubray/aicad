@@ -82,8 +82,7 @@ fn cavity_message(marginal: &[f64], local_belief: &[f64]) -> Vec<f64> {
 /// benefit, with KL-divergence to the true marginals sometimes *increasing* again after many more.
 ///
 /// No per-MDD weights: every constraint counts equally, matching the paper's plain (unweighted)
-/// formulation -- `MddSampler::set_weight` is a separate, destroy-heuristic-specific knob and isn't
-/// reused here.
+/// formulation.
 ///
 /// `assignment`/`decided` supply hard evidence exactly the way `partial_alpha_at`/`partial_beta_at`
 /// do: a `decided` variable is clamped to `assignment`'s value for the *entire* run -- its outgoing

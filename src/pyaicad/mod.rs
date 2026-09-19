@@ -6,7 +6,6 @@ mod learn;
 mod logging;
 mod nls;
 mod problem;
-mod sequential_imputation;
 
 pub use compiler::{Compiler, PyMdd};
 pub use heuristics::{PyMergeHeuristic, PyOrderingHeuristic, PySelectHeuristic};
@@ -24,9 +23,6 @@ pub use nls::{
     neural_local_search,
 };
 pub use problem::PyProblem;
-pub use sequential_imputation::{
-    PyDestroyRule, PySequentialImputationConfig, sequential_imputation_solve,
-};
 
 #[pymodule]
 fn pyaicad(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -67,13 +63,10 @@ fn pyaicad(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySolveConfig>()?;
     m.add_class::<PySolution>()?;
     m.add_class::<PyStatus>()?;
-    m.add_class::<PyDestroyRule>()?;
-    m.add_class::<PySequentialImputationConfig>()?;
     m.add_function(wrap_pyfunction!(set_seed, m)?)?;
     m.add_function(wrap_pyfunction!(train_consformer, m)?)?;
     m.add_function(wrap_pyfunction!(train_consformer_mdd, m)?)?;
     m.add_function(wrap_pyfunction!(neural_local_search, m)?)?;
-    m.add_function(wrap_pyfunction!(sequential_imputation_solve, m)?)?;
     m.add_function(wrap_pyfunction!(set_verbosity_off, m)?)?;
     m.add_function(wrap_pyfunction!(set_verbosity_error, m)?)?;
     m.add_function(wrap_pyfunction!(set_verbosity_warning, m)?)?;
