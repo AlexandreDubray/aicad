@@ -55,6 +55,10 @@ impl NotEquals {
 }
 
 impl Constraint for NotEquals {
+    fn structural_key(&self, _problem: &Problem) -> ConstraintShapeKey {
+        ConstraintShapeKey::NotEquals
+    }
+
     fn update_variable_ordering(&mut self, order: &[VariableIndex]) {
         for (layer, &variable) in order.iter().enumerate() {
             if variable == self.x {

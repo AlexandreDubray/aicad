@@ -19,6 +19,7 @@ use crate::learning::consformer::{
     ConsFormerMddLoss, ConsFormerMddSample, ConsFormerSample, MddCompilationConfig,
 };
 use crate::learning::train::{train_model, ModelSelection, TrainingConfig};
+use crate::mdd::MddArena;
 use crate::modelling::Problem;
 use crate::utils::with_rng;
 
@@ -438,7 +439,6 @@ pub fn train_consformer_mdd(
         ordering: pyordering.into(),
         merge: pymerge.into(),
         select: pyselect.into(),
-        grouping: crate::mdd::heuristics::ConstraintGrouping::default(),
         max_width: usize::MAX,
     };
 
@@ -473,10 +473,15 @@ fn run_training_mdd<B: AutodiffBackend>(
     let (all_problems, problems, validation_problems) = split_train_validation(problems);
 
     let data_config = ConsFormerDataConfig::from(&network_config);
+    // Shared across both datasets so a constraint group shape compiled for training reuses its
+    // structure for an identically-shaped validation group instead of compiling it twice -- see
+    // `crate::mdd::arena`'s module doc.
+    let arena = MddArena::new();
     let train_dataset =
-        ConsFormerMddDataset::<B>::new(problems, compilation.clone(), data_config, &device);
+        ConsFormerMddDataset::<B>::new(problems, &arena, compilation.clone(), data_config, &device);
     let validation_dataset = ConsFormerMddDataset::<B::InnerBackend>::new(
         validation_problems,
+        &arena,
         compilation,
         data_config,
         &device,

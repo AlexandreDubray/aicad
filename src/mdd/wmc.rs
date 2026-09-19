@@ -1,3 +1,5 @@
+use super::view::{MddView, MddViewWithOrder};
+#[cfg(test)]
 use super::Mdd;
 use crate::modelling::ValueIndex;
 
@@ -5,7 +7,12 @@ use crate::modelling::ValueIndex;
 /// `node` (indexed within its layer) from the root, with each layer's edges weighted by
 /// `weights[layer][value]` -- `weights` is indexed *by layer within this MDD* (length
 /// `mdd.number_layers() - 1`), not by global variable id.
-pub fn forward(mdd: &Mdd, weights: &[Vec<f64>]) -> Vec<Vec<f64>> {
+///
+/// Generic over `MddView` -- the purely structural read surface implemented by both the
+/// legacy, self-contained `Mdd` and the arena-shared `MddStructure`/`CompiledConstraint` (see
+/// `crate::mdd::arena`) -- so this and every other function in this module work unchanged
+/// against either representation.
+pub fn forward<T: MddView>(mdd: &T, weights: &[Vec<f64>]) -> Vec<Vec<f64>> {
     let last_layer = mdd.sink().0;
     let mut alphas: Vec<Vec<f64>> = Vec::with_capacity(last_layer + 1);
     alphas.push(vec![1.0; mdd.number_nodes_in_layer(0)]);
@@ -31,7 +38,7 @@ pub fn forward(mdd: &Mdd, weights: &[Vec<f64>]) -> Vec<Vec<f64>> {
 
 /// The backward counterpart of `forward`: `beta[layer][node]` is the total mass from `node` to the
 /// sink, weighted the same way (`weights` indexed by layer, same convention).
-pub fn backward(mdd: &Mdd, weights: &[Vec<f64>]) -> Vec<Vec<f64>> {
+pub fn backward<T: MddView>(mdd: &T, weights: &[Vec<f64>]) -> Vec<Vec<f64>> {
     let last_layer = mdd.sink().0;
     let mut betas: Vec<Vec<f64>> = vec![Vec::new(); last_layer + 1];
     betas[last_layer] = vec![1.0; mdd.number_nodes_in_layer(last_layer)];
@@ -55,15 +62,15 @@ pub fn backward(mdd: &Mdd, weights: &[Vec<f64>]) -> Vec<Vec<f64>> {
 
 /// `WMC = alpha(sink)`, root and sink both always being node index 0 within their layer (`Mdd`'s
 /// own convention).
-pub fn wmc(mdd: &Mdd, weights: &[Vec<f64>]) -> f64 {
+pub fn wmc<T: MddView>(mdd: &T, weights: &[Vec<f64>]) -> f64 {
     forward(mdd, weights)[mdd.sink().0][0]
 }
 
 /// `gradient[layer][value] = d(WMC)/d(weights[layer][value])`, unnormalized -- from `alpha`/`beta`
 /// already computed by the caller (see `wmc_and_gradient` to compute both from scratch in one
 /// call).
-fn gradient_from_forward_backward(
-    mdd: &Mdd,
+fn gradient_from_forward_backward<T: MddView>(
+    mdd: &T,
     alpha: &[Vec<f64>],
     beta: &[Vec<f64>],
     domain_sizes: &[usize],
@@ -87,14 +94,14 @@ fn gradient_from_forward_backward(
         .collect()
 }
 
-pub fn gradient(mdd: &Mdd, weights: &[Vec<f64>]) -> Vec<Vec<f64>> {
+pub fn gradient<T: MddView>(mdd: &T, weights: &[Vec<f64>]) -> Vec<Vec<f64>> {
     let alpha = forward(mdd, weights);
     let beta = backward(mdd, weights);
     let domain_sizes: Vec<usize> = weights.iter().map(|w| w.len()).collect();
     gradient_from_forward_backward(mdd, &alpha, &beta, &domain_sizes)
 }
 
-pub fn wmc_and_gradient(mdd: &Mdd, weights: &[Vec<f64>]) -> (f64, Vec<Vec<f64>>) {
+pub fn wmc_and_gradient<T: MddView>(mdd: &T, weights: &[Vec<f64>]) -> (f64, Vec<Vec<f64>>) {
     let alpha = forward(mdd, weights);
     let beta = backward(mdd, weights);
     let value = alpha[mdd.sink().0][0];
@@ -106,8 +113,8 @@ pub fn wmc_and_gradient(mdd: &Mdd, weights: &[Vec<f64>]) -> (f64, Vec<Vec<f64>>)
 /// Generalises `forward` up to `target_layer`: at a layer whose variable is `decided`, follows only
 /// the edge matching `assignment`'s current value for it. At a layer whose variable is not yet
 /// `decided`, sums over every outgoing edge instead.
-pub fn partial_forward(
-    mdd: &Mdd,
+pub fn partial_forward<T: MddViewWithOrder>(
+    mdd: &T,
     target_layer: usize,
     weights: &[Vec<f64>],
     assignment: &[ValueIndex],
@@ -150,8 +157,8 @@ pub fn partial_forward(
 /// The backward counterpart of `partial_forward`: generalises `backward` down to `target_layer`,
 /// clamping a `decided` layer's variable to its assigned value and summing over every edge at an
 /// undecided one.
-pub fn partial_backward(
-    mdd: &Mdd,
+pub fn partial_backward<T: MddViewWithOrder>(
+    mdd: &T,
     target_layer: usize,
     weights: &[Vec<f64>],
     assignment: &[ValueIndex],

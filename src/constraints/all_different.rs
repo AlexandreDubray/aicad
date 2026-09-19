@@ -86,6 +86,12 @@ impl AllDifferent {
 }
 
 impl Constraint for AllDifferent {
+    fn structural_key(&self, _problem: &Problem) -> ConstraintShapeKey {
+        ConstraintShapeKey::AllDifferent {
+            arity: self.variables.len(),
+        }
+    }
+
     fn update_variable_ordering(&mut self, order: &[VariableIndex]) {
         let scope: FxHashSet<VariableIndex> = self.variables.iter().copied().collect();
         let mut scope_layers = Vec::with_capacity(self.variables.len());

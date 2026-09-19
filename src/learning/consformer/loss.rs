@@ -9,8 +9,8 @@ use rayon::prelude::*;
 use crate::constraints::{AllDifferent, Constraint, NotEquals};
 use crate::learning::{BatchProblems, Loss};
 use crate::mdd::wmc::wmc_and_gradient;
-use crate::mdd::Mdd;
-use crate::modelling::ValueIndex;
+use crate::mdd::CompiledConstraint;
+use crate::modelling::Problem;
 
 use super::dataset::ConsFormerBatch;
 use super::mdd_dataset::ConsFormerMddBatch;
@@ -44,9 +44,9 @@ fn pairwise_collision_penalty<B: Backend>(probs: Tensor<B, 2>) -> Tensor<B, 1> {
 /// .batch_loss` in the Python reference this recipe was adapted from (`nn.MSELoss()`'s default
 /// `reduction='mean'`). Note this only matches Python's *per-element* normalization: Python
 /// additionally computes rows, columns, and boxes as three separately-averaged terms before
-/// summing them, a Sudoku-specific "which of the 27 all-diffs is this" grouping that this generic,
+/// summing them, a Sudoku-specific "which of the 27 all-diffs is this" constrainting that this generic,
 /// constraint-type-agnostic code has no equivalent of (a `Problem`/`Constraint` here carries no
-/// notion of belonging to one of several named groups). So this is not bit-exact with the Python
+/// notion of belonging to one of several named constraints). So this is not bit-exact with the Python
 /// reference for Sudoku specifically -- just the same per-element normalization intent, applied
 /// uniformly to however many permutation constraints a sample has.
 fn permutation_penalty<B: Backend>(probs: Tensor<B, 2>) -> Tensor<B, 1> {
@@ -160,14 +160,14 @@ impl<B: Backend> Loss<B, ConsFormerBatch<B>> for ConsFormerLoss {
             .reshape([batch_size * number_vars, domain_size]);
 
         // Group constraints by which batched penalty they need, so each
-        // group can be computed as a single tensor op instead of one
+        // constraint can be computed as a single tensor op instead of one
         // op-chain per instance. `NotEquals`, and `AllDifferent` whose scope
         // is smaller than the domain, use the pairwise collision penalty
         // (batched via matmul); `AllDifferent` whose scope exactly covers
         // the domain (e.g. every Sudoku row/col/box) uses the permutation
         // penalty instead (batched via a sum reduction.
-        let mut collision_groups: HashMap<usize, Vec<i64>> = HashMap::new();
-        let mut permutation_groups: HashMap<usize, Vec<i64>> = HashMap::new();
+        let mut collision_constraints: HashMap<usize, Vec<i64>> = HashMap::new();
+        let mut permutation_constraints: HashMap<usize, Vec<i64>> = HashMap::new();
         let mut total = Tensor::<B, 1>::zeros([1], &device);
 
         for (i, problem) in problems.iter().enumerate() {
@@ -182,14 +182,17 @@ impl<B: Backend> Loss<B, ConsFormerBatch<B>> for ConsFormerLoss {
                 if is_all_different && scope_len == domain_size {
                     let scope: Vec<i64> =
                         c.iter_scope().map(|v| sample_offset + v.0 as i64).collect();
-                    permutation_groups
+                    permutation_constraints
                         .entry(scope_len)
                         .or_default()
                         .extend(scope);
                 } else if is_all_different || is_not_equals {
                     let scope: Vec<i64> =
                         c.iter_scope().map(|v| sample_offset + v.0 as i64).collect();
-                    collision_groups.entry(scope_len).or_default().extend(scope);
+                    collision_constraints
+                        .entry(scope_len)
+                        .or_default()
+                        .extend(scope);
                 } else {
                     let sample_probs: Tensor<B, 2> = probs.clone().slice([i..i + 1]).squeeze();
                     total = total + constraint_loss(c, &sample_probs);
@@ -197,42 +200,45 @@ impl<B: Backend> Loss<B, ConsFormerBatch<B>> for ConsFormerLoss {
             }
         }
 
-        // One batched matmul + triu + sum per group, instead of one op-chain per instance. See
+        // One batched matmul + triu + sum per constraint, instead of one op-chain per instance. See
         // `pairwise_collision_penalty`'s doc: this is the code path that actually runs for
         // `NotEquals`/small-scope `AllDifferent` during training (the free function above isn't
         // reachable for those two types), and it's already equivalent, up to a benign constant
         // factor of 2, to `CustomGCOLLossDot`.
-        for (scope_len, flat_indices) in collision_groups {
+        for (scope_len, flat_indices) in collision_constraints {
             let num_instances = flat_indices.len() / scope_len;
             let idx = Tensor::<B, 1, Int>::from_data(flat_indices.as_slice(), &device);
-            let group_probs: Tensor<B, 3> =
+            let constraint_probs: Tensor<B, 3> =
                 flat_probs
                     .clone()
                     .select(0, idx)
                     .reshape([num_instances, scope_len, domain_size]);
 
-            let collisions = group_probs.clone().matmul(group_probs.transpose());
+            let collisions = constraint_probs
+                .clone()
+                .matmul(constraint_probs.transpose());
             total = total + collisions.triu(1).sum().reshape([1]);
         }
 
-        // One batched mean-reduction per group, instead of one op-chain per instance. See
+        // One batched mean-reduction per constraint, instead of one op-chain per instance. See
         // `permutation_penalty`'s doc: mean- (not sum-) reduced to match `CustomSudokuLossMSE`'s
-        // `nn.MSELoss()` reduction, modulo the row/column/box grouping this generic code can't
+        // `nn.MSELoss()` reduction, modulo the row/column/box constrainting this generic code can't
         // replicate. This is the code path that actually runs for `AllDifferent` with
         // `scope_len == domain_size` during training.
-        for (scope_len, flat_indices) in permutation_groups {
+        for (scope_len, flat_indices) in permutation_constraints {
             let num_instances = flat_indices.len() / scope_len;
             let idx = Tensor::<B, 1, Int>::from_data(flat_indices.as_slice(), &device);
-            let group_probs: Tensor<B, 3> =
+            let constraint_probs: Tensor<B, 3> =
                 flat_probs
                     .clone()
                     .select(0, idx)
                     .reshape([num_instances, scope_len, domain_size]);
 
-            // Sum over the scope (dim 1): per group instance, how much
+            // Sum over the scope (dim 1): per constraint instance, how much
             // probability mass each value received across the whole scope.
-            let coverage: Tensor<B, 2> =
-                group_probs.sum_dim(1).reshape([num_instances, domain_size]);
+            let coverage: Tensor<B, 2> = constraint_probs
+                .sum_dim(1)
+                .reshape([num_instances, domain_size]);
             let diff = coverage.sub_scalar(1.0);
             total = total + (diff.clone() * diff).mean().reshape([1]);
         }
@@ -246,23 +252,29 @@ const SATISFACTION_WEIGHT_FLOOR: f64 = 1e-3;
 
 /// One constraint MDD's contribution to a sample's loss and to `∂loss/∂weight`, computed by a
 /// plain sink-to-root chain-rule pass (`crate::mdd::wmc::wmc_and_gradient`) instead of
-/// automatic differentiation -- see the module-level design discussion this recipe replaces.
+/// automatic differentiation.
 /// `probs_for_sample` is that sample's flattened `(number_vars, domain_size)` probability slice,
-/// indexed by each variable's *raw domain value* (see `mdd_dataset::compile_constraint_mdds`'s
-/// doc), not by `ValueIndex` position; `grad` accumulates `∂(weight * -log(wmc+eps))/∂probs_for_sample`
-/// into that same indexing, with `weight` treated as a constant (stop-gradient on `wmc`) -- see
-/// `sample_loss_and_gradient` for how the returned `(weighted_loss, weight)` pair is aggregated.
-fn layer_weights_from_probs(mdd: &Mdd, probs_for_sample: &[f32], domain_size: usize) -> Vec<Vec<f64>> {
-    let num_layers = mdd.number_layers() - 1;
-    let problem = mdd.problem();
+/// indexed by each variable's *raw domain value*, not by `ValueIndex` position.
+/// `grad` accumulates `∂(weight * -log(wmc+eps))/∂probs_for_sample` into that same indexing, with
+/// `weight` treated as a constant (stop-gradient on `wmc`)
+/// Builds `constraint`'s per-layer weights from the raw network probabilities, **masking out** every
+/// raw domain value that isn't actually in `real_problem`'s (possibly narrowed -- e.g. a Sudoku
+/// given, or a masked/destroyed variable) domain for that layer's variable.
+fn layer_weights_from_probs(
+    constraint: &CompiledConstraint,
+    real_problem: &Problem,
+    probs_for_sample: &[f32],
+    domain_size: usize,
+) -> Vec<Vec<f64>> {
+    let num_layers = constraint.number_layers() - 1;
     let mut weights: Vec<Vec<f64>> = Vec::with_capacity(num_layers);
     for layer in 0..num_layers {
-        let variable = mdd.decision_at_layer(layer);
-        let variable_domain_size = problem[variable].domain_size();
-        let mut layer_weights = vec![0.0; variable_domain_size];
-        for (k, w) in layer_weights.iter_mut().enumerate() {
-            let raw_value = problem[variable].value(ValueIndex(k)) as usize;
-            *w = probs_for_sample[variable.0 * domain_size + raw_value] as f64;
+        let variable = constraint.decision_at_layer(layer);
+        let mut layer_weights = vec![0.0; domain_size];
+        for (raw_value, w) in layer_weights.iter_mut().enumerate() {
+            if real_problem[variable].in_domain(raw_value as isize) {
+                *w = probs_for_sample[variable.0 * domain_size + raw_value] as f64;
+            }
         }
         weights.push(layer_weights);
     }
@@ -270,23 +282,29 @@ fn layer_weights_from_probs(mdd: &Mdd, probs_for_sample: &[f32], domain_size: us
 }
 
 fn mdd_loss_and_gradient(
-    mdd: &Mdd,
+    constraint: &CompiledConstraint,
+    real_problem: &Problem,
     probs_for_sample: &[f32],
     domain_size: usize,
     grad: &mut [f32],
     gamma: f64,
 ) -> (f64, f64) {
-    let weights = layer_weights_from_probs(mdd, probs_for_sample, domain_size);
-    let (wmc, gradient) = wmc_and_gradient(mdd, &weights);
+    let weights = layer_weights_from_probs(constraint, real_problem, probs_for_sample, domain_size);
+    let (wmc, gradient) = wmc_and_gradient(constraint, &weights);
     let weight = (1.0 - wmc).clamp(0.0, 1.0).powf(gamma) + SATISFACTION_WEIGHT_FLOOR;
     let chain = -weight / (wmc + WMC_EPS);
 
-    let problem = mdd.problem();
     for (layer, layer_gradient) in gradient.iter().enumerate() {
-        let variable = mdd.decision_at_layer(layer);
-        for (k, &g) in layer_gradient.iter().enumerate() {
-            let raw_value = problem[variable].value(ValueIndex(k)) as usize;
-            grad[variable.0 * domain_size + raw_value] += (chain * g) as f32;
+        let variable = constraint.decision_at_layer(layer);
+        for (raw_value, &g) in layer_gradient.iter().enumerate() {
+            // Masked the same way `layer_weights_from_probs` masked the forward weight: a raw
+            // value outside `real_problem`'s actual domain has a *constant* (zero) weight,
+            // independent of `probs_for_sample` -- so its contribution to d(loss)/d(probs) is
+            // genuinely zero, not whatever d(wmc)/d(weight) the shared, unhinted structure
+            // reports for that (structurally still-present, but never actually selectable) edge.
+            if real_problem[variable].in_domain(raw_value as isize) {
+                grad[variable.0 * domain_size + raw_value] += (chain * g) as f32;
+            }
         }
     }
 
@@ -301,7 +319,8 @@ fn mdd_loss_and_gradient(
 /// exactly: `(1 - wmc)^0 + FLOOR` is the same constant `1.0 + FLOOR` for every constraint
 /// regardless of its own `wmc`, which cancels out of the weighted average.
 fn sample_loss_and_gradient(
-    mdds: &[Mdd],
+    constraints: &[CompiledConstraint],
+    real_problem: &Problem,
     probs_for_sample: &[f32],
     number_vars: usize,
     domain_size: usize,
@@ -310,9 +329,15 @@ fn sample_loss_and_gradient(
     let mut grad = vec![0.0f32; number_vars * domain_size];
     let mut weighted_loss_sum = 0.0;
     let mut weight_sum = 0.0;
-    for mdd in mdds {
-        let (weighted_loss, weight) =
-            mdd_loss_and_gradient(mdd, probs_for_sample, domain_size, &mut grad, gamma);
+    for constraint in constraints {
+        let (weighted_loss, weight) = mdd_loss_and_gradient(
+            constraint,
+            real_problem,
+            probs_for_sample,
+            domain_size,
+            &mut grad,
+            gamma,
+        );
         weighted_loss_sum += weighted_loss;
         weight_sum += weight;
     }
@@ -358,17 +383,24 @@ fn mdd_wmc_loss<B: Backend>(
         batch
             .mdds
             .par_iter()
+            .zip(batch.problems.par_iter())
             .enumerate()
-            .map(|(i, mdds)| {
+            .map(|(i, (constraints, real_problem))| {
                 let start = i * number_vars * domain_size;
                 let sample_probs = &probs_data[start..start + number_vars * domain_size];
-                sample_loss_and_gradient(mdds, sample_probs, number_vars, domain_size, gamma)
+                sample_loss_and_gradient(
+                    constraints,
+                    real_problem,
+                    sample_probs,
+                    number_vars,
+                    domain_size,
+                    gamma,
+                )
             })
             .collect()
     });
 
-    let loss_value: f64 =
-        results.iter().map(|(loss, _)| loss).sum::<f64>() / batch_size as f64;
+    let loss_value: f64 = results.iter().map(|(loss, _)| loss).sum::<f64>() / batch_size as f64;
 
     let mut grad_data = vec![0.0f32; batch_size * number_vars * domain_size];
     for (i, (_, grad)) in results.iter().enumerate() {
@@ -404,6 +436,7 @@ mod mdd_loss_tests {
     use burn::data::dataloader::batcher::Batcher;
     use burn::data::dataset::Dataset;
 
+    use crate::mdd::{CompiledConstraint, MddArena};
     use crate::modelling::{all_different, not_equals, Problem};
 
     use super::super::mdd_dataset::{
@@ -433,8 +466,10 @@ mod mdd_loss_tests {
             domain_size: 3,
             mask_fraction,
         };
+        let arena = MddArena::new();
         let dataset = ConsFormerMddDataset::<B>::new(
             problems,
+            &arena,
             MddCompilationConfig::default(),
             data_config,
             device,
@@ -473,11 +508,22 @@ mod mdd_loss_tests {
         brute
     }
 
-    fn constraint_wmcs(mdds: &[Mdd], probs_for_sample: &[f32], domain_size: usize) -> Vec<f64> {
-        mdds.iter()
-            .map(|mdd| {
-                let weights = layer_weights_from_probs(mdd, probs_for_sample, domain_size);
-                wmc_and_gradient(mdd, &weights).0
+    fn constraint_wmcs(
+        constraints: &[CompiledConstraint],
+        real_problem: &Problem,
+        probs_for_sample: &[f32],
+        domain_size: usize,
+    ) -> Vec<f64> {
+        constraints
+            .iter()
+            .map(|constraint| {
+                let weights = layer_weights_from_probs(
+                    constraint,
+                    real_problem,
+                    probs_for_sample,
+                    domain_size,
+                );
+                wmc_and_gradient(constraint, &weights).0
             })
             .collect()
     }
@@ -494,12 +540,13 @@ mod mdd_loss_tests {
     /// gradient deliberately treats each constraint's weight as a constant (stop-gradient on
     /// `wmc`), not as a differentiable function of `probs`.
     fn sample_loss_with_frozen_weights(
-        mdds: &[Mdd],
+        constraints: &[CompiledConstraint],
+        real_problem: &Problem,
         probs_for_sample: &[f32],
         domain_size: usize,
         frozen_weights: &[f64],
     ) -> f64 {
-        let wmcs = constraint_wmcs(mdds, probs_for_sample, domain_size);
+        let wmcs = constraint_wmcs(constraints, real_problem, probs_for_sample, domain_size);
         let mut weighted_loss_sum = 0.0;
         let mut weight_sum = 0.0;
         for (&wmc, &weight) in wmcs.iter().zip(frozen_weights) {
@@ -520,8 +567,13 @@ mod mdd_loss_tests {
         for (i, mdds) in batch.mdds.iter().enumerate() {
             let start = i * number_vars * domain_size;
             let sample_probs = &probs_data[start..start + number_vars * domain_size];
-            loss_sum +=
-                sample_loss_with_frozen_weights(mdds, sample_probs, domain_size, &frozen_weights[i]);
+            loss_sum += sample_loss_with_frozen_weights(
+                mdds,
+                &batch.problems[i],
+                sample_probs,
+                domain_size,
+                &frozen_weights[i],
+            );
         }
         loss_sum / batch_size as f64
     }
@@ -550,8 +602,10 @@ mod mdd_loss_tests {
             domain_size: 3,
             mask_fraction: 0.0,
         };
+        let arena = MddArena::new();
         let dataset = ConsFormerMddDataset::<NdArray>::new(
-            vec![problem],
+            vec![Arc::clone(&problem)],
+            &arena,
             MddCompilationConfig::default(),
             data_config,
             &device,
@@ -560,14 +614,17 @@ mod mdd_loss_tests {
         let mdds = sample.mdds().clone();
 
         let probs: Vec<f32> = vec![0.2, 0.5, 0.3, 0.1, 0.3, 0.6, 0.4, 0.4, 0.2];
-        let (loss, _grad) = sample_loss_and_gradient(&mdds, &probs, 3, 3, 1.0);
+        let (loss, _grad) = sample_loss_and_gradient(&mdds, &problem, &probs, 3, 3, 1.0);
 
         let probs_f64: Vec<f64> = probs.iter().map(|&v| v as f64).collect();
         let not_equals_wmc = brute_force_not_equals(&probs_f64, 3);
         let all_different_wmc = brute_force_all_different_permutation(&probs_f64, 3);
         let expected = weighted_average(&[not_equals_wmc, all_different_wmc], 1.0);
 
-        assert!((loss - expected).abs() < 1e-6, "got {loss} expected {expected}");
+        assert!(
+            (loss - expected).abs() < 1e-6,
+            "got {loss} expected {expected}"
+        );
     }
 
     #[test]
@@ -583,8 +640,10 @@ mod mdd_loss_tests {
             domain_size: 3,
             mask_fraction: 0.0,
         };
+        let arena = MddArena::new();
         let dataset = ConsFormerMddDataset::<NdArray>::new(
-            vec![problem],
+            vec![Arc::clone(&problem)],
+            &arena,
             MddCompilationConfig::default(),
             data_config,
             &device,
@@ -593,14 +652,15 @@ mod mdd_loss_tests {
         let mdds = sample.mdds().clone();
 
         let probs: Vec<f32> = vec![0.2, 0.5, 0.3, 0.1, 0.3, 0.6, 0.4, 0.4, 0.2];
-        let (base_loss, grad) = sample_loss_and_gradient(&mdds, &probs, 3, 3, 1.0);
-        let frozen_weights = frozen_weights_for(&constraint_wmcs(&mdds, &probs, 3), 1.0);
+        let (base_loss, grad) = sample_loss_and_gradient(&mdds, &problem, &probs, 3, 3, 1.0);
+        let frozen_weights = frozen_weights_for(&constraint_wmcs(&mdds, &problem, &probs, 3), 1.0);
 
         let eps = 1e-4f32;
         for i in 0..probs.len() {
             let mut bumped = probs.clone();
             bumped[i] += eps;
-            let bumped_loss = sample_loss_with_frozen_weights(&mdds, &bumped, 3, &frozen_weights);
+            let bumped_loss =
+                sample_loss_with_frozen_weights(&mdds, &problem, &bumped, 3, &frozen_weights);
             let finite_diff = (bumped_loss - base_loss) / eps as f64;
             assert!(
                 (finite_diff - grad[i] as f64).abs() < 1e-2,
@@ -681,8 +741,11 @@ mod mdd_loss_tests {
         let grad_values: Vec<f32> = grad.into_data().to_vec::<f32>().unwrap();
 
         let base_tensor: Tensor<NdArray, 3> =
-            Tensor::<NdArray, 1>::from_data(flat.as_slice(), &plain_device)
-                .reshape([2, 3, domain_size]);
+            Tensor::<NdArray, 1>::from_data(flat.as_slice(), &plain_device).reshape([
+                2,
+                3,
+                domain_size,
+            ]);
         let base_data: Vec<f32> = base_tensor.clone().into_data().to_vec::<f32>().unwrap();
         let frozen_weights: Vec<Vec<f64>> = batch_plain
             .mdds
@@ -691,7 +754,10 @@ mod mdd_loss_tests {
             .map(|(i, mdds)| {
                 let start = i * 3 * domain_size;
                 let sample_probs = &base_data[start..start + 3 * domain_size];
-                frozen_weights_for(&constraint_wmcs(mdds, sample_probs, domain_size), 1.0)
+                frozen_weights_for(
+                    &constraint_wmcs(mdds, &batch_plain.problems[i], sample_probs, domain_size),
+                    1.0,
+                )
             })
             .collect();
         let base_loss =
@@ -702,8 +768,11 @@ mod mdd_loss_tests {
             let mut bumped = flat.clone();
             bumped[i] += eps;
             let bumped_tensor: Tensor<NdArray, 3> =
-                Tensor::<NdArray, 1>::from_data(bumped.as_slice(), &plain_device)
-                    .reshape([2, 3, domain_size]);
+                Tensor::<NdArray, 1>::from_data(bumped.as_slice(), &plain_device).reshape([
+                    2,
+                    3,
+                    domain_size,
+                ]);
             let bumped_loss =
                 mdd_wmc_loss_with_frozen_weights(bumped_tensor, &batch_plain, &frozen_weights);
             let finite_diff = (bumped_loss - base_loss) / eps as f64;
@@ -780,8 +849,10 @@ mod mdd_loss_tests {
             domain_size: 3,
             mask_fraction: 0.0,
         };
+        let arena = MddArena::new();
         let dataset = ConsFormerMddDataset::<ADBackend>::new(
             vec![problem],
+            &arena,
             MddCompilationConfig::default(),
             data_config,
             &device,
@@ -803,12 +874,14 @@ mod mdd_loss_tests {
             ..batch
         };
 
-        let logits: Tensor<ADBackend, 3> =
-            Tensor::zeros([1, 2, 3], &device).require_grad();
+        let logits: Tensor<ADBackend, 3> = Tensor::zeros([1, 2, 3], &device).require_grad();
 
         let loss = ConsFormerMddLoss { gamma: 1.0 }.loss(logits.clone(), &batch);
         let loss_value: f32 = loss.clone().into_data().to_vec::<f32>().unwrap()[0];
-        assert!(loss_value.is_finite(), "loss should be finite, got {loss_value}");
+        assert!(
+            loss_value.is_finite(),
+            "loss should be finite, got {loss_value}"
+        );
         assert!(
             (loss_value as f64 - (-(WMC_EPS).ln())).abs() < 1e-3,
             "an unconditionally-violated constraint should read back as -log(WMC_EPS), got {loss_value}",
@@ -823,6 +896,77 @@ mod mdd_loss_tests {
             grad_values.iter().all(|v| v.is_finite()),
             "every gradient entry should be finite even when a constraint is unconditionally violated -- got {:?}",
             grad_values,
+        );
+    }
+
+    /// Direct correctness check for the weight-masking fix `layer_weights_from_probs` needs now
+    /// that `constraint.structure` is compiled with no per-instance domain restriction (see
+    /// `crate::mdd::arena`'s module doc): a real "given" position (its domain narrowed to a
+    /// single value, e.g. a Sudoku clue) must have every *other* raw value's weight forced to
+    /// zero, even though the shared, un-hinted `AllDifferent` structure has a real edge for each
+    /// of them. Checks both that the masked weight vector itself is a one-hot at the given value,
+    /// and that `wmc` over those masked weights exactly matches a brute-force count restricted to
+    /// assignments honouring the given -- i.e. sampling/`wmc`/gradient never actually credits an
+    /// assignment that uses a masked-out value at the given position.
+    #[test]
+    fn layer_weights_from_probs_masks_out_a_given_values_forbidden_domain() {
+        let domain_size = 4;
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(4, (0..domain_size as isize).collect(), None);
+        all_different(&mut problem, vars.clone());
+        // `vars[0]` is a "given": its real domain is narrowed to a single value, but the shared
+        // template below is still compiled over the full nominal domain (no hint baked in).
+        crate::modelling::equal(&mut problem, vars[0], 2);
+        let problem = Arc::new(problem);
+
+        let arena = MddArena::new();
+        let constraint = problem
+            .iter_constraints()
+            .next()
+            .expect("problem must have exactly one constraint");
+        let constraint = crate::mdd::arena::compile_constraint(
+            &arena,
+            &problem,
+            constraint,
+            &crate::mdd::heuristics::OrderingHeuristic::MinDomMaxLinked,
+            domain_size,
+            usize::MAX,
+        );
+
+        // Uniform raw probabilities everywhere -- if masking didn't happen, every position
+        // (including the given's 3 forbidden values) would carry equal, nonzero weight.
+        let probs_for_sample: Vec<f32> = vec![0.25; 4 * domain_size];
+        let weights =
+            layer_weights_from_probs(&constraint, &problem, &probs_for_sample, domain_size);
+
+        let given_layer = (0..constraint.number_layers() - 1)
+            .find(|&l| constraint.decision_at_layer(l) == vars[0])
+            .expect("vars[0] must be in the compiled constraint's scope");
+        assert_eq!(
+            weights[given_layer],
+            vec![0.0, 0.0, 0.25, 0.0],
+            "a given position's weight vector must be zero everywhere but its one allowed value"
+        );
+
+        let wmc = crate::mdd::wmc::wmc(&constraint, &weights);
+
+        // Brute force: every permutation of {0,1,2,3} over the 4 variables with vars[0] fixed to
+        // 2, each weighted 0.25^4 (uniform raw probability at every position).
+        let mut brute = 0.0;
+        for a in 0..domain_size {
+            for b in 0..domain_size {
+                for c in 0..domain_size {
+                    let full = [2usize, a, b, c];
+                    let vals: std::collections::HashSet<usize> = full.iter().copied().collect();
+                    if vals.len() == 4 {
+                        brute += 0.25f64.powi(4);
+                    }
+                }
+            }
+        }
+        assert!(
+            (wmc - brute).abs() < 1e-9,
+            "wmc={wmc} brute={brute} -- masked wmc must match assignments honouring the given"
         );
     }
 }

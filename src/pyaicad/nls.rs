@@ -18,7 +18,6 @@ use crate::learning::consformer::{
     ConsFormer, ConsFormerBatch, ConsFormerConfig, MddCompilationConfig,
 };
 use crate::learning::Network;
-use crate::mdd::heuristics::ConstraintGrouping;
 use crate::modelling::Problem;
 use crate::nls::decode::{Argmax, DecodingOperator, MddSamplingDecode, Sampling};
 use crate::nls::destroy::{DestroyOperator, RandomDestroy, RelatedDestroy, WorstDestroy};
@@ -166,8 +165,8 @@ fn build_decode_op<B: Backend>(
     decode_kind: &PyDecodeKind,
     stochastic_decode: bool,
     temperature: f64,
-    mdd_grouping_window_size: usize,
     bp_iterations: usize,
+    domain_size: usize,
 ) -> Box<dyn DecodingOperator<B>> {
     match decode_kind {
         PyDecodeKind::Logits => {
@@ -178,16 +177,18 @@ fn build_decode_op<B: Backend>(
             }
         }
         PyDecodeKind::MddSampling => {
-            let compilation = MddCompilationConfig {
-                grouping: ConstraintGrouping::new_rolling(mdd_grouping_window_size),
-                ..MddCompilationConfig::default()
-            };
+            let compilation = MddCompilationConfig::default();
             let mode = if stochastic_decode {
                 DecodeMode::Sample
             } else {
                 DecodeMode::Greedy
             };
-            Box::new(MddSamplingDecode::new(compilation, mode, bp_iterations))
+            Box::new(MddSamplingDecode::new(
+                compilation,
+                domain_size,
+                mode,
+                bp_iterations,
+            ))
         }
     }
 }
@@ -219,17 +220,16 @@ pub struct PySolveConfig {
     /// Which decode operator to use
     #[pyo3(get, set)]
     pub decode_kind: PyDecodeKind,
-    #[pyo3(get, set)]
-    pub mdd_grouping_window_size: usize,
     /// Number of loopy belief propagation rounds `MddSamplingDecode` runs over the problem's
     /// compiled MDDs before decoding -- see `belief_propagation`'s doc.
     #[pyo3(get, set)]
     pub bp_iterations: usize,
     /// Upper bound on how many `batch_size`-sized chunks may run concurrently -- a separate knob
     /// from the CPU worker pool's thread count, since GPU memory (not CPU cores) is the resource
-    /// this bounds. Default `1`: fully sequential over chunks.
-    /// Raise it only when `batch_size` is small enough that several chunks resident on
-    /// the device at once is safe.
+    /// this bounds. Default `1`: fully sequential over chunks, matching the pre-existing
+    /// behaviour. Raise it only when `batch_size` is small enough that several chunks resident on
+    /// the device at once is safe -- e.g. `batch_size=1` with `max_concurrent_chunks` set to
+    /// however many instances you're comfortable holding in device memory simultaneously.
     #[pyo3(get, set)]
     pub max_concurrent_chunks: usize,
     #[pyo3(get, set)]
@@ -251,7 +251,6 @@ impl PySolveConfig {
         stochastic_decode=false,
         temperature=1.0,
         decode_kind=PyDecodeKind::Logits,
-        mdd_grouping_window_size=1,
         bp_iterations=1,
         max_concurrent_chunks=1,
         time_limit=None,
@@ -267,7 +266,6 @@ impl PySolveConfig {
         stochastic_decode: bool,
         temperature: f64,
         decode_kind: PyDecodeKind,
-        mdd_grouping_window_size: usize,
         bp_iterations: usize,
         max_concurrent_chunks: usize,
         time_limit: Option<u64>,
@@ -282,7 +280,6 @@ impl PySolveConfig {
             stochastic_decode,
             temperature,
             decode_kind,
-            mdd_grouping_window_size,
             bp_iterations,
             max_concurrent_chunks,
             time_limit,
@@ -316,7 +313,6 @@ impl From<&PySolveConfig> for SolveConfig {
             stochastic_decode: c.stochastic_decode,
             temperature: c.temperature,
             decode_kind: c.decode_kind.tag().to_string(),
-            mdd_grouping_window_size: c.mdd_grouping_window_size,
             bp_iterations: c.bp_iterations,
             max_concurrent_chunks: c.max_concurrent_chunks,
             time_limit: c.time_limit,
@@ -338,7 +334,6 @@ impl TryFrom<&SolveConfig> for PySolveConfig {
             stochastic_decode: c.stochastic_decode,
             temperature: c.temperature,
             decode_kind: PyDecodeKind::parse(&c.decode_kind)?,
-            mdd_grouping_window_size: c.mdd_grouping_window_size,
             bp_iterations: c.bp_iterations,
             max_concurrent_chunks: c.max_concurrent_chunks,
             time_limit: c.time_limit,
@@ -464,7 +459,7 @@ fn run<B: Backend>(
 
     match network_kind {
         PyNetworkKind::ConsFormer => {
-            let (_network_config, network) =
+            let (network_config, network) =
                 load_network::<B, ConsFormerConfig>(checkpoint_dir, &problems, &device).map_err(
                     |e| {
                         PyRuntimeError::new_err(format!(
@@ -479,8 +474,8 @@ fn run<B: Backend>(
                 &decode_kind,
                 config.stochastic_decode,
                 config.temperature,
-                config.mdd_grouping_window_size,
                 config.bp_iterations,
+                network_config.domain_size,
             );
 
             let nls = NeuralLocalSearch::<B, ConsFormer<B>, ConsFormerBatch<B>>::new(
@@ -498,12 +493,7 @@ fn run<B: Backend>(
     }
 }
 
-/// Runs one `NeuralLocalSearch::run` call per chunk, with up to `max_concurrent_chunks` of them
-/// in flight at once over `crate::utils::worker_pool()` (the same capped-size rayon pool
-/// `MddSamplingDecode::decode` already uses for its per-row belief-propagation work) rather than
-/// strictly sequentially.
-///
-/// Seeds are assigned by chunk index, not by completion order, so the destroy sequence for a
+/// Seeds are assigned by chunk *index*, not by completion order, so the destroy sequence for a
 /// given problem stays reproducible regardless of how the scheduler happens to interleave chunks
 /// within a group; `.collect()` likewise preserves chunk order in the returned `Vec` even though
 /// chunks within a group may finish out of order.

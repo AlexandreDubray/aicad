@@ -90,6 +90,17 @@ impl Regular {
 }
 
 impl Constraint for Regular {
+    fn structural_key(&self, _problem: &Problem) -> ConstraintShapeKey {
+        let mut accepting_states: Vec<usize> = self.accepting_states.iter().copied().collect();
+        accepting_states.sort_unstable();
+        ConstraintShapeKey::Regular {
+            arity: self.variables.len(),
+            transitions: (*self.transitions).clone(),
+            initial_state: self.initial_state,
+            accepting_states,
+        }
+    }
+
     fn update_variable_ordering(&mut self, order: &[VariableIndex]) {
         let scope: FxHashSet<VariableIndex> = self.variables.iter().copied().collect();
         self.layer_in_scope = (0..(order.len() / 64 + 1)).map(|_| 0).collect::<Vec<u64>>();

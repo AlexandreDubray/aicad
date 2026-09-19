@@ -29,8 +29,10 @@
 //! of arrays in a single combined pass (`mdd_local_beliefs`).
 
 use crate::mdd::wmc::gradient as mdd_gradient;
-use crate::mdd::Mdd;
+use crate::mdd::MddViewWithOrder;
 use crate::modelling::ValueIndex;
+#[cfg(test)]
+use crate::mdd::Mdd;
 
 use super::{build_var_to_mdds, log_combine_and_normalize, normalize_or_uniform, safe_ln};
 
@@ -51,7 +53,7 @@ fn one_hot(value: ValueIndex, domain_size: usize) -> Vec<f64> {
 /// normalization -- see that function's doc. Returned as one probability vector per layer, indexed
 /// the same way as `mdd.decision_at_layer` (and the same way `messages` itself is indexed -- by
 /// layer within this MDD, not by global variable id).
-fn mdd_local_beliefs(mdd: &Mdd, messages: &[Vec<f64>]) -> Vec<Vec<f64>> {
+fn mdd_local_beliefs<T: MddViewWithOrder>(mdd: &T, messages: &[Vec<f64>]) -> Vec<Vec<f64>> {
     mdd_gradient(mdd, messages)
         .into_iter()
         .zip(messages)
@@ -96,15 +98,15 @@ fn cavity_message(marginal: &[f64], local_belief: &[f64]) -> Vec<f64> {
 /// Returns one combined marginal per variable (`probs[var]`'s one-hot at `assignment[var]` for a
 /// `decided` variable; `probs[var]` itself, unchanged, for an undecided one that belongs to no MDD
 /// or when `iterations == 0`).
-pub fn belief_propagation(
-    mdds: &[Mdd],
+pub fn belief_propagation<T: MddViewWithOrder>(
+    mdds: &[T],
     probs: &[Vec<f64>],
     assignment: &[ValueIndex],
     decided: &[bool],
     iterations: usize,
 ) -> Vec<Vec<f64>> {
-    let var_to_mdds = build_var_to_mdds(mdds);
-    let num_vars = var_to_mdds.len();
+    let num_vars = probs.len();
+    let var_to_mdds = build_var_to_mdds(mdds, num_vars);
 
     // The permanent prior for each variable: the network's own belief for one that's still free,
     // or a one-hot at its fixed value for one already `decided`.

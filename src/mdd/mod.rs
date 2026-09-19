@@ -1,15 +1,21 @@
+pub mod arena;
 pub mod edge;
 pub mod heuristics;
 pub mod layer;
 pub mod mdd;
 pub mod node;
+pub mod structure;
+pub mod view;
 pub mod wmc;
 
 // re-export modules
+pub use arena::{CompiledConstraint, MddArena};
 pub use edge::Edge;
 pub use layer::Layer;
 pub use mdd::Mdd;
 pub use node::Node;
+pub use structure::MddStructure;
+pub use view::{MddView, MddViewWithOrder};
 
 use crate::constraints::*;
 use std::hash::{Hash, Hasher};

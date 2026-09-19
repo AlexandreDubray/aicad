@@ -5,14 +5,18 @@ use crate::constraints::*;
 pub use problem::Problem;
 use rustc_hash::FxHashSet;
 
-pub fn all_different(problem: &mut Problem, variables: Vec<VariableIndex>) {
+pub fn all_different(problem: &mut Problem, variables: Vec<VariableIndex>) -> ConstraintIndex {
     let constraint = AllDifferent::new(variables, problem);
-    problem.add_constraint(constraint);
+    problem.add_constraint(constraint)
 }
 
-pub fn not_equals(problem: &mut Problem, x: VariableIndex, y: VariableIndex) {
+pub fn not_equals(
+    problem: &mut Problem,
+    x: VariableIndex,
+    y: VariableIndex,
+) -> ConstraintIndex {
     let constraint = NotEquals::new(x, y, problem);
-    problem.add_constraint(constraint);
+    problem.add_constraint(constraint)
 }
 
 pub fn equal(problem: &mut Problem, variable: VariableIndex, value: isize) {
@@ -25,17 +29,17 @@ pub fn among(
     values: Vec<isize>,
     lb: usize,
     ub: usize,
-) {
+) -> ConstraintIndex {
     problem.add_constraint(Among::new(
         variables,
         FxHashSet::from_iter(values.iter().cloned()),
         lb,
         ub,
-    ));
+    ))
 }
 
-pub fn sum(problem: &mut Problem, variables: Vec<VariableIndex>, target: isize) {
-    problem.add_constraint(Sum::new(variables, target, problem));
+pub fn sum(problem: &mut Problem, variables: Vec<VariableIndex>, target: isize) -> ConstraintIndex {
+    problem.add_constraint(Sum::new(variables, target, problem))
 }
 
 /// At least `lb` of `variables` must take a value in `values`
@@ -44,20 +48,20 @@ pub fn at_least(
     variables: Vec<VariableIndex>,
     values: Vec<isize>,
     lb: usize,
-) {
+) -> ConstraintIndex {
     problem.add_constraint(AtLeast::new(
         variables,
         FxHashSet::from_iter(values.iter().cloned()),
         lb,
-    ));
+    ))
 }
 
 pub fn gcc(
     problem: &mut Problem,
     variables: Vec<VariableIndex>,
     bounds: Vec<(isize, usize, usize)>,
-) {
-    problem.add_constraint(Gcc::new(variables, bounds));
+) -> ConstraintIndex {
+    problem.add_constraint(Gcc::new(variables, bounds))
 }
 
 /// Adds a regular constraint to the problem over the sequence of variables in `variables`.
@@ -73,14 +77,14 @@ pub fn regular(
     transitions: Vec<Vec<Option<usize>>>,
     initial_state: usize,
     accepting_states: Vec<usize>,
-) {
+) -> ConstraintIndex {
     problem.add_constraint(Regular::new(
         variables,
         transitions,
         initial_state,
         FxHashSet::from_iter(accepting_states.iter().copied()),
         problem,
-    ));
+    ))
 }
 
 #[derive(

@@ -77,7 +77,7 @@ pub struct Mdd {
 /// constraints over the same scope declared in incompatible sequences. That's a genuine modelling
 /// conflict between the constraints being compiled into this MDD, not something any variable
 /// ordering can resolve.
-fn enforce_precedence_order(
+pub(crate) fn enforce_precedence_order(
     var_order: Vec<VariableIndex>,
     constraints: &[Box<dyn Constraint>],
 ) -> Vec<VariableIndex> {
@@ -266,6 +266,18 @@ impl Mdd {
 
     pub fn problem(&self) -> &Problem {
         &self.problem
+    }
+
+    /// Consumes this (already compiled, normally already `refine`d) `Mdd` and extracts just its
+    /// structural part.
+    pub fn into_structure(self) -> MddStructure {
+        MddStructure {
+            nodes: self.nodes,
+            edges: self.edges,
+            root: self.root,
+            sink: self.sink,
+            unsat: self.unsat,
+        }
     }
 
     pub fn number_constraints(&self) -> usize {

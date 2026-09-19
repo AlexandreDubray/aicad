@@ -58,6 +58,16 @@ impl AtLeast {
 }
 
 impl Constraint for AtLeast {
+    fn structural_key(&self, _problem: &Problem) -> ConstraintShapeKey {
+        let mut values: Vec<isize> = self.values.iter().copied().collect();
+        values.sort_unstable();
+        ConstraintShapeKey::AtLeast {
+            arity: self.variables.len(),
+            values,
+            lb: self.lb,
+        }
+    }
+
     fn update_variable_ordering(&mut self, order: &[VariableIndex]) {
         let scope: FxHashSet<VariableIndex> = self.variables.iter().copied().collect();
         self.layer_in_scope = (0..(order.len() / 64 + 1)).map(|_| 0).collect::<Vec<u64>>();
@@ -126,7 +136,12 @@ impl Constraint for AtLeast {
     }
 
     fn identity_property(&self) -> Box<dyn ConstraintProperty> {
-        Box::new(AtLeastProperty::new(self.values.clone(), self.lb, usize::MAX, 0))
+        Box::new(AtLeastProperty::new(
+            self.values.clone(),
+            self.lb,
+            usize::MAX,
+            0,
+        ))
     }
 
     fn empty_property(&self) -> Box<dyn ConstraintProperty> {

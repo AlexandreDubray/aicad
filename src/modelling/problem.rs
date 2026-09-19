@@ -40,11 +40,21 @@ impl Problem {
         &mut self,
         constraint: impl Constraint + 'static + Send + Sync,
     ) -> ConstraintIndex {
+        self.add_constraint_boxed(Box::new(constraint))
+    }
+
+    /// Adds an already-boxed constraint to the problem and returns its index. Used by
+    /// `crate::mdd::arena` to rebuild a synthetic problem's constraints from a
+    /// `ConstraintShapeKey` (where the concrete constraint type isn't known at the call site).
+    pub fn add_constraint_boxed(
+        &mut self,
+        constraint: Box<dyn Constraint + Send + Sync>,
+    ) -> ConstraintIndex {
         let ret = ConstraintIndex(self.constraints.len());
         for variable in constraint.iter_scope() {
             self[variable].add_constraint(ret);
         }
-        self.constraints.push(Box::new(constraint));
+        self.constraints.push(constraint);
         ret
     }
 

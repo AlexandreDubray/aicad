@@ -119,12 +119,19 @@ impl PySequentialImputationConfig {
     }
 }
 
-/// Compiles one MDD per group `compilation.grouping` puts the problem's constraints into,
-/// refining each to full exactness. Mirrors what the old `MddGibbsDecoding` used to do at decode
-/// time.
-fn compile_problem_mdds(problem: &Arc<Problem>, compilation: &MddCompilationConfig) -> Vec<Mdd> {
-    compilation
-        .grouping
+/// Compiles one MDD per group `grouping` puts the problem's constraints into, refining each to
+/// full exactness. Mirrors what the old `MddGibbsDecoding` used to do at decode time.
+///
+/// This compiles `Mdd`s directly (not through `crate::mdd::arena`'s `MddArena`), so unlike the
+/// ConsFormer-MDD training/inference paths, this module keeps its own `ConstraintGrouping` --
+/// `MddCompilationConfig` itself no longer carries a `grouping` field, since the arena's API only
+/// ever compiles one constraint at a time (see `crate::mdd::arena`'s module doc).
+fn compile_problem_mdds(
+    problem: &Arc<Problem>,
+    compilation: &MddCompilationConfig,
+    grouping: &ConstraintGrouping,
+) -> Vec<Mdd> {
+    grouping
         .groups(problem)
         .into_iter()
         .map(|constraints| {
@@ -160,6 +167,7 @@ fn solve_batch_chunk<B: Backend>(
     solver: &SequentialImputationSolver<B, ConsFormer<B>, ConsFormerBatch<B>>,
     chunk: &[Arc<Problem>],
     compilation: &MddCompilationConfig,
+    grouping: &ConstraintGrouping,
     mode: DecodeMode,
     max_steps: usize,
     time_limit: Option<Duration>,
@@ -178,7 +186,7 @@ fn solve_batch_chunk<B: Backend>(
     let mdds_per_problem: Vec<Vec<Mdd>> = chunk
         .par_iter()
         .progress_with(progress.clone())
-        .map(|problem| compile_problem_mdds(problem, compilation))
+        .map(|problem| compile_problem_mdds(problem, compilation, grouping))
         .collect();
     progress.finish_and_clear();
     let samplers: Vec<MddSampler> = mdds_per_problem
@@ -246,10 +254,8 @@ fn run<B: Backend>(
             } else {
                 DecodeMode::Greedy
             };
-            let compilation = MddCompilationConfig {
-                grouping: ConstraintGrouping::new_rolling(config.mdd_grouping_window_size),
-                ..MddCompilationConfig::default()
-            };
+            let compilation = MddCompilationConfig::default();
+            let grouping = ConstraintGrouping::new_rolling(config.mdd_grouping_window_size);
             let time_limit = config.time_limit.map(Duration::from_secs);
             let chunk_size = config.batch_size.unwrap_or(problems.len()).max(1);
 
@@ -272,6 +278,7 @@ fn run<B: Backend>(
                     &solver,
                     chunk,
                     &compilation,
+                    &grouping,
                     mode,
                     config.max_steps,
                     time_limit,

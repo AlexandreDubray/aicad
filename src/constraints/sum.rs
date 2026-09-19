@@ -40,6 +40,13 @@ impl Sum {
 }
 
 impl Constraint for Sum {
+    fn structural_key(&self, _problem: &Problem) -> ConstraintShapeKey {
+        ConstraintShapeKey::Sum {
+            arity: self.variables.len(),
+            target: self.target,
+        }
+    }
+
     fn update_variable_ordering(&mut self, order: &[VariableIndex]) {
         let scope: FxHashSet<VariableIndex> = self.variables.iter().copied().collect();
         self.layer_in_scope = (0..(order.len() / 64 + 1)).map(|_| 0).collect::<Vec<u64>>();

@@ -13,10 +13,9 @@ use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
 use crate::learning::BatchProblems;
-use crate::mdd::heuristics::{
-    ConstraintGrouping, MergeHeuristic, OrderingHeuristic, SelectHeuristic,
-};
-use crate::mdd::Mdd;
+use crate::mdd::arena::compile_constraint;
+use crate::mdd::heuristics::{MergeHeuristic, OrderingHeuristic, SelectHeuristic};
+use crate::mdd::{CompiledConstraint, MddArena};
 use crate::modelling::Problem;
 
 use super::dataset::{
@@ -29,7 +28,6 @@ pub struct MddCompilationConfig {
     pub ordering: OrderingHeuristic,
     pub merge: MergeHeuristic,
     pub select: SelectHeuristic,
-    pub grouping: ConstraintGrouping,
     pub max_width: usize,
 }
 
@@ -39,91 +37,84 @@ impl Default for MddCompilationConfig {
             ordering: OrderingHeuristic::MinDomMaxLinked,
             merge: MergeHeuristic::LessRelaxed,
             select: SelectHeuristic::Greedy,
-            grouping: ConstraintGrouping::default(),
             max_width: usize::MAX,
         }
     }
 }
 
-/// Human-readable label for a compiled group, used in diagnostics (unsat warnings,
-/// out-of-range assertions) -- the group's constraint name(s), joined.
-fn describe_group(problem: &Problem, constraints: &[crate::modelling::ConstraintIndex]) -> String {
-    constraints
-        .iter()
-        .map(|&c| problem[c].name())
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// Compiles one exact MDD per constraint group of `problem` (`compilation.grouping` decides how
-/// constraints are grouped; a group can be a single constraint). Always refines to full exactness
-/// (`usize::MAX`), regardless of `compilation.max_width` -- see `MddCompilationConfig`'s doc.
-/// `domain_size` must match the network's configured `ConsFormerConfig::domain_size`: every edge's
-/// raw domain value (not its `ValueIndex` position -- see `crate::mdd::wmc`'s doc for that
-/// distinction) is the index the training loss reads that edge's weight from in the network's
-/// per-variable probability vector, so a domain value outside `[0, domain_size)` would silently
-/// read/write the wrong slot there instead of panicking loudly, which this validates against
-/// up front.
+/// Compiles one `CompiledConstraint` per constraint of `problem`. Each constraint's *structure*
+/// is looked up/compiled once in `arena` and shared with every other structurally-identical
+/// constraint (from this problem or any other sharing the same `arena`).
+/// Always compiles/refines the shared structure to full exactness (`usize::MAX`), regardless of
+/// `compilation.max_width`.
+///
+/// `domain_size` must match the network's configured `ConsFormerConfig::domain_size`: it's the
+/// nominal alphabet every shared template is compiled against, and the index the training loss
+/// reads a raw domain value's weight from in the network's per-variable probability vector (see
+/// `crate::learning::consformer::loss::layer_weights_from_probs`), so this validates up front
+/// that every real variable actually referenced by a compiled constraint's scope has its whole
+/// domain inside `[0, domain_size)` -- a mismatch there would otherwise silently read/write the
+/// wrong slot instead of panicking loudly.
 fn compile_constraint_mdds(
     problem: &Arc<Problem>,
+    arena: &MddArena,
     compilation: &MddCompilationConfig,
     domain_size: usize,
-) -> Vec<Mdd> {
-    let groups = compilation.grouping.groups(problem);
-    groups
-        .into_iter()
-        .map(|constraints| {
-            let mut mdd = Mdd::new(
-                Arc::clone(problem),
-                compilation.ordering.clone(),
-                compilation.merge.clone(),
-                compilation.select.clone(),
-                &constraints,
-            );
-            mdd.refine(usize::MAX);
+) -> Vec<CompiledConstraint> {
+    problem
+        .iter_constraints()
+        .map(|c| {
+            let label = problem[c].name();
 
-            let label = describe_group(problem, &constraints);
-            if mdd.is_unsat() {
+            for variable in problem[c].iter_scope() {
+                for value in problem[variable].iter_domain() {
+                    assert!(
+                        value >= 0 && (value as usize) < domain_size,
+                        "constraint `{}`: domain value {} out of the network's [0, {}) range -- \
+                         `domain_size` passed to the MDD dataset doesn't match the network's \
+                         configured domain_size",
+                        label,
+                        value,
+                        domain_size,
+                    );
+                }
+            }
+
+            // Always compiled exactly, regardless of `compilation.max_width` -- see this
+            // function's doc.
+            let compiled = compile_constraint(
+                arena,
+                problem,
+                c,
+                &compilation.ordering,
+                domain_size,
+                usize::MAX,
+            );
+
+            if compiled.structure.is_unsat() {
                 log::warn!(
-                    "MDD group `{}` is unsatisfiable given its own scope's domains -- its \
-                     compiled MDD has no accepting path, so its WMC will always be 0. This \
-                     usually means a fixed/hint value already violates one of its constraints.",
+                    "MDD constraint `{}`'s shape is unconditionally unsatisfiable -- its \
+                     compiled structure has no accepting path regardless of instance, so its \
+                     WMC will always be 0.",
                     label,
                 );
             }
 
-            for layer in 0..mdd.number_layers() - 1 {
-                let variable = mdd.decision_at_layer(layer);
-                for node in mdd.nodes_in_layer(layer) {
-                    for edge in mdd[node].iter_children() {
-                        let domain_value = problem[variable].value(mdd[edge].assignment());
-                        assert!(
-                            domain_value >= 0 && (domain_value as usize) < domain_size,
-                            "group `{}`: domain value {} out of the network's [0, {}) \
-                             range -- `domain_size` passed to the MDD dataset doesn't match the \
-                             network's configured domain_size",
-                            label,
-                            domain_value,
-                            domain_size,
-                        );
-                    }
-                }
-            }
-
-            mdd
+            compiled
         })
         .collect()
 }
 
 /// Sample used to train ConsFormer-MDD. Carries the same attention/var masks as the classical
-/// `ConsFormerSample` (see `consformer_masks`), plus one compiled `Mdd` per constraint group of
-/// `problem`. `mdds` is `Arc`-wrapped since `Dataset::get` clones the sample on every access (once
-/// per epoch, per batch), and an `Mdd` isn't free to deep-copy repeatedly.
+/// `ConsFormerSample` (see `consformer_masks`), plus one `CompiledConstraint` per constraint of
+/// `problem` -- each group's (possibly shared, see `crate::mdd::arena`) structure plus its own
+/// real branching order. `mdds` is `Arc`-wrapped since `Dataset::get` clones the sample on every
+/// access (once per epoch, per batch), and isn't free to deep-copy repeatedly.
 pub struct ConsFormerMddSample<B: Backend> {
     problem: Arc<Problem>,
     attention_mask: Tensor<B, 2, Bool>,
     var_mask: Tensor<B, 1, Bool>,
-    mdds: Arc<Vec<Mdd>>,
+    mdds: Arc<Vec<CompiledConstraint>>,
 }
 
 impl<B: Backend> ConsFormerMddSample<B> {
@@ -139,7 +130,7 @@ impl<B: Backend> ConsFormerMddSample<B> {
         &self.var_mask
     }
 
-    pub fn mdds(&self) -> &Arc<Vec<Mdd>> {
+    pub fn mdds(&self) -> &Arc<Vec<CompiledConstraint>> {
         &self.mdds
     }
 }
@@ -171,13 +162,20 @@ pub struct ConsFormerMddDataset<B: Backend> {
 }
 
 impl<B: Backend> ConsFormerMddDataset<B> {
-    /// Compiles one exact MDD per constraint group for every problem. `data_config.domain_size`
-    /// must match the network's configured `ConsFormerConfig::domain_size` -- see
-    /// `compile_constraint_mdds`. Build `data_config` via `ConsFormerDataConfig::from(&network_config)`
-    /// rather than by hand, so this and the `ConsFormerMddBatcher` built alongside it can't end up
-    /// with different `domain_size`s.
+    /// Compiles one `CompiledConstraint` per constraint for every problem, sharing structures
+    /// across every group (from any problem in this call, or from any earlier/later call given
+    /// the same `arena`) whose shape matches -- see `crate::mdd::arena`'s module doc.
+    /// `data_config.domain_size` must match the network's configured `ConsFormerConfig::domain_size`
+    /// -- see `compile_constraint_mdds`. Build `data_config` via
+    /// `ConsFormerDataConfig::from(&network_config)` rather than by hand, so this and the
+    /// `ConsFormerMddBatcher` built alongside it can't end up with different `domain_size`s.
+    ///
+    /// `arena` is a plain `&MddArena` rather than owned: callers building several datasets that
+    /// should share compiled structures (e.g. `pyaicad::learn::run_training_mdd`'s train and
+    /// validation datasets) pass the same `Arc<MddArena>` (dereferenced) to each call.
     pub fn new(
         problems: Vec<Arc<Problem>>,
+        arena: &MddArena,
         compilation: MddCompilationConfig,
         data_config: ConsFormerDataConfig,
         device: &B::Device,
@@ -192,15 +190,15 @@ impl<B: Backend> ConsFormerMddDataset<B> {
         );
         progress.set_message("Compiling MDDs");
 
-        let per_problem: Vec<(ConsFormerMaskData, Vec<Mdd>)> = crate::utils::worker_pool()
-            .install(|| {
+        let per_problem: Vec<(ConsFormerMaskData, Vec<CompiledConstraint>)> =
+            crate::utils::worker_pool().install(|| {
                 problems
                     .par_iter()
                     .progress_with(progress.clone())
                     .map(|problem| {
                         (
                             consformer_mask_data(problem),
-                            compile_constraint_mdds(problem, &compilation, domain_size),
+                            compile_constraint_mdds(problem, arena, &compilation, domain_size),
                         )
                     })
                     .collect()
@@ -245,8 +243,8 @@ pub struct ConsFormerMddBatch<B: Backend> {
     pub assignments: Tensor<B, 2, Int>,
     /// Problems, used to compute satisfaction reports/metrics.
     pub problems: Vec<Arc<Problem>>,
-    /// Every sample's constraint-group MDDs, index-aligned with `problems`.
-    pub mdds: Vec<Arc<Vec<Mdd>>>,
+    /// Every sample's compiled constraint groups, index-aligned with `problems`.
+    pub mdds: Vec<Arc<Vec<CompiledConstraint>>>,
 }
 
 impl<B: Backend> Clone for ConsFormerMddBatch<B> {
@@ -325,7 +323,8 @@ impl<B: Backend> Batcher<B, ConsFormerMddSample<B>, ConsFormerMddBatch<B>>
         let var_mask_tensors: Vec<Tensor<B, 1, Bool>> =
             samples.iter().map(|s| s.var_mask.clone()).collect();
         let problems: Vec<Arc<Problem>> = samples.iter().map(|s| Arc::clone(&s.problem)).collect();
-        let mdds: Vec<Arc<Vec<Mdd>>> = samples.iter().map(|s| Arc::clone(&s.mdds)).collect();
+        let mdds: Vec<Arc<Vec<CompiledConstraint>>> =
+            samples.iter().map(|s| Arc::clone(&s.mdds)).collect();
 
         let (attention_masks, var_masks, assignments) = stack_masks_and_sample_assignments(
             attention_mask_tensors,
@@ -350,20 +349,31 @@ mod tests {
     use super::*;
     use crate::modelling::{all_different, among, not_equals, sum};
 
-    fn brute_force_wmc(mdd: &Mdd, probs: &[f64], domain_size: usize) -> f64 {
-        let num_layers = mdd.number_layers() - 1;
+    /// `real_domain_size` is what `problem[variable].domain_size()` used to be before the arena
+    /// split -- since the group's structure is now compiled against the full nominal
+    /// `domain_size` regardless of any real narrowing, this builds the same masked weights
+    /// `crate::learning::consformer::loss::layer_weights_from_probs` does (every real variable
+    /// here has an unnarrowed `0..domain_size` domain, so the mask is a no-op, but this keeps the
+    /// test helper honest about what production code actually builds).
+    fn brute_force_wmc(
+        constraint: &CompiledConstraint,
+        real_problem: &Problem,
+        probs: &[f64],
+        domain_size: usize,
+    ) -> f64 {
+        let num_layers = constraint.number_layers() - 1;
         let mut weights = Vec::with_capacity(num_layers);
         for layer in 0..num_layers {
-            let variable = mdd.decision_at_layer(layer);
-            let mut layer_weights = vec![0.0; mdd.problem()[variable].domain_size()];
-            for (k, w) in layer_weights.iter_mut().enumerate() {
-                let raw_value = mdd.problem()[variable]
-                    .value(crate::modelling::ValueIndex(k)) as usize;
-                *w = probs[variable.0 * domain_size + raw_value];
+            let variable = constraint.decision_at_layer(layer);
+            let mut layer_weights = vec![0.0; domain_size];
+            for (raw_value, w) in layer_weights.iter_mut().enumerate() {
+                if real_problem[variable].in_domain(raw_value as isize) {
+                    *w = probs[variable.0 * domain_size + raw_value];
+                }
             }
             weights.push(layer_weights);
         }
-        crate::mdd::wmc::wmc(mdd, &weights)
+        crate::mdd::wmc::wmc(constraint, &weights)
     }
 
     #[test]
@@ -375,7 +385,13 @@ mod tests {
         let problem = Arc::new(problem);
 
         let domain_size = 3;
-        let mdds = compile_constraint_mdds(&problem, &MddCompilationConfig::default(), domain_size);
+        let arena = MddArena::new();
+        let mdds = compile_constraint_mdds(
+            &problem,
+            &arena,
+            &MddCompilationConfig::default(),
+            domain_size,
+        );
         assert_eq!(mdds.len(), 1);
         assert_eq!(mdds[0].number_layers() - 1, 2);
 
@@ -383,7 +399,7 @@ mod tests {
             0.2, 0.5, 0.3, // x
             0.1, 0.3, 0.6, // y
         ];
-        let wmc = brute_force_wmc(&mdds[0], &probs, domain_size);
+        let wmc = brute_force_wmc(&mdds[0], &problem, &probs, domain_size);
 
         let mut brute = 0.0;
         for xv in 0..domain_size {
@@ -404,7 +420,13 @@ mod tests {
         let problem = Arc::new(problem);
 
         let domain_size = 3;
-        let mdds = compile_constraint_mdds(&problem, &MddCompilationConfig::default(), domain_size);
+        let arena = MddArena::new();
+        let mdds = compile_constraint_mdds(
+            &problem,
+            &arena,
+            &MddCompilationConfig::default(),
+            domain_size,
+        );
         assert_eq!(mdds.len(), 1);
         assert_eq!(mdds[0].number_layers() - 1, 3);
 
@@ -413,7 +435,7 @@ mod tests {
             0.2, 0.2, 0.6, // var 1
             0.1, 0.4, 0.5, // var 2
         ];
-        let wmc = brute_force_wmc(&mdds[0], &probs, domain_size);
+        let wmc = brute_force_wmc(&mdds[0], &problem, &probs, domain_size);
 
         let mut brute = 0.0;
         for a in 0..domain_size {
@@ -436,14 +458,20 @@ mod tests {
         let problem = Arc::new(problem);
 
         let domain_size = 3;
-        let mdds = compile_constraint_mdds(&problem, &MddCompilationConfig::default(), domain_size);
+        let arena = MddArena::new();
+        let mdds = compile_constraint_mdds(
+            &problem,
+            &arena,
+            &MddCompilationConfig::default(),
+            domain_size,
+        );
 
         let probs: Vec<f64> = vec![
             0.5, 0.3, 0.2, // var 0
             0.2, 0.2, 0.6, // var 1
             0.1, 0.4, 0.5, // var 2
         ];
-        let wmc = brute_force_wmc(&mdds[0], &probs, domain_size);
+        let wmc = brute_force_wmc(&mdds[0], &problem, &probs, domain_size);
 
         let mut brute = 0.0;
         for a in 0..domain_size {
@@ -466,14 +494,20 @@ mod tests {
         let problem = Arc::new(problem);
 
         let domain_size = 3;
-        let mdds = compile_constraint_mdds(&problem, &MddCompilationConfig::default(), domain_size);
+        let arena = MddArena::new();
+        let mdds = compile_constraint_mdds(
+            &problem,
+            &arena,
+            &MddCompilationConfig::default(),
+            domain_size,
+        );
 
         let probs: Vec<f64> = vec![
             0.5, 0.3, 0.2, // var 0
             0.2, 0.2, 0.6, // var 1
             0.1, 0.4, 0.5, // var 2
         ];
-        let wmc = brute_force_wmc(&mdds[0], &probs, domain_size);
+        let wmc = brute_force_wmc(&mdds[0], &problem, &probs, domain_size);
 
         let mut brute = 0.0;
         for a in 0..domain_size {
@@ -497,9 +531,18 @@ mod tests {
         let problem = Arc::new(problem);
 
         let domain_size = 2;
-        let mdds = compile_constraint_mdds(&problem, &MddCompilationConfig::default(), domain_size);
+        let arena = MddArena::new();
+        let mdds = compile_constraint_mdds(
+            &problem,
+            &arena,
+            &MddCompilationConfig::default(),
+            domain_size,
+        );
         let probs: Vec<f64> = vec![0.5, 0.5, 0.5, 0.5, 0.5, 0.5];
-        assert_eq!(brute_force_wmc(&mdds[0], &probs, domain_size), 0.0);
+        assert_eq!(
+            brute_force_wmc(&mdds[0], &problem, &probs, domain_size),
+            0.0
+        );
     }
 
     #[test]
@@ -511,7 +554,8 @@ mod tests {
         not_equals(&mut problem, x, y);
         let problem = Arc::new(problem);
 
-        compile_constraint_mdds(&problem, &MddCompilationConfig::default(), 2);
+        let arena = MddArena::new();
+        compile_constraint_mdds(&problem, &arena, &MddCompilationConfig::default(), 2);
     }
 
     /// End-to-end: `ConsFormerMddDataset::new` compiles MDDs and builds mask tensors for many
@@ -540,8 +584,10 @@ mod tests {
             mask_fraction: 0.0,
         };
 
+        let arena = MddArena::new();
         let dataset = ConsFormerMddDataset::<NdArray>::new(
             problems.clone(),
+            &arena,
             MddCompilationConfig::default(),
             data_config,
             &device,
@@ -552,8 +598,13 @@ mod tests {
             let sample = dataset.get(i).unwrap();
             assert!(Arc::ptr_eq(sample.problem(), problem));
 
-            let expected =
-                compile_constraint_mdds(problem, &MddCompilationConfig::default(), domain_size);
+            let expected_arena = MddArena::new();
+            let expected = compile_constraint_mdds(
+                problem,
+                &expected_arena,
+                &MddCompilationConfig::default(),
+                domain_size,
+            );
             let actual = sample.mdds();
             assert_eq!(actual.len(), expected.len());
             for (a, e) in actual.iter().zip(expected.iter()) {
@@ -584,8 +635,10 @@ mod tests {
             mask_fraction: 0.0,
         };
 
+        let arena = MddArena::new();
         let dataset = ConsFormerMddDataset::<NdArray>::new(
             problems.clone(),
+            &arena,
             MddCompilationConfig::default(),
             data_config,
             &device,

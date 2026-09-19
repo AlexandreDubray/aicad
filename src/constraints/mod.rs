@@ -25,6 +25,10 @@ pub trait Constraint: DeepSizeOf + DynClone + Send + Sync {
     /// Update the variable ordering. `order[layer]` gives the variable branched at that layer;
     /// every variable in the constraint's own scope is guaranteed to appear in `order`.
     fn update_variable_ordering(&mut self, order: &[VariableIndex]);
+    /// A value describing the solution space of the constraints and, hence, the MDD structure.
+    /// For example, all-diff constraints are defined by their scope size (we still assume that all
+    /// variables share the same domain).
+    fn structural_key(&self, problem: &Problem) -> ConstraintShapeKey;
     /// Pairs `(before, after)` this constraint requires the chosen variable ordering to respect.
     /// Most constraints don't care about relative order within their scope and use the default
     /// empty list. However,for sequence dependent constraint (e.g., `Regular`), the order of
@@ -60,6 +64,58 @@ pub trait Constraint: DeepSizeOf + DynClone + Send + Sync {
 }
 
 dyn_clone::clone_trait_object!(Constraint);
+
+/// Exact, hashable description of a constraint's compiled shape.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ConstraintShapeKey {
+    AllDifferent {
+        arity: usize,
+    },
+    NotEquals,
+    Among {
+        arity: usize,
+        values: Vec<isize>,
+        lb: usize,
+        ub: usize,
+    },
+    AtLeast {
+        arity: usize,
+        values: Vec<isize>,
+        lb: usize,
+    },
+    Gcc {
+        arity: usize,
+        /// Sorted by value because the compiled structure is invariant to bound declaration order
+        /// (it only permutes `Gcc`'s internal bit assignment), so sorting improves the odds two
+        /// groups declaring the same bounds in a different order still dedup.
+        bounds: Vec<(isize, usize, usize)>,
+    },
+    Regular {
+        arity: usize,
+        transitions: Vec<Vec<Option<usize>>>,
+        initial_state: usize,
+        accepting_states: Vec<usize>,
+    },
+    Sum {
+        arity: usize,
+        target: isize,
+    },
+}
+
+impl ConstraintShapeKey {
+    /// Returns the arity of the constraint represented by this shape
+    pub fn arity(&self) -> usize {
+        match self {
+            Self::NotEquals => 2,
+            Self::AllDifferent { arity }
+            | Self::Among { arity, .. }
+            | Self::AtLeast { arity, .. }
+            | Self::Gcc { arity, .. }
+            | Self::Regular { arity, .. }
+            | Self::Sum { arity, .. } => *arity,
+        }
+    }
+}
 
 pub trait ConstraintProperty: DeepSizeOf + DynClone + Send + Sync {
     fn update(&mut self, other: &dyn ConstraintProperty, assignment: isize, in_scope: bool);

@@ -2,7 +2,7 @@ pub mod bp;
 pub mod solve;
 
 use crate::mdd::wmc::{partial_backward, partial_forward};
-use crate::mdd::Mdd;
+use crate::mdd::{Mdd, MddViewWithOrder};
 use crate::modelling::{ValueIndex, VariableIndex};
 
 use rand::RngExt;
@@ -173,12 +173,15 @@ fn normalize_or_uniform(mut weights: Vec<f64>, domain_size: usize) -> Vec<f64> {
 /// its scope, at that layer. Shared by `MddSampler::new` (per-step destroy/resample decoding) and
 /// `bp::belief_propagation` (multi-round marginal aggregation) -- both need the same "which MDDs
 /// does this variable belong to, and at what layer in each" index.
-fn build_var_to_mdds(mdds: &[Mdd]) -> Vec<Vec<(usize, usize)>> {
-    let num_vars = mdds
-        .first()
-        .map(|mdd| mdd.problem().number_variables())
-        .unwrap_or(0);
-
+///
+/// Generic over `MddViewWithOrder` (implemented by both `Mdd` and the arena-shared
+/// `CompiledConstraint`, see `crate::mdd::arena`), so this works for either representation; `num_vars`
+/// is passed explicitly rather than read off `mdd.problem()` since a `CompiledConstraint` carries no
+/// `Arc<Problem>` of its own (that's the whole point of the split -- see the arena module doc).
+fn build_var_to_mdds<T: MddViewWithOrder>(
+    mdds: &[T],
+    num_vars: usize,
+) -> Vec<Vec<(usize, usize)>> {
     let mut var_to_mdds: Vec<Vec<(usize, usize)>> = vec![Vec::new(); num_vars];
     for (mdd_index, mdd) in mdds.iter().enumerate() {
         for layer in 0..mdd.number_layers() - 1 {
@@ -202,10 +205,14 @@ pub struct MddSampler<'a> {
 
 impl<'a> MddSampler<'a> {
     pub fn new(mdds: &'a [Mdd]) -> Self {
+        let num_vars = mdds
+            .first()
+            .map(|mdd| mdd.problem().number_variables())
+            .unwrap_or(0);
         Self {
             mdds,
             weights: vec![1.0; mdds.len()],
-            var_to_mdds: build_var_to_mdds(mdds),
+            var_to_mdds: build_var_to_mdds(mdds, num_vars),
         }
     }
 

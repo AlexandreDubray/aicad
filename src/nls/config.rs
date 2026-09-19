@@ -24,8 +24,6 @@ pub struct SolveConfig {
     #[config(default = "String::from(\"logits\")")]
     pub decode_kind: String,
     #[config(default = 1)]
-    pub mdd_grouping_window_size: usize,
-    #[config(default = 1)]
     pub bp_iterations: usize,
     /// Upper bound on how many `batch_size`-sized chunks `chunked_run` may have in flight on the
     /// GPU/device at once -- independent of `crate::utils::worker_pool`'s (CPU-sized) thread
@@ -75,7 +73,6 @@ impl Default for SolveConfig {
             stochastic_decode: false,
             temperature: 1.0,
             decode_kind: String::from("logits"),
-            mdd_grouping_window_size: 0,
             bp_iterations: 1,
             max_concurrent_chunks: 1,
         }
