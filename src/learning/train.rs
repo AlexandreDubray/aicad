@@ -245,16 +245,27 @@ where
         let mut epoch_report: Option<SatisfactionReport> = None;
         let epoch_start = Instant::now();
 
-        for batch in train_dataloader.iter() {
-            let logits = network.forward(&batch);
+        let mut t_forward = 0.0f64;
+        let mut t_monitor = 0.0f64;
+        let mut t_loss = 0.0f64;
+        let mut t_backward = 0.0f64;
 
+        for batch in train_dataloader.iter() {
+            let t = Instant::now();
+            let logits = network.forward(&batch);
+            t_forward += t.elapsed().as_secs_f64();
+
+            let t = Instant::now();
             let batch_report = SatisfactionReport::build(logits.clone(), &batch);
             match &mut epoch_report {
                 Some(report) => report.merge(batch_report),
                 None => epoch_report = Some(batch_report),
             }
+            t_monitor += t.elapsed().as_secs_f64();
 
+            let t = Instant::now();
             let loss = loss_fn.loss(logits.clone(), &batch);
+            t_loss += t.elapsed().as_secs_f64();
             let loss_scalar = loss.clone().into_scalar().elem::<f32>();
             if !loss_scalar.is_finite() {
                 let logits_data: Vec<f32> = logits
@@ -279,13 +290,18 @@ where
                 );
             }
 
+            let t = Instant::now();
             let grads = GradientsParams::from_grads(loss.backward(), &network);
             network = optim.step(training.lr, network, grads);
+            t_backward += t.elapsed().as_secs_f64();
 
             epoch_loss_sum += loss_scalar;
             epoch_batches += 1;
         }
         let epoch_rt = epoch_start.elapsed().as_secs();
+        log::info!(
+            "epoch {epoch}: forward={t_forward:.3}s monitor={t_monitor:.3}s loss={t_loss:.3}s backward+step={t_backward:.3}s"
+        );
         // Averaged per batch, matching how validation loss below is reported -- previously this
         // was a raw sum over the epoch's mini-batches, which made it look ~(batch count) larger
         // than the (correctly averaged) validation loss printed a few lines down, even when the
@@ -302,10 +318,16 @@ where
             let mut valid_report: Option<SatisfactionReport> = None;
             let mut valid_loss_sum = 0.0f64;
             let mut valid_batches = 0usize;
+            let valid_start = Instant::now();
+            let mut t_valid_forward = 0.0f64;
+            let mut t_valid_score = 0.0f64;
 
             for batch in valid_dataloader.iter() {
+                let t = Instant::now();
                 let logits = valid_network.forward(&batch);
+                t_valid_forward += t.elapsed().as_secs_f64();
 
+                let t = Instant::now();
                 match training.model_selection {
                     ModelSelection::Loss => {
                         let loss = loss_fn.loss(logits, &batch);
@@ -319,8 +341,13 @@ where
                         }
                     }
                 }
+                t_valid_score += t.elapsed().as_secs_f64();
                 valid_batches += 1;
             }
+            log::info!(
+                "epoch {epoch}: validation forward={t_valid_forward:.3}s score={t_valid_score:.3}s total={:.3}s",
+                valid_start.elapsed().as_secs_f64(),
+            );
 
             let score = match training.model_selection {
                 ModelSelection::Loss => {
