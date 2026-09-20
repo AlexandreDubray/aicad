@@ -14,6 +14,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::learning::consformer::ConsFormerInputs;
 use crate::learning::monitoring::SatisfactionReport;
 use crate::learning::{BatchProblems, Loss, Network, NetworkConfig};
 use crate::modelling::Problem;
@@ -173,8 +174,14 @@ where
     <NC::N as AutodiffModule<B>>::InnerModule: Network<B::InnerBackend, VBatch>,
     S: Send + Sync + Clone + std::fmt::Debug + 'static,
     SValid: Send + Sync + Clone + std::fmt::Debug + 'static,
-    TBatch: BatchProblems<B> + Clone + Send + Sync + std::fmt::Debug + 'static,
-    VBatch: BatchProblems<B::InnerBackend> + Clone + Send + Sync + std::fmt::Debug + 'static,
+    TBatch: BatchProblems<B> + ConsFormerInputs<B> + Clone + Send + Sync + std::fmt::Debug + 'static,
+    VBatch: BatchProblems<B::InnerBackend>
+        + ConsFormerInputs<B::InnerBackend>
+        + Clone
+        + Send
+        + Sync
+        + std::fmt::Debug
+        + 'static,
     Ba: Batcher<B, S, TBatch>
         + Batcher<B::InnerBackend, SValid, VBatch>
         + Clone

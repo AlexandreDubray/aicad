@@ -4,6 +4,7 @@ use burn::prelude::ElementConversion;
 use burn::tensor::backend::Backend;
 use burn::tensor::{Int, Tensor};
 
+use crate::learning::consformer::ConsFormerInputs;
 use crate::learning::BatchProblems;
 
 struct ConstraintStats {
@@ -59,12 +60,24 @@ pub struct SatisfactionReport {
 }
 
 impl SatisfactionReport {
-    /// Builds a report for the current batch.
-    pub fn build<B: Backend, Ba: BatchProblems<B>>(logits: Tensor<B, 3>, batch: &Ba) -> Self {
+    /// Builds a report for the current batch. Mirrors how `nls::decode::Argmax` turns logits
+    /// into an assignment -- only the variables this sample actually masked (destroyed) take the
+    /// network's argmax; every other position keeps `batch`'s current/given value regardless of
+    /// what the network predicted there. Without this, a raw `logits.argmax(2)` asks the network
+    /// to also correctly reproduce every kept/given value (e.g. every Sudoku hint, every
+    /// non-masked cell) on top of actually solving the masked ones, which it has no training
+    /// signal to do (`ConsFormerLoss`/`ConsFormerMddLoss` only score masked positions -- see
+    /// `blend_with_current` in `consformer::loss`) -- so the printed satisfaction rate stays
+    /// near-permanently at 0% even once training is actually working.
+    pub fn build<B: Backend, Ba: BatchProblems<B> + ConsFormerInputs<B>>(
+        logits: Tensor<B, 3>,
+        batch: &Ba,
+    ) -> Self {
         let problems = batch.problems();
         let batch_size = problems.len();
 
-        let assignment: Tensor<B, 2, Int> = logits.argmax(2).squeeze_dim(2);
+        let proposed: Tensor<B, 2, Int> = logits.argmax(2).squeeze_dim(2);
+        let assignment: Tensor<B, 2, Int> = batch.assignments().mask_where(batch.var_masks(), proposed);
         let assignment: Vec<i64> = assignment
             .into_data()
             .to_vec::<B::IntElem>()
