@@ -154,12 +154,33 @@ impl MddCache {
         mdds
     }
 
+    /// Below this many distinct problems, `prepare` skips the indicatif progress bar
+    /// entirely and just compiles. Two reasons: the bar would finish before a human could
+    /// ever see it for a handful of problems, and -- the one that actually matters since
+    /// `prepare` runs once per chunk (see `chunked_run`'s doc) -- a fair per-instance
+    /// benchmark's `--batch-size 1` means *every* chunk hits `prepare` with exactly one
+    /// problem, so without this guard a `--max-concurrent-chunks 32` sweep would spawn up
+    /// to 32 independent `ProgressBar`s drawing to the terminal at once from different
+    /// threads with no coordination between them (indicatif doesn't serialize unrelated
+    /// bars unless they share a `MultiProgress`), garbling the output -- purely cosmetic,
+    /// never a correctness issue, but worth just not doing.
+    const PROGRESS_BAR_MIN_PROBLEMS: usize = 4;
+
     fn prepare(&self, problems: &[Arc<Problem>]) {
         let mut seen = HashSet::new();
         let unique: Vec<&Arc<Problem>> = problems
             .iter()
             .filter(|p| seen.insert(Arc::as_ptr(*p) as usize))
             .collect();
+
+        if unique.len() < Self::PROGRESS_BAR_MIN_PROBLEMS {
+            crate::utils::worker_pool().install(|| {
+                unique.into_par_iter().for_each(|problem| {
+                    self.mdds_for(problem);
+                });
+            });
+            return;
+        }
 
         let progress = ProgressBar::new(unique.len() as u64);
         progress.set_style(

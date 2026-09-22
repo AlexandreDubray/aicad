@@ -122,10 +122,18 @@ impl StoppingCriterion {
             || self.iters_done >= self.budget.iteration_limit
     }
 
+    /// `debug`, not `info`: this fires once per 100 iterations *per `run` call*, and a
+    /// fair per-instance benchmark (`--batch-size 1`) makes one `run` call per instance --
+    /// with `--max-concurrent-chunks 32`, that's up to 32 of these interleaving at once at
+    /// the default `info` level, most of them reporting on a single-problem chunk ("solved
+    /// 0/1" or "1/1"), which drowns out the one-line-per-instance summary `chunked_run`
+    /// logs at `info` when each instance actually finishes. Turn on `--log-level debug`
+    /// (or trace) to watch one long-running instance's own iteration-by-iteration
+    /// progress; `info` is for tracking the sweep as a whole.
     fn log(&self, solutions: &[Option<Solution>]) {
         if self.iters_done.is_multiple_of(100) {
             let solved = solutions.iter().filter(|s| s.is_some()).count();
-            log::info!(
+            log::debug!(
                 "Iteration {}, elapsed: {} seconds. Number solved {}/{}",
                 self.iters_done,
                 self.start.elapsed().as_secs(),

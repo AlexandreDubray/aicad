@@ -11,6 +11,7 @@ use burn::backend::ndarray::{NdArray, NdArrayDevice};
 use burn::config::Config;
 use burn::tensor::backend::Backend;
 
+use indicatif::{ProgressBar, ProgressStyle};
 use rand::RngExt;
 use rayon::prelude::*;
 
@@ -545,6 +546,20 @@ fn chunked_run<B: Backend, N: Network<B, Ba> + Sync, Ba: crate::learning::Batch<
         crate::utils::worker_pool().current_num_threads(),
     );
 
+    // One bar for the whole call, ticked as each chunk finishes (not per-chunk bars -- see
+    // `MddCache::prepare`'s doc for why several independent bars drawing concurrently, one per
+    // in-flight chunk under `--max-concurrent-chunks`, would garble the terminal instead of
+    // helping). `ProgressBar` is `Clone` + internally synchronized, so calling `.inc()` from
+    // several rayon threads at once (one per concurrently-finishing chunk) is safe.
+    let progress = ProgressBar::new(problems.len() as u64);
+    progress.set_style(
+        ProgressStyle::with_template(
+            "{msg} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+        )
+        .expect("hard-coded progress bar template should always be valid"),
+    );
+    progress.set_message("Solving instances");
+
     let mut solutions = Vec::with_capacity(problems.len());
     for (group_idx, group) in chunks.chunks(max_concurrent_chunks).enumerate() {
         let group_start = group_idx * max_concurrent_chunks;
@@ -554,18 +569,53 @@ fn chunked_run<B: Backend, N: Network<B, Ba> + Sync, Ba: crate::learning::Batch<
                 .enumerate()
                 .map(|(local_idx, chunk)| {
                     let chunk_idx = group_start + local_idx;
-                    log::info!("Solving chunk {}", chunk_idx);
+                    log::debug!("Solving chunk {}", chunk_idx);
                     // Vary the seed per chunk so chunks don't replay the exact same destroy
                     // sequence -- keyed by chunk_idx (not completion order) so this stays
                     // reproducible under concurrent scheduling.
                     let chunk_seed = seed.wrapping_add(chunk_idx as u64);
                     let decode_op = decode_op_builder();
-                    nls.run(chunk, decode_op.as_ref(), budget, chunk_seed)
+                    let chunk_start = std::time::Instant::now();
+                    let chunk_solutions = nls.run(chunk, decode_op.as_ref(), budget, chunk_seed);
+                    log_chunk_summary(chunk_idx, chunks.len(), &chunk_solutions, chunk_start.elapsed());
+                    progress.inc(chunk_solutions.len() as u64);
+                    chunk_solutions
                 })
                 .collect()
         });
         solutions.extend(group_solutions.into_iter().flatten());
     }
+    progress.finish_and_clear();
+    log_status_counts("Done", &solutions);
 
     solutions
+}
+
+/// One `info`-level line per finished chunk -- this, plus the progress bar, is what makes a
+/// `--max-concurrent-chunks`-parallel sweep's overall progress visible without drowning in
+/// `StoppingCriterion::log`'s per-100-iterations `debug` output (see that method's doc).
+/// `elapsed` is the wall-clock time this specific chunk's `nls.run` call took, not summed across
+/// `chunk_solutions` -- those may individually report a smaller `runtime` (whichever iteration
+/// they were decided on), and summing them would double-count the shared search loop.
+fn log_chunk_summary(chunk_idx: usize, total_chunks: usize, chunk_solutions: &[Solution], elapsed: Duration) {
+    log_status_counts(
+        &format!("chunk {}/{total_chunks} done in {:.1}s", chunk_idx + 1, elapsed.as_secs_f64()),
+        chunk_solutions,
+    );
+}
+
+fn log_status_counts(label: &str, solutions: &[Solution]) {
+    let sat = solutions
+        .iter()
+        .filter(|s| matches!(s.status(), Status::Satisfiable))
+        .count();
+    let unsat = solutions
+        .iter()
+        .filter(|s| matches!(s.status(), Status::Unsatisfiable))
+        .count();
+    let unknown = solutions.len() - sat - unsat;
+    log::info!(
+        "{label}: {sat} sat, {unsat} unsat, {unknown} unknown/timed out (of {})",
+        solutions.len(),
+    );
 }
