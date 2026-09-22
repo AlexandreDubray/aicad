@@ -32,6 +32,12 @@ use super::problem::PyProblem;
 pub struct PySolution {
     #[pyo3(get)]
     runtime: u64,
+    /// Seconds spent compiling MDDs (`decode_kind=MddSampling`'s `MddSamplingDecode::prepare`)
+    /// for the `run` call this solution came out of -- 0.0 for `decode_kind=Logits`, which has no
+    /// compilation step. Already included in `runtime`, not additional to it -- see
+    /// `nls::Solution::compilation_runtime`'s doc.
+    #[pyo3(get)]
+    compilation_runtime: f64,
     #[pyo3(get)]
     iterations: usize,
     #[pyo3(get)]
@@ -44,6 +50,7 @@ impl From<&Solution> for PySolution {
     fn from(s: &Solution) -> Self {
         PySolution {
             runtime: s.runtime(),
+            compilation_runtime: s.compilation_runtime(),
             iterations: s.iterations(),
             solution: s.solution().clone(),
             status: (&s.status()).into(),
@@ -470,19 +477,32 @@ fn run<B: Backend>(
                 )?;
             let destroy_op = destroy_kind.build(config.destroy_fraction);
             let decode_kind = PyDecodeKind::parse(&config.decode_kind)?;
-            let decode_op = build_decode_op::<B>(
-                &decode_kind,
-                config.stochastic_decode,
-                config.temperature,
-                config.bp_iterations,
-                network_config.domain_size,
-            );
+            // A builder, not a single shared instance: each chunk gets its own freshly-built
+            // decode operator (see `chunked_run`) so `MddSamplingDecode`'s compiled-MDD cache
+            // never carries structure over from one chunk to the next -- every chunk (an entire
+            // instance of its own with `batch_size=1`, the convention a fair per-instance
+            // benchmark uses) pays its own compilation cost from a cold cache, the same way a
+            // single real deployment solving that one problem would.
+            let stochastic_decode = config.stochastic_decode;
+            let temperature = config.temperature;
+            let bp_iterations = config.bp_iterations;
+            let domain_size = network_config.domain_size;
+            let build_decode_op_for_chunk = move || -> Box<dyn DecodingOperator<B>> {
+                build_decode_op::<B>(
+                    &decode_kind,
+                    stochastic_decode,
+                    temperature,
+                    bp_iterations,
+                    domain_size,
+                )
+            };
 
             let nls = NeuralLocalSearch::<B, ConsFormer<B>, ConsFormerBatch<B>>::new(
-                network, destroy_op, decode_op, device,
+                network, destroy_op, device,
             );
             Ok(chunked_run(
                 &nls,
+                &build_decode_op_for_chunk,
                 &problems,
                 config.batch_size,
                 config.max_concurrent_chunks,
@@ -497,8 +517,16 @@ fn run<B: Backend>(
 /// given problem stays reproducible regardless of how the scheduler happens to interleave chunks
 /// within a group; `.collect()` likewise preserves chunk order in the returned `Vec` even though
 /// chunks within a group may finish out of order.
+///
+/// `decode_op_builder` is called once per chunk (never shared across chunks) -- see the doc where
+/// it's built in `run`. This is also why the decode operator can't be a field of `nls` the way
+/// `network`/`destroy_op` are: those two have nothing to gain from per-chunk isolation (the
+/// network's weights are read-only, and no destroy operator caches anything keyed by which
+/// problem it last saw), but `MddSamplingDecode` does, and sharing `nls` itself across every
+/// `par_iter` task already means whatever it owned would be shared too.
 fn chunked_run<B: Backend, N: Network<B, Ba> + Sync, Ba: crate::learning::Batch<B>>(
     nls: &NeuralLocalSearch<B, N, Ba>,
+    decode_op_builder: &(dyn Fn() -> Box<dyn DecodingOperator<B>> + Sync),
     problems: &[Arc<Problem>],
     batch_size: Option<usize>,
     max_concurrent_chunks: usize,
@@ -531,7 +559,8 @@ fn chunked_run<B: Backend, N: Network<B, Ba> + Sync, Ba: crate::learning::Batch<
                     // sequence -- keyed by chunk_idx (not completion order) so this stays
                     // reproducible under concurrent scheduling.
                     let chunk_seed = seed.wrapping_add(chunk_idx as u64);
-                    nls.run(chunk, budget, chunk_seed)
+                    let decode_op = decode_op_builder();
+                    nls.run(chunk, decode_op.as_ref(), budget, chunk_seed)
                 })
                 .collect()
         });

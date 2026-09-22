@@ -8,7 +8,7 @@ use burn::optim::decay::WeightDecayConfig;
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
 use burn::prelude::ElementConversion;
 use burn::record::CompactRecorder;
-use burn::tensor::backend::AutodiffBackend;
+use burn::tensor::backend::{AutodiffBackend, Backend};
 
 use std::path::Path;
 use std::sync::Arc;
@@ -245,14 +245,22 @@ where
         let mut epoch_report: Option<SatisfactionReport> = None;
         let epoch_start = Instant::now();
 
+        let mut t_batch = 0.0f64;
         let mut t_forward = 0.0f64;
         let mut t_monitor = 0.0f64;
         let mut t_loss = 0.0f64;
         let mut t_backward = 0.0f64;
 
-        for batch in train_dataloader.iter() {
+        let mut train_iter = train_dataloader.iter();
+        loop {
+            let t = Instant::now();
+            let next = train_iter.next();
+            t_batch += t.elapsed().as_secs_f64();
+            let Some(batch) = next else { break };
+
             let t = Instant::now();
             let logits = network.forward(&batch);
+            B::sync(device).ok();
             t_forward += t.elapsed().as_secs_f64();
 
             let t = Instant::now();
@@ -261,10 +269,12 @@ where
                 Some(report) => report.merge(batch_report),
                 None => epoch_report = Some(batch_report),
             }
+            B::sync(device).ok();
             t_monitor += t.elapsed().as_secs_f64();
 
             let t = Instant::now();
             let loss = loss_fn.loss(logits.clone(), &batch);
+            B::sync(device).ok();
             t_loss += t.elapsed().as_secs_f64();
             let loss_scalar = loss.clone().into_scalar().elem::<f32>();
             if !loss_scalar.is_finite() {
@@ -293,6 +303,7 @@ where
             let t = Instant::now();
             let grads = GradientsParams::from_grads(loss.backward(), &network);
             network = optim.step(training.lr, network, grads);
+            B::sync(device).ok();
             t_backward += t.elapsed().as_secs_f64();
 
             epoch_loss_sum += loss_scalar;
@@ -300,7 +311,7 @@ where
         }
         let epoch_rt = epoch_start.elapsed().as_secs();
         log::info!(
-            "epoch {epoch}: forward={t_forward:.3}s monitor={t_monitor:.3}s loss={t_loss:.3}s backward+step={t_backward:.3}s"
+            "epoch {epoch}: batch={t_batch:.3}s forward={t_forward:.3}s monitor={t_monitor:.3}s loss={t_loss:.3}s backward+step={t_backward:.3}s"
         );
         // Averaged per batch, matching how validation loss below is reported -- previously this
         // was a raw sum over the epoch's mini-batches, which made it look ~(batch count) larger
@@ -319,12 +330,20 @@ where
             let mut valid_loss_sum = 0.0f64;
             let mut valid_batches = 0usize;
             let valid_start = Instant::now();
+            let mut t_valid_batch = 0.0f64;
             let mut t_valid_forward = 0.0f64;
             let mut t_valid_score = 0.0f64;
 
-            for batch in valid_dataloader.iter() {
+            let mut valid_iter = valid_dataloader.iter();
+            loop {
+                let t = Instant::now();
+                let next = valid_iter.next();
+                t_valid_batch += t.elapsed().as_secs_f64();
+                let Some(batch) = next else { break };
+
                 let t = Instant::now();
                 let logits = valid_network.forward(&batch);
+                B::InnerBackend::sync(device).ok();
                 t_valid_forward += t.elapsed().as_secs_f64();
 
                 let t = Instant::now();
@@ -341,11 +360,12 @@ where
                         }
                     }
                 }
+                B::InnerBackend::sync(device).ok();
                 t_valid_score += t.elapsed().as_secs_f64();
                 valid_batches += 1;
             }
             log::info!(
-                "epoch {epoch}: validation forward={t_valid_forward:.3}s score={t_valid_score:.3}s total={:.3}s",
+                "epoch {epoch}: validation batch={t_valid_batch:.3}s forward={t_valid_forward:.3}s score={t_valid_score:.3}s total={:.3}s",
                 valid_start.elapsed().as_secs_f64(),
             );
 

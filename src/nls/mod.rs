@@ -33,6 +33,13 @@ use crate::utils::tensor::*;
 pub struct Solution {
     /// Number of seconds elapsed before finding the solution
     pub(crate) runtime: u64,
+    /// Seconds spent in `DecodingOperator::prepare` (structure compilation -- MDD compilation
+    /// for `MddSamplingDecode`, a no-op for `Argmax`/`Sampling`) for the `run` call this solution
+    /// came out of. Sub-second precision, unlike `runtime`, since compilation is often well under
+    /// a second and `runtime`'s whole-second granularity would round it away. Already included in
+    /// `runtime` (the clock backing both starts before `prepare` runs), not on top of it -- this
+    /// field exists to let the two be told apart, not to be added to `runtime`.
+    pub(crate) compilation_runtime: f64,
     /// Number of local search steps before finding the solution
     pub(crate) iterations: usize,
     /// Solution to the problem, None if the problem is UNSAT.
@@ -52,6 +59,10 @@ pub enum Status {
 impl Solution {
     pub fn runtime(&self) -> u64 {
         self.runtime
+    }
+
+    pub fn compilation_runtime(&self) -> f64 {
+        self.compilation_runtime
     }
 
     pub fn iterations(&self) -> usize {
@@ -199,8 +210,6 @@ pub struct NeuralLocalSearch<B: Backend, N, Ba> {
     network: N,
     /// Heuristic for the destroy operator
     destroy_op: Box<dyn DestroyOperator>,
-    /// How to decode (arg-max or sample)
-    decode_op: Box<dyn DecodingOperator<B>>,
     /// Devices used (cpu or gpu)
     device: B::Device,
     /// Which batch type `N` is driven by at inference time. `NeuralLocalSearch` only ever needs
@@ -220,27 +229,34 @@ where
     const COMPACTION_INTERVAL: usize = 100;
 
     /// Builds the search engine: everything that's independent of *which*
-    /// problems get solved (network weights, operators, device). Call `run`
-    /// once per batch of problems -- the engine can be reused across several
-    /// `run` calls on different problem sets without reloading the network
-    /// (e.g. a caller that needs to keep the batch within some memory bound
-    /// can call `run` once per chunk of problems).
-    pub fn new(
-        network: N,
-        destroy_op: Box<dyn DestroyOperator>,
-        decode_op: Box<dyn DecodingOperator<B>>,
-        device: B::Device,
-    ) -> Self {
+    /// problems get solved (network weights, destroy heuristic, device) and safe to reuse across
+    /// several `run` calls on different problem sets without reloading the network. The decode
+    /// operator is deliberately NOT built here, even though it doesn't vary either -- it's passed
+    /// into `run` instead (see that method's doc) so a caller that wants each `run` call to pay
+    /// its own MDD compilation cost, rather than sharing one `MddSamplingDecode`'s compiled-MDD
+    /// cache across every `run` call this engine ever makes, can build a fresh one per call.
+    pub fn new(network: N, destroy_op: Box<dyn DestroyOperator>, device: B::Device) -> Self {
         Self {
             network,
             destroy_op,
-            decode_op,
             device,
             _batch: std::marker::PhantomData,
         }
     }
 
-    pub fn run(&self, problems: &[Arc<Problem>], budget: Budget, seed: u64) -> Vec<Solution> {
+    /// `decode_op` is taken per-call rather than being owned by `self` -- see `new`'s doc. Callers
+    /// that want an isolated (never-shared) MDD compilation cost per `run` call, matching what a
+    /// single real deployment would pay to solve `problems` from a cold start, should build a
+    /// fresh `decode_op` for each `run` call; callers that want to amortize compilation across
+    /// several calls (e.g. training-time batches of structurally related problems) can instead
+    /// build one `decode_op` once and pass the same instance to every call.
+    pub fn run(
+        &self,
+        problems: &[Arc<Problem>],
+        decode_op: &dyn DecodingOperator<B>,
+        budget: Budget,
+        seed: u64,
+    ) -> Vec<Solution> {
         let mut rng = StdRng::seed_from_u64(seed);
         let mut stop = StoppingCriterion::new(budget);
 
@@ -248,7 +264,9 @@ where
         let mut active_problems: Vec<Arc<Problem>> = problems.to_vec();
         let mut solutions: Vec<Option<Solution>> = vec![None; problems.len()];
 
-        self.decode_op.prepare(&active_problems);
+        let compilation_start = Instant::now();
+        decode_op.prepare(&active_problems);
+        let compilation_runtime = compilation_start.elapsed().as_secs_f64();
         self.destroy_op.on_run_start(&active_problems);
 
         // Starts from a random assignment; note that each variable is sampled given its domain, so
@@ -300,9 +318,7 @@ where
                 &self.device,
             );
             let logits = self.network.forward(&batch);
-            assignments =
-                self.decode_op
-                    .decode(logits, destroy_mask, assignments, &active_problems);
+            assignments = decode_op.decode(logits, destroy_mask, assignments, &active_problems);
             rows = to_rows(&assignments, active_problems.len(), n);
 
             stop.tick();
@@ -313,11 +329,10 @@ where
                 }
                 let problem = &active_problems[local_idx];
                 let row = &rows[local_idx];
-                if let Some((status, solution)) =
-                    resolve_status(self.decode_op.as_ref(), problem, row)
-                {
+                if let Some((status, solution)) = resolve_status(decode_op, problem, row) {
                     solutions[problem_idx] = Some(Solution {
                         runtime: stop.start.elapsed().as_secs(),
+                        compilation_runtime,
                         iterations: stop.iters_done,
                         solution,
                         status,
@@ -358,6 +373,7 @@ where
             .map(|s| {
                 s.unwrap_or(Solution {
                     runtime: stop.start.elapsed().as_secs(),
+                    compilation_runtime,
                     iterations: stop.iters_done,
                     solution: None,
                     status: Status::Unknown,
