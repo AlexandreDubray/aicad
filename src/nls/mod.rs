@@ -31,8 +31,11 @@ use crate::utils::tensor::*;
 /// A solution returned by the solver, with its statistics
 #[derive(Clone)]
 pub struct Solution {
-    /// Number of seconds elapsed before finding the solution
-    pub(crate) runtime: u64,
+    /// Seconds elapsed before finding the solution (or before the budget ran out). Sub-second
+    /// precision (`.as_secs_f64()`), not whole seconds -- a coarser `u64` version of this field
+    /// used to round every solve under a second down to `0`, which silently broke any per-
+    /// iteration timing derived from `runtime / iterations` for fast-solving instances.
+    pub(crate) runtime: f64,
     /// Seconds spent in `DecodingOperator::prepare` (structure compilation -- MDD compilation
     /// for `MddSamplingDecode`, a no-op for `Argmax`/`Sampling`) for the `run` call this solution
     /// came out of. Sub-second precision, unlike `runtime`, since compilation is often well under
@@ -57,7 +60,7 @@ pub enum Status {
 }
 
 impl Solution {
-    pub fn runtime(&self) -> u64 {
+    pub fn runtime(&self) -> f64 {
         self.runtime
     }
 
@@ -339,7 +342,7 @@ where
                 let row = &rows[local_idx];
                 if let Some((status, solution)) = resolve_status(decode_op, problem, row) {
                     solutions[problem_idx] = Some(Solution {
-                        runtime: stop.start.elapsed().as_secs(),
+                        runtime: stop.start.elapsed().as_secs_f64(),
                         compilation_runtime,
                         iterations: stop.iters_done,
                         solution,
@@ -380,7 +383,7 @@ where
             .into_iter()
             .map(|s| {
                 s.unwrap_or(Solution {
-                    runtime: stop.start.elapsed().as_secs(),
+                    runtime: stop.start.elapsed().as_secs_f64(),
                     compilation_runtime,
                     iterations: stop.iters_done,
                     solution: None,

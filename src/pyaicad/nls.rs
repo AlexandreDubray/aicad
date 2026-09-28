@@ -31,8 +31,10 @@ use super::problem::PyProblem;
 #[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct PySolution {
+    /// Seconds elapsed before finding the solution (or before the budget ran out).
+    /// Sub-second precision -- see `nls::Solution::runtime`'s doc.
     #[pyo3(get)]
-    runtime: u64,
+    runtime: f64,
     /// Seconds spent compiling MDDs (`decode_kind=MddSampling`'s `MddSamplingDecode::prepare`)
     /// for the `run` call this solution came out of -- 0.0 for `decode_kind=Logits`, which has no
     /// compilation step. Already included in `runtime`, not additional to it -- see
