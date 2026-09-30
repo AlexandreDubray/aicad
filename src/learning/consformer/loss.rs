@@ -248,15 +248,13 @@ impl<B: Backend> Loss<B, ConsFormerBatch<B>> for ConsFormerLoss {
 }
 
 const WMC_EPS: f64 = 1e-6;
-const SATISFACTION_WEIGHT_FLOOR: f64 = 1e-3;
 
-/// One constraint MDD's contribution to a sample's loss and to `∂loss/∂weight`, computed by a
-/// plain sink-to-root chain-rule pass (`crate::mdd::wmc::wmc_and_gradient`) instead of
+/// One constraint MDD's contribution to a sample's loss and to `∂loss/∂probs_for_sample`, computed
+/// by a plain sink-to-root chain-rule pass (`crate::mdd::wmc::wmc_and_gradient`) instead of
 /// automatic differentiation.
 /// `probs_for_sample` is that sample's flattened `(number_vars, domain_size)` probability slice,
 /// indexed by each variable's *raw domain value*, not by `ValueIndex` position.
-/// `grad` accumulates `∂(weight * -log(wmc+eps))/∂probs_for_sample` into that same indexing, with
-/// `weight` treated as a constant (stop-gradient on `wmc`)
+/// `grad` accumulates `∂(-log(wmc+eps))/∂probs_for_sample` into that same indexing.
 /// Builds `constraint`'s per-layer weights from the raw network probabilities, **masking out** every
 /// raw domain value that isn't actually in `real_problem`'s (possibly narrowed -- e.g. a Sudoku
 /// given, or a masked/destroyed variable) domain for that layer's variable.
@@ -287,12 +285,10 @@ fn mdd_loss_and_gradient(
     probs_for_sample: &[f32],
     domain_size: usize,
     grad: &mut [f32],
-    gamma: f64,
-) -> (f64, f64) {
+) -> f64 {
     let weights = layer_weights_from_probs(constraint, real_problem, probs_for_sample, domain_size);
     let (wmc, gradient) = wmc_and_gradient(constraint, &weights);
-    let weight = (1.0 - wmc).clamp(0.0, 1.0).powf(gamma) + SATISFACTION_WEIGHT_FLOOR;
-    let chain = -weight / (wmc + WMC_EPS);
+    let chain = -1.0 / (wmc + WMC_EPS);
 
     for (layer, layer_gradient) in gradient.iter().enumerate() {
         let variable = constraint.decision_at_layer(layer);
@@ -308,53 +304,37 @@ fn mdd_loss_and_gradient(
         }
     }
 
-    (weight * -(wmc + WMC_EPS).ln(), weight)
+    -(wmc + WMC_EPS).ln()
 }
 
-/// A sample's satisfaction-weighted average `-log(wmc+eps)` over its constraint MDDs (each
-/// constraint weighted by `(1 - wmc)^gamma + FLOOR`, so nearly-satisfied constraints contribute
-/// little to the loss and to `grad`, and the still-violated ones dominate), plus
-/// `∂(that weighted average)/∂probs` (`mdds` iterated sequentially -- parallelism is across
-/// samples, see `mdd_wmc_loss`). `gamma = 0.0` recovers the plain, unweighted per-constraint mean
-/// exactly: `(1 - wmc)^0 + FLOOR` is the same constant `1.0 + FLOOR` for every constraint
-/// regardless of its own `wmc`, which cancels out of the weighted average.
+/// A sample's plain average of `-log(wmc+eps)` over its constraint MDDs, plus
+/// `∂(that average)/∂probs` (`mdds` iterated sequentially -- parallelism is across samples, see
+/// `mdd_wmc_loss`).
 fn sample_loss_and_gradient(
     constraints: &[CompiledConstraint],
     real_problem: &Problem,
     probs_for_sample: &[f32],
     number_vars: usize,
     domain_size: usize,
-    gamma: f64,
 ) -> (f64, Vec<f32>) {
     let mut grad = vec![0.0f32; number_vars * domain_size];
-    let mut weighted_loss_sum = 0.0;
-    let mut weight_sum = 0.0;
+    let mut loss_sum = 0.0;
     for constraint in constraints {
-        let (weighted_loss, weight) = mdd_loss_and_gradient(
-            constraint,
-            real_problem,
-            probs_for_sample,
-            domain_size,
-            &mut grad,
-            gamma,
-        );
-        weighted_loss_sum += weighted_loss;
-        weight_sum += weight;
+        loss_sum += mdd_loss_and_gradient(constraint, real_problem, probs_for_sample, domain_size, &mut grad);
     }
-    let denom = weight_sum.max(SATISFACTION_WEIGHT_FLOOR);
-    let loss = weighted_loss_sum / denom;
+    // `.max(1)` so a (degenerate) sample with zero constraints reads back as zero loss instead of
+    // `0.0 / 0.0`, matching the previous floor-based behaviour's result in that case.
+    let denom = constraints.len().max(1) as f64;
+    let loss = loss_sum / denom;
     for g in &mut grad {
         *g /= denom as f32;
     }
     (loss, grad)
 }
 
-/// `gamma` controls the focal-style satisfaction weighting in `sample_loss_and_gradient` --
-/// `gamma = 0.0` recovers the plain unweighted per-constraint mean (the pre-focal-weighting
-/// behaviour); larger `gamma` pushes down-weighting of nearly-satisfied constraints harder.
-pub struct ConsFormerMddLoss {
-    pub gamma: f64,
-}
+/// Plain (unweighted) per-constraint mean of `-log(wmc+eps)`, per-sample then per-batch -- see
+/// `sample_loss_and_gradient`.
+pub struct ConsFormerMddLoss;
 
 /// Computes the MDD-WMC loss and its exact gradient wrt `probs` by hand (see
 /// `mdd_loss_and_gradient`), then hands that gradient to Burn's autodiff via the standard
@@ -368,7 +348,6 @@ pub struct ConsFormerMddLoss {
 fn mdd_wmc_loss<B: Backend>(
     probs: Tensor<B, 3>,
     batch: &ConsFormerMddBatch<B>,
-    gamma: f64,
 ) -> Tensor<B, 1> {
     let device = probs.device();
     let [batch_size, number_vars, domain_size] = probs.dims();
@@ -394,7 +373,6 @@ fn mdd_wmc_loss<B: Backend>(
                     sample_probs,
                     number_vars,
                     domain_size,
-                    gamma,
                 )
             })
             .collect()
@@ -424,7 +402,7 @@ impl<B: Backend> Loss<B, ConsFormerMddBatch<B>> for ConsFormerMddLoss {
     fn loss(&self, logits: Tensor<B, 3>, batch: &ConsFormerMddBatch<B>) -> Tensor<B, 1> {
         let probs = gumbel_softmax(logits);
         let probs = blend_with_current(probs, batch.assignments.clone(), batch.var_masks.clone());
-        mdd_wmc_loss(probs, batch, self.gamma)
+        mdd_wmc_loss(probs, batch)
     }
 }
 
@@ -436,7 +414,7 @@ mod mdd_loss_tests {
     use burn::data::dataloader::batcher::Batcher;
     use burn::data::dataset::Dataset;
 
-    use crate::mdd::{CompiledConstraint, MddArena};
+    use crate::mdd::MddArena;
     use crate::modelling::{all_different, not_equals, Problem};
 
     use super::super::mdd_dataset::{
@@ -508,85 +486,12 @@ mod mdd_loss_tests {
         brute
     }
 
-    fn constraint_wmcs(
-        constraints: &[CompiledConstraint],
-        real_problem: &Problem,
-        probs_for_sample: &[f32],
-        domain_size: usize,
-    ) -> Vec<f64> {
-        constraints
-            .iter()
-            .map(|constraint| {
-                let weights = layer_weights_from_probs(
-                    constraint,
-                    real_problem,
-                    probs_for_sample,
-                    domain_size,
-                );
-                wmc_and_gradient(constraint, &weights).0
-            })
-            .collect()
-    }
-
-    fn frozen_weights_for(wmcs: &[f64], gamma: f64) -> Vec<f64> {
-        wmcs.iter()
-            .map(|&wmc| (1.0 - wmc).clamp(0.0, 1.0).powf(gamma) + SATISFACTION_WEIGHT_FLOOR)
-            .collect()
-    }
-
-    /// Loss for one sample's constraints with `frozen_weights` held fixed instead of recomputed
-    /// from the (possibly perturbed) `probs_for_sample` -- this is what the finite-difference
-    /// checks below compare `sample_loss_and_gradient`'s hand-rolled gradient against, since that
-    /// gradient deliberately treats each constraint's weight as a constant (stop-gradient on
-    /// `wmc`), not as a differentiable function of `probs`.
-    fn sample_loss_with_frozen_weights(
-        constraints: &[CompiledConstraint],
-        real_problem: &Problem,
-        probs_for_sample: &[f32],
-        domain_size: usize,
-        frozen_weights: &[f64],
-    ) -> f64 {
-        let wmcs = constraint_wmcs(constraints, real_problem, probs_for_sample, domain_size);
-        let mut weighted_loss_sum = 0.0;
-        let mut weight_sum = 0.0;
-        for (&wmc, &weight) in wmcs.iter().zip(frozen_weights) {
-            weighted_loss_sum += weight * -(wmc + WMC_EPS).ln();
-            weight_sum += weight;
-        }
-        weighted_loss_sum / weight_sum.max(SATISFACTION_WEIGHT_FLOOR)
-    }
-
-    fn mdd_wmc_loss_with_frozen_weights(
-        probs: Tensor<NdArray, 3>,
-        batch: &ConsFormerMddBatch<NdArray>,
-        frozen_weights: &[Vec<f64>],
-    ) -> f64 {
-        let [batch_size, number_vars, domain_size] = probs.dims();
-        let probs_data: Vec<f32> = probs.into_data().to_vec::<f32>().unwrap();
-        let mut loss_sum = 0.0;
-        for (i, mdds) in batch.mdds.iter().enumerate() {
-            let start = i * number_vars * domain_size;
-            let sample_probs = &probs_data[start..start + number_vars * domain_size];
-            loss_sum += sample_loss_with_frozen_weights(
-                mdds,
-                &batch.problems[i],
-                sample_probs,
-                domain_size,
-                &frozen_weights[i],
-            );
-        }
-        loss_sum / batch_size as f64
-    }
-
-    fn weighted_average(wmcs: &[f64], gamma: f64) -> f64 {
-        let mut weighted_loss_sum = 0.0;
-        let mut weight_sum = 0.0;
-        for &wmc in wmcs {
-            let weight = (1.0 - wmc).clamp(0.0, 1.0).powf(gamma) + SATISFACTION_WEIGHT_FLOOR;
-            weighted_loss_sum += weight * -(wmc + WMC_EPS).ln();
-            weight_sum += weight;
-        }
-        weighted_loss_sum / weight_sum.max(SATISFACTION_WEIGHT_FLOOR)
+    /// Plain per-constraint mean of `-log(wmc+eps)`, matching `sample_loss_and_gradient`'s (now
+    /// unweighted) reduction -- used by the tests below to build an independently-derived expected
+    /// value from brute-force/hand-computed `wmc`s.
+    fn plain_average(wmcs: &[f64]) -> f64 {
+        let loss_sum: f64 = wmcs.iter().map(|&wmc| -(wmc + WMC_EPS).ln()).sum();
+        loss_sum / (wmcs.len().max(1) as f64)
     }
 
     #[test]
@@ -614,12 +519,12 @@ mod mdd_loss_tests {
         let mdds = sample.mdds().clone();
 
         let probs: Vec<f32> = vec![0.2, 0.5, 0.3, 0.1, 0.3, 0.6, 0.4, 0.4, 0.2];
-        let (loss, _grad) = sample_loss_and_gradient(&mdds, &problem, &probs, 3, 3, 1.0);
+        let (loss, _grad) = sample_loss_and_gradient(&mdds, &problem, &probs, 3, 3);
 
         let probs_f64: Vec<f64> = probs.iter().map(|&v| v as f64).collect();
         let not_equals_wmc = brute_force_not_equals(&probs_f64, 3);
         let all_different_wmc = brute_force_all_different_permutation(&probs_f64, 3);
-        let expected = weighted_average(&[not_equals_wmc, all_different_wmc], 1.0);
+        let expected = plain_average(&[not_equals_wmc, all_different_wmc]);
 
         assert!(
             (loss - expected).abs() < 1e-6,
@@ -652,15 +557,13 @@ mod mdd_loss_tests {
         let mdds = sample.mdds().clone();
 
         let probs: Vec<f32> = vec![0.2, 0.5, 0.3, 0.1, 0.3, 0.6, 0.4, 0.4, 0.2];
-        let (base_loss, grad) = sample_loss_and_gradient(&mdds, &problem, &probs, 3, 3, 1.0);
-        let frozen_weights = frozen_weights_for(&constraint_wmcs(&mdds, &problem, &probs, 3), 1.0);
+        let (base_loss, grad) = sample_loss_and_gradient(&mdds, &problem, &probs, 3, 3);
 
         let eps = 1e-4f32;
         for i in 0..probs.len() {
             let mut bumped = probs.clone();
             bumped[i] += eps;
-            let bumped_loss =
-                sample_loss_with_frozen_weights(&mdds, &problem, &bumped, 3, &frozen_weights);
+            let (bumped_loss, _) = sample_loss_and_gradient(&mdds, &problem, &bumped, 3, 3);
             let finite_diff = (bumped_loss - base_loss) / eps as f64;
             assert!(
                 (finite_diff - grad[i] as f64).abs() < 1e-2,
@@ -688,14 +591,14 @@ mod mdd_loss_tests {
         let probs: Tensor<NdArray, 3> =
             Tensor::<NdArray, 1>::from_data(flat.as_slice(), &device).reshape([2, 3, domain_size]);
 
-        let loss = mdd_wmc_loss(probs, &batch, 1.0);
+        let loss = mdd_wmc_loss(probs, &batch);
         let loss_value: f32 = loss.into_data().to_vec::<f32>().unwrap()[0];
 
         let mut expected_per_sample = Vec::new();
         for probs in &per_sample_probs {
             let not_equals_wmc = brute_force_not_equals(probs, domain_size);
             let all_different_wmc = brute_force_all_different_permutation(probs, domain_size);
-            expected_per_sample.push(weighted_average(&[not_equals_wmc, all_different_wmc], 1.0));
+            expected_per_sample.push(plain_average(&[not_equals_wmc, all_different_wmc]));
         }
         let expected = expected_per_sample.iter().sum::<f64>() / expected_per_sample.len() as f64;
 
@@ -733,7 +636,7 @@ mod mdd_loss_tests {
             Tensor::<ADBackend, 1>::from_data(flat.as_slice(), &ad_device)
                 .reshape([2, 3, domain_size])
                 .require_grad();
-        let loss = mdd_wmc_loss(probs_ad.clone(), &batch_ad, 1.0);
+        let loss = mdd_wmc_loss(probs_ad.clone(), &batch_ad);
         let grads = loss.backward();
         let grad = probs_ad
             .grad(&grads)
@@ -746,22 +649,8 @@ mod mdd_loss_tests {
                 3,
                 domain_size,
             ]);
-        let base_data: Vec<f32> = base_tensor.clone().into_data().to_vec::<f32>().unwrap();
-        let frozen_weights: Vec<Vec<f64>> = batch_plain
-            .mdds
-            .iter()
-            .enumerate()
-            .map(|(i, mdds)| {
-                let start = i * 3 * domain_size;
-                let sample_probs = &base_data[start..start + 3 * domain_size];
-                frozen_weights_for(
-                    &constraint_wmcs(mdds, &batch_plain.problems[i], sample_probs, domain_size),
-                    1.0,
-                )
-            })
-            .collect();
-        let base_loss =
-            mdd_wmc_loss_with_frozen_weights(base_tensor, &batch_plain, &frozen_weights);
+        let base_loss_tensor = mdd_wmc_loss(base_tensor, &batch_plain);
+        let base_loss: f64 = base_loss_tensor.into_data().to_vec::<f32>().unwrap()[0] as f64;
 
         let eps = 1e-4f32;
         for i in 0..flat.len() {
@@ -773,8 +662,8 @@ mod mdd_loss_tests {
                     3,
                     domain_size,
                 ]);
-            let bumped_loss =
-                mdd_wmc_loss_with_frozen_weights(bumped_tensor, &batch_plain, &frozen_weights);
+            let bumped_loss_tensor = mdd_wmc_loss(bumped_tensor, &batch_plain);
+            let bumped_loss: f64 = bumped_loss_tensor.into_data().to_vec::<f32>().unwrap()[0] as f64;
             let finite_diff = (bumped_loss - base_loss) / eps as f64;
             assert!(
                 (finite_diff - grad_values[i] as f64).abs() < 1e-2,
@@ -803,7 +692,7 @@ mod mdd_loss_tests {
         let logits: Tensor<ADBackend, 3> =
             Tensor::random([2, 3, 3], Distribution::Uniform(-1.0, 1.0), &device).require_grad();
 
-        let loss = ConsFormerMddLoss { gamma: 1.0 }.loss(logits.clone(), &batch);
+        let loss = ConsFormerMddLoss.loss(logits.clone(), &batch);
         let loss_value: f32 = loss.clone().into_data().to_vec::<f32>().unwrap()[0];
         assert!(
             loss_value.is_finite(),
@@ -876,7 +765,7 @@ mod mdd_loss_tests {
 
         let logits: Tensor<ADBackend, 3> = Tensor::zeros([1, 2, 3], &device).require_grad();
 
-        let loss = ConsFormerMddLoss { gamma: 1.0 }.loss(logits.clone(), &batch);
+        let loss = ConsFormerMddLoss.loss(logits.clone(), &batch);
         let loss_value: f32 = loss.clone().into_data().to_vec::<f32>().unwrap()[0];
         assert!(
             loss_value.is_finite(),
