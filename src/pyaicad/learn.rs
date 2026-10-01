@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -8,6 +9,7 @@ use burn::backend::cuda::{Cuda, CudaDevice};
 use burn::backend::ndarray::{NdArray, NdArrayDevice};
 use burn::backend::Autodiff;
 use burn::config::Config;
+use burn::data::dataset::Dataset;
 use burn::tensor::backend::{AutodiffBackend, Backend};
 
 use rand::seq::SliceRandom;
@@ -322,6 +324,27 @@ fn prepare_checkpoint_dir<C: Config>(checkpoint_dir: &Path, network_config: &C) 
         .map_err(|e| PyRuntimeError::new_err(format!("failed to save network config: {e}")))
 }
 
+struct TimingLogGuard;
+
+impl Drop for TimingLogGuard {
+    fn drop(&mut self) {
+        crate::diagnostics::disable();
+    }
+}
+
+fn enable_timing_log(checkpoint_dir: &Path) -> Option<TimingLogGuard> {
+    match crate::diagnostics::enable(&checkpoint_dir.join("timing.jsonl")) {
+        Ok(()) => Some(TimingLogGuard),
+        Err(e) => {
+            log::warn!(
+                "failed to open timing log at {}: {e}",
+                checkpoint_dir.display(),
+            );
+            None
+        }
+    }
+}
+
 /// Trains consformer on a set of problems.
 ///
 /// Releases the GIL for the whole training run (`py.detach`): everything this needs --
@@ -365,6 +388,9 @@ fn run_training<B: AutodiffBackend>(
     training_config: TrainingConfig,
     checkpoint_dir: &Path,
 ) -> PyResult<()> {
+    prepare_checkpoint_dir(checkpoint_dir, &network_config)?;
+    let _timing_log = enable_timing_log(checkpoint_dir);
+
     let (all_problems, problems, validation_problems) = split_train_validation(problems);
     let train_dataset = ConsFormerDataset::<B>::new(problems, &device);
     let validation_dataset =
@@ -372,8 +398,6 @@ fn run_training<B: AutodiffBackend>(
     let batcher = ConsFormerBatcher {
         mask_fraction: network_config.mask_fraction,
     };
-
-    prepare_checkpoint_dir(checkpoint_dir, &network_config)?;
 
     // Create and train the network
     let _network = train_model::<
@@ -466,6 +490,9 @@ fn run_training_mdd<B: AutodiffBackend>(
     compilation: MddCompilationConfig,
     checkpoint_dir: &Path,
 ) -> PyResult<()> {
+    prepare_checkpoint_dir(checkpoint_dir, &network_config)?;
+    let _timing_log = enable_timing_log(checkpoint_dir);
+
     let (all_problems, problems, validation_problems) = split_train_validation(problems);
 
     let data_config = ConsFormerDataConfig::from(&network_config);
@@ -473,8 +500,18 @@ fn run_training_mdd<B: AutodiffBackend>(
     // structure for an identically-shaped validation group instead of compiling it twice -- see
     // `crate::mdd::arena`'s module doc.
     let arena = MddArena::new();
+
+    let t = Instant::now();
     let train_dataset =
         ConsFormerMddDataset::<B>::new(problems, &arena, compilation.clone(), data_config, &device);
+    crate::data_log!(
+        "mdd_dataset_build",
+        split = "train",
+        num_problems = train_dataset.len(),
+        elapsed_s = t.elapsed().as_secs_f64(),
+    );
+
+    let t = Instant::now();
     let validation_dataset = ConsFormerMddDataset::<B::InnerBackend>::new(
         validation_problems,
         &arena,
@@ -482,9 +519,14 @@ fn run_training_mdd<B: AutodiffBackend>(
         data_config,
         &device,
     );
-    let batcher = ConsFormerMddBatcher::new(data_config);
+    crate::data_log!(
+        "mdd_dataset_build",
+        split = "valid",
+        num_problems = validation_dataset.len(),
+        elapsed_s = t.elapsed().as_secs_f64(),
+    );
 
-    prepare_checkpoint_dir(checkpoint_dir, &network_config)?;
+    let batcher = ConsFormerMddBatcher::new(data_config);
 
     // Create and train the network
     let _network = train_model::<

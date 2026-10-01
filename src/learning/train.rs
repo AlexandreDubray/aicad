@@ -319,6 +319,17 @@ where
         // two were otherwise on the same footing.
         let epoch_loss = epoch_loss_sum / epoch_batches.max(1) as f32;
         log::info!("epoch {epoch}: loss = {epoch_loss} ({epoch_rt} seconds)");
+        crate::data_log!(
+            "train_epoch",
+            epoch = epoch,
+            t_batch = t_batch,
+            t_forward = t_forward,
+            t_monitor = t_monitor,
+            t_loss = t_loss,
+            t_backward = t_backward,
+            epoch_rt_s = epoch_start.elapsed().as_secs_f64(),
+            epoch_loss = epoch_loss,
+        );
         if let Some(report) = epoch_report {
             report.print(40);
         }
@@ -384,6 +395,15 @@ where
                     1.0 - overall
                 }
             };
+            crate::data_log!(
+                "valid_epoch",
+                epoch = epoch,
+                t_batch = t_valid_batch,
+                t_forward = t_valid_forward,
+                t_score = t_valid_score,
+                total_s = valid_start.elapsed().as_secs_f64(),
+                score = score,
+            );
 
             let improved = score < best_score - training.early_stopping_min_delta;
 
@@ -661,6 +681,77 @@ mod test_horizon_checkpoint_layout {
         // `num_checkpoints = 1` on a 10-epoch run means the only horizon is epoch 10 -- it must
         // never be reached if early stopping actually cut the run short.
         assert!(!out_dir.join("epoch_00010").exists());
+
+        std::fs::remove_dir_all(&out_dir).ok();
+    }
+
+    #[test]
+    fn timing_events_are_recorded_to_the_data_log_when_enabled() {
+        type ADBackend = Autodiff<NdArray>;
+        let device = NdArrayDevice::default();
+
+        let out_dir = std::env::temp_dir().join(format!(
+            "aicad_test_timing_log_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&out_dir);
+        std::fs::create_dir_all(&out_dir).unwrap();
+
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1, 2], None);
+        let y = problem.add_variable(vec![0, 1, 2], None);
+        not_equals(&mut problem, x, y);
+        let problems = vec![Arc::new(problem)];
+
+        let network_config =
+            ConsFormerConfig::new(3, 4, 4, 1, 4, 0, 0.5, 1.0).with_num_layers(1);
+        network_config.save(out_dir.join("config.json")).unwrap();
+
+        let train_dataset = ConsFormerDataset::<ADBackend>::new(problems.clone(), &device);
+        let valid_dataset = ConsFormerDataset::<NdArray>::new(problems.clone(), &device);
+        let batcher = ConsFormerBatcher { mask_fraction: 0.5 };
+
+        let training = TrainingConfig::new(ModelSelection::Loss)
+            .with_num_epochs(2)
+            .with_validation_interval(1)
+            .with_batch_size(1);
+
+        let log_path = out_dir.join("timing.jsonl");
+        crate::diagnostics::enable(&log_path).expect("enable should succeed");
+
+        train_model::<ADBackend, ConsFormerConfig, _, _, _, ConsFormerLoss, _, _>(
+            network_config,
+            &problems,
+            train_dataset,
+            valid_dataset,
+            batcher,
+            ConsFormerLoss,
+            training,
+            &out_dir,
+            &device,
+        );
+
+        crate::diagnostics::disable();
+
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        let events: Vec<serde_json::Value> = content
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+
+        let train_events: Vec<_> = events.iter().filter(|e| e["event"] == "train_epoch").collect();
+        let valid_events: Vec<_> = events.iter().filter(|e| e["event"] == "valid_epoch").collect();
+
+        assert_eq!(train_events.len(), 2, "{events:?}");
+        assert_eq!(valid_events.len(), 2, "{events:?}");
+        for e in &train_events {
+            assert!(e["t_forward"].as_f64().is_some(), "{e:?}");
+            assert!(e["t_loss"].as_f64().is_some(), "{e:?}");
+            assert!(e["epoch_loss"].as_f64().is_some(), "{e:?}");
+        }
+        for e in &valid_events {
+            assert!(e["score"].as_f64().is_some(), "{e:?}");
+        }
 
         std::fs::remove_dir_all(&out_dir).ok();
     }
