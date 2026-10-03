@@ -13,7 +13,6 @@ use burn::tensor::backend::Backend;
 
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::RngExt;
-use rayon::prelude::*;
 
 use crate::learning::consformer::{
     ConsFormer, ConsFormerBatch, ConsFormerConfig, MddCompilationConfig,
@@ -517,16 +516,17 @@ fn run<B: Backend>(
 }
 
 /// Seeds are assigned by chunk *index*, not by completion order, so the destroy sequence for a
-/// given problem stays reproducible regardless of how the scheduler happens to interleave chunks
-/// within a group; `.collect()` likewise preserves chunk order in the returned `Vec` even though
-/// chunks within a group may finish out of order.
+/// given problem stays reproducible regardless of how the scheduler happens to interleave chunks;
+/// `run_pulled` likewise returns results in chunk order even though chunks may finish out of
+/// order. Workers pull the next unstarted chunk as soon as they free up -- no chunk waits for a
+/// slower one that happened to start alongside it.
 ///
 /// `decode_op_builder` is called once per chunk (never shared across chunks) -- see the doc where
 /// it's built in `run`. This is also why the decode operator can't be a field of `nls` the way
 /// `network`/`destroy_op` are: those two have nothing to gain from per-chunk isolation (the
 /// network's weights are read-only, and no destroy operator caches anything keyed by which
 /// problem it last saw), but `MddSamplingDecode` does, and sharing `nls` itself across every
-/// `par_iter` task already means whatever it owned would be shared too.
+/// worker task already means whatever it owned would be shared too.
 fn chunked_run<B: Backend, N: Network<B, Ba> + Sync, Ba: crate::learning::Batch<B>>(
     nls: &NeuralLocalSearch<B, N, Ba>,
     decode_op_builder: &(dyn Fn() -> Box<dyn DecodingOperator<B>> + Sync),
@@ -562,31 +562,28 @@ fn chunked_run<B: Backend, N: Network<B, Ba> + Sync, Ba: crate::learning::Batch<
     );
     progress.set_message("Solving instances");
 
-    let mut solutions = Vec::with_capacity(problems.len());
-    for (group_idx, group) in chunks.chunks(max_concurrent_chunks).enumerate() {
-        let group_start = group_idx * max_concurrent_chunks;
-        let group_solutions: Vec<Vec<Solution>> = crate::utils::worker_pool().install(|| {
-            group
-                .par_iter()
-                .enumerate()
-                .map(|(local_idx, chunk)| {
-                    let chunk_idx = group_start + local_idx;
-                    log::debug!("Solving chunk {}", chunk_idx);
-                    // Vary the seed per chunk so chunks don't replay the exact same destroy
-                    // sequence -- keyed by chunk_idx (not completion order) so this stays
-                    // reproducible under concurrent scheduling.
-                    let chunk_seed = seed.wrapping_add(chunk_idx as u64);
-                    let decode_op = decode_op_builder();
-                    let chunk_start = std::time::Instant::now();
-                    let chunk_solutions = nls.run(chunk, decode_op.as_ref(), budget, chunk_seed);
-                    log_chunk_summary(chunk_idx, chunks.len(), &chunk_solutions, chunk_start.elapsed());
-                    progress.inc(chunk_solutions.len() as u64);
-                    chunk_solutions
-                })
-                .collect()
-        });
-        solutions.extend(group_solutions.into_iter().flatten());
-    }
+    let solutions: Vec<Solution> = crate::utils::run_pulled(
+        crate::utils::worker_pool(),
+        chunks.len(),
+        max_concurrent_chunks,
+        |chunk_idx| {
+            let chunk = chunks[chunk_idx];
+            log::debug!("Solving chunk {}", chunk_idx);
+            // Vary the seed per chunk so chunks don't replay the exact same destroy
+            // sequence -- keyed by chunk_idx (not completion order) so this stays
+            // reproducible under concurrent scheduling.
+            let chunk_seed = seed.wrapping_add(chunk_idx as u64);
+            let decode_op = decode_op_builder();
+            let chunk_start = std::time::Instant::now();
+            let chunk_solutions = nls.run(chunk, decode_op.as_ref(), budget, chunk_seed);
+            log_chunk_summary(chunk_idx, chunks.len(), &chunk_solutions, chunk_start.elapsed());
+            progress.inc(chunk_solutions.len() as u64);
+            chunk_solutions
+        },
+    )
+    .into_iter()
+    .flatten()
+    .collect();
     progress.finish_and_clear();
     log_status_counts("Done", &solutions);
 

@@ -6,5 +6,5 @@ pub mod tensor;
 
 pub use bitset::Bitset;
 pub use memory::MemoryReport;
-pub use parallel::worker_pool;
+pub use parallel::{run_pulled, worker_pool};
 pub use rng::with_rng;
