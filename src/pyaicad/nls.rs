@@ -17,11 +17,13 @@ use rand::RngExt;
 use crate::learning::consformer::{
     ConsFormer, ConsFormerBatch, ConsFormerConfig, MddCompilationConfig,
 };
-use crate::learning::Network;
 use crate::modelling::Problem;
 use crate::nls::decode::{Argmax, DecodingOperator, MddSamplingDecode, Sampling};
 use crate::nls::destroy::{DestroyOperator, RandomDestroy, RelatedDestroy, WorstDestroy};
-use crate::nls::{load_network, Budget, NeuralLocalSearch, Solution, SolveConfig, Status};
+use crate::nls::{
+    load_network, Budget, NetworkPrior, NeuralLocalSearch, PriorHeuristic, Solution, SolveConfig,
+    Status, UniformPrior,
+};
 use crate::sampling::DecodeMode;
 
 use super::learn::cuda_available;
@@ -138,6 +140,33 @@ impl PyDestroyKind {
     }
 }
 
+/// Where each step's prior over values comes from -- see `nls::prior::PriorHeuristic`.
+#[pyclass(from_py_object)]
+#[derive(Clone)]
+pub enum PyPriorKind {
+    Network,
+    Uniform,
+}
+
+impl PyPriorKind {
+    fn tag(&self) -> &'static str {
+        match self {
+            PyPriorKind::Network => "network",
+            PyPriorKind::Uniform => "uniform",
+        }
+    }
+
+    fn parse(tag: &str) -> PyResult<Self> {
+        match tag {
+            "network" => Ok(PyPriorKind::Network),
+            "uniform" => Ok(PyPriorKind::Uniform),
+            other => Err(PyValueError::new_err(format!(
+                "unknown prior_kind {other:?}"
+            ))),
+        }
+    }
+}
+
 /// Which of `nls::decode`'s operators to build -- see `SolveConfig::decode_kind`'s doc.
 #[pyclass(from_py_object)]
 #[derive(Clone)]
@@ -233,6 +262,10 @@ pub struct PySolveConfig {
     /// compiled MDDs before decoding -- see `belief_propagation`'s doc.
     #[pyo3(get, set)]
     pub bp_iterations: usize,
+    /// Where each step's prior comes from: `Network` (the checkpoint's network) or `Uniform`
+    /// (no network evaluated; needs `decode_kind=MddSampling`).
+    #[pyo3(get, set)]
+    pub prior_kind: PyPriorKind,
     /// Upper bound on how many `batch_size`-sized chunks may run concurrently -- a separate knob
     /// from the CPU worker pool's thread count, since GPU memory (not CPU cores) is the resource
     /// this bounds. Default `1`: fully sequential over chunks, matching the pre-existing
@@ -261,6 +294,7 @@ impl PySolveConfig {
         temperature=1.0,
         decode_kind=PyDecodeKind::Logits,
         bp_iterations=1,
+        prior_kind=PyPriorKind::Network,
         max_concurrent_chunks=1,
         time_limit=None,
         iteration_limit=None,
@@ -276,6 +310,7 @@ impl PySolveConfig {
         temperature: f64,
         decode_kind: PyDecodeKind,
         bp_iterations: usize,
+        prior_kind: PyPriorKind,
         max_concurrent_chunks: usize,
         time_limit: Option<u64>,
         iteration_limit: Option<usize>,
@@ -290,6 +325,7 @@ impl PySolveConfig {
             temperature,
             decode_kind,
             bp_iterations,
+            prior_kind,
             max_concurrent_chunks,
             time_limit,
             iteration_limit,
@@ -323,6 +359,7 @@ impl From<&PySolveConfig> for SolveConfig {
             temperature: c.temperature,
             decode_kind: c.decode_kind.tag().to_string(),
             bp_iterations: c.bp_iterations,
+            prior_kind: c.prior_kind.tag().to_string(),
             max_concurrent_chunks: c.max_concurrent_chunks,
             time_limit: c.time_limit,
             iteration_limit: c.iteration_limit,
@@ -344,6 +381,7 @@ impl TryFrom<&SolveConfig> for PySolveConfig {
             temperature: c.temperature,
             decode_kind: PyDecodeKind::parse(&c.decode_kind)?,
             bp_iterations: c.bp_iterations,
+            prior_kind: PyPriorKind::parse(&c.prior_kind)?,
             max_concurrent_chunks: c.max_concurrent_chunks,
             time_limit: c.time_limit,
             iteration_limit: c.iteration_limit,
@@ -371,14 +409,17 @@ impl TryFrom<&SolveConfig> for PySolveConfig {
 /// took to get through the whole list -- not 10 seconds total across the
 /// call.
 ///
+/// `checkpoint_dir` may be omitted only with `prior_kind=Uniform`, which evaluates no network at
+/// all; if given alongside it, only its `config.json` is read (for the value alphabet).
+///
 /// `config` gathers every knob unrelated to `problems`/`checkpoint_dir` (see `PySolveConfig`);
 /// left unset, it's `PySolveConfig()` -- today's zero-config defaults.
 #[pyfunction]
-#[pyo3(signature = (problems, checkpoint_dir, config=None))]
+#[pyo3(signature = (problems, checkpoint_dir=None, config=None))]
 pub fn neural_local_search(
     py: Python<'_>,
     problems: PyProblemsArg<'_>,
-    checkpoint_dir: String,
+    checkpoint_dir: Option<String>,
     config: Option<PySolveConfig>,
 ) -> PyResult<Py<PyAny>> {
     let is_single = matches!(problems, PyProblemsArg::Single(_));
@@ -398,7 +439,7 @@ pub fn neural_local_search(
         ));
     }
 
-    let checkpoint_dir = PathBuf::from(checkpoint_dir);
+    let checkpoint_dir = checkpoint_dir.map(PathBuf::from);
     let config: SolveConfig = config.as_ref().map(SolveConfig::from).unwrap_or_default();
     let budget = Budget {
         time_limit: config
@@ -423,7 +464,7 @@ pub fn neural_local_search(
             run::<Cuda>(
                 CudaDevice::default(),
                 problems,
-                &checkpoint_dir,
+                checkpoint_dir.as_deref(),
                 &config,
                 budget,
                 seed,
@@ -432,7 +473,7 @@ pub fn neural_local_search(
             run::<NdArray>(
                 NdArrayDevice::default(),
                 problems,
-                &checkpoint_dir,
+                checkpoint_dir.as_deref(),
                 &config,
                 budget,
                 seed,
@@ -458,61 +499,90 @@ pub fn neural_local_search(
 fn run<B: Backend>(
     device: B::Device,
     problems: Vec<Arc<Problem>>,
-    checkpoint_dir: &Path,
+    checkpoint_dir: Option<&Path>,
     config: &SolveConfig,
     budget: Budget,
     seed: u64,
 ) -> PyResult<Vec<Solution>> {
     let network_kind = PyNetworkKind::parse(&config.network_kind)?;
     let destroy_kind = PyDestroyKind::parse(&config.destroy_kind)?;
+    let prior_kind = PyPriorKind::parse(&config.prior_kind)?;
+    let decode_kind = PyDecodeKind::parse(&config.decode_kind)?;
 
-    match network_kind {
-        PyNetworkKind::ConsFormer => {
-            let (network_config, network) =
-                load_network::<B, ConsFormerConfig>(checkpoint_dir, &problems, &device).map_err(
-                    |e| {
-                        PyRuntimeError::new_err(format!(
-                            "failed to load network from checkpoint {}: {e}",
-                            checkpoint_dir.display()
-                        ))
-                    },
-                )?;
-            let destroy_op = destroy_kind.build(config.destroy_fraction);
-            let decode_kind = PyDecodeKind::parse(&config.decode_kind)?;
-            // A builder, not a single shared instance: each chunk gets its own freshly-built
-            // decode operator (see `chunked_run`) so `MddSamplingDecode`'s compiled-MDD cache
-            // never carries structure over from one chunk to the next -- every chunk (an entire
-            // instance of its own with `batch_size=1`, the convention a fair per-instance
-            // benchmark uses) pays its own compilation cost from a cold cache, the same way a
-            // single real deployment solving that one problem would.
-            let stochastic_decode = config.stochastic_decode;
-            let temperature = config.temperature;
-            let bp_iterations = config.bp_iterations;
-            let domain_size = network_config.domain_size;
-            let build_decode_op_for_chunk = move || -> Box<dyn DecodingOperator<B>> {
-                build_decode_op::<B>(
-                    &decode_kind,
-                    stochastic_decode,
-                    temperature,
-                    bp_iterations,
-                    domain_size,
-                )
-            };
-
-            let nls = NeuralLocalSearch::<B, ConsFormer<B>, ConsFormerBatch<B>>::new(
-                network, destroy_op, device,
-            );
-            Ok(chunked_run(
-                &nls,
-                &build_decode_op_for_chunk,
-                &problems,
-                config.batch_size,
-                config.max_concurrent_chunks,
-                budget,
-                seed,
-            ))
-        }
+    if matches!(prior_kind, PyPriorKind::Uniform) && !matches!(decode_kind, PyDecodeKind::MddSampling)
+    {
+        return Err(PyValueError::new_err(
+            "prior_kind=uniform needs decode_kind=mdd_sampling: decoding flat logits directly \
+             carries no information",
+        ));
     }
+
+    let load_error = |dir: &Path, e: &dyn std::fmt::Display| {
+        PyRuntimeError::new_err(format!(
+            "failed to load network from checkpoint {}: {e}",
+            dir.display()
+        ))
+    };
+
+    let (prior, domain_size): (Box<dyn PriorHeuristic<B>>, usize) = match network_kind {
+        PyNetworkKind::ConsFormer => match prior_kind {
+            PyPriorKind::Network => {
+                let dir = checkpoint_dir.ok_or_else(|| {
+                    PyValueError::new_err("prior_kind=network needs a checkpoint_dir")
+                })?;
+                let (network_config, network) =
+                    load_network::<B, ConsFormerConfig>(dir, &problems, &device)
+                        .map_err(|e| load_error(dir, &e))?;
+                (
+                    Box::new(NetworkPrior::<ConsFormer<B>, ConsFormerBatch<B>>::new(network)),
+                    network_config.domain_size,
+                )
+            }
+            PyPriorKind::Uniform => {
+                // The alphabet the MDDs are compiled over has to match the one the network
+                // variant would use, so take it from the checkpoint's config when one is given
+                // (its weights are not loaded); otherwise cover the problems' own values.
+                let domain_size = match checkpoint_dir {
+                    Some(dir) => ConsFormerConfig::load(dir.join("config.json"))
+                        .map_err(|e| load_error(dir, &e))?
+                        .domain_size,
+                    None => UniformPrior::domain_size_covering(&problems),
+                };
+                (Box::new(UniformPrior::new(domain_size)), domain_size)
+            }
+        },
+    };
+
+    let destroy_op = destroy_kind.build(config.destroy_fraction);
+    // A builder, not a single shared instance: each chunk gets its own freshly-built
+    // decode operator (see `chunked_run`) so `MddSamplingDecode`'s compiled-MDD cache
+    // never carries structure over from one chunk to the next -- every chunk (an entire
+    // instance of its own with `batch_size=1`, the convention a fair per-instance
+    // benchmark uses) pays its own compilation cost from a cold cache, the same way a
+    // single real deployment solving that one problem would.
+    let stochastic_decode = config.stochastic_decode;
+    let temperature = config.temperature;
+    let bp_iterations = config.bp_iterations;
+    let build_decode_op_for_chunk = move || -> Box<dyn DecodingOperator<B>> {
+        build_decode_op::<B>(
+            &decode_kind,
+            stochastic_decode,
+            temperature,
+            bp_iterations,
+            domain_size,
+        )
+    };
+
+    let nls = NeuralLocalSearch::<B>::new(prior, destroy_op, device);
+    Ok(chunked_run(
+        &nls,
+        &build_decode_op_for_chunk,
+        &problems,
+        config.batch_size,
+        config.max_concurrent_chunks,
+        budget,
+        seed,
+    ))
 }
 
 /// Seeds are assigned by chunk *index*, not by completion order, so the destroy sequence for a
@@ -527,8 +597,8 @@ fn run<B: Backend>(
 /// network's weights are read-only, and no destroy operator caches anything keyed by which
 /// problem it last saw), but `MddSamplingDecode` does, and sharing `nls` itself across every
 /// worker task already means whatever it owned would be shared too.
-fn chunked_run<B: Backend, N: Network<B, Ba> + Sync, Ba: crate::learning::Batch<B>>(
-    nls: &NeuralLocalSearch<B, N, Ba>,
+fn chunked_run<B: Backend>(
+    nls: &NeuralLocalSearch<B>,
     decode_op_builder: &(dyn Fn() -> Box<dyn DecodingOperator<B>> + Sync),
     problems: &[Arc<Problem>],
     batch_size: Option<usize>,

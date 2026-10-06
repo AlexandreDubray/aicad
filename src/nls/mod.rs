@@ -6,10 +6,12 @@
 pub mod config;
 pub mod decode;
 pub mod destroy;
+pub mod prior;
 
 pub use config::SolveConfig;
 pub use decode::DecodingOperator;
 pub use destroy::DestroyOperator;
+pub use prior::{NetworkPrior, PriorHeuristic, UniformPrior};
 
 use std::path::Path;
 use std::sync::Arc;
@@ -24,7 +26,7 @@ use burn::tensor::{Int, Tensor};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
-use crate::learning::{Batch, Network, NetworkConfig};
+use crate::learning::NetworkConfig;
 use crate::modelling::Problem;
 use crate::utils::tensor::*;
 
@@ -216,42 +218,36 @@ fn resolve_status<B: Backend>(
     }
 }
 
-pub struct NeuralLocalSearch<B: Backend, N, Ba> {
-    /// Neural network used to guide the local search
-    network: N,
+pub struct NeuralLocalSearch<B: Backend> {
+    /// Source of the per-position prior that guides each step (a trained network, uniform, ...)
+    prior: Box<dyn PriorHeuristic<B>>,
     /// Heuristic for the destroy operator
     destroy_op: Box<dyn DestroyOperator>,
     /// Devices used (cpu or gpu)
     device: B::Device,
-    /// Which batch type `N` is driven by at inference time. `NeuralLocalSearch` only ever needs
-    /// `Ba::for_assignments`, so it's carried as a type parameter (rather than picked implicitly)
-    /// so the same network type can still be paired with different batch types elsewhere (e.g. a
-    /// training-only batch that doesn't support `for_assignments` at all).
-    _batch: std::marker::PhantomData<Ba>,
 }
 
-impl<B: Backend, N, Ba> NeuralLocalSearch<B, N, Ba>
-where
-    Ba: Batch<B>,
-    N: Network<B, Ba>,
-{
+impl<B: Backend> NeuralLocalSearch<B> {
     /// How often (in iterations) `run` physically drops solved problems out of the batch. See
     /// `run`'s doc for why this is periodic rather than immediate.
     const COMPACTION_INTERVAL: usize = 100;
 
     /// Builds the search engine: everything that's independent of *which*
-    /// problems get solved (network weights, destroy heuristic, device) and safe to reuse across
+    /// problems get solved (prior heuristic, destroy heuristic, device) and safe to reuse across
     /// several `run` calls on different problem sets without reloading the network. The decode
     /// operator is deliberately NOT built here, even though it doesn't vary either -- it's passed
     /// into `run` instead (see that method's doc) so a caller that wants each `run` call to pay
     /// its own MDD compilation cost, rather than sharing one `MddSamplingDecode`'s compiled-MDD
     /// cache across every `run` call this engine ever makes, can build a fresh one per call.
-    pub fn new(network: N, destroy_op: Box<dyn DestroyOperator>, device: B::Device) -> Self {
+    pub fn new(
+        prior: Box<dyn PriorHeuristic<B>>,
+        destroy_op: Box<dyn DestroyOperator>,
+        device: B::Device,
+    ) -> Self {
         Self {
-            network,
+            prior,
             destroy_op,
             device,
-            _batch: std::marker::PhantomData,
         }
     }
 
@@ -322,13 +318,9 @@ where
                 Tensor::<B, 1, Int>::from_data(destroy_mask_data.as_slice(), &self.device)
                     .reshape([rows.len(), n]);
 
-            let batch = Ba::for_assignments(
-                &active_problems,
-                assignments.clone(),
-                destroy_mask.clone(),
-                &self.device,
-            );
-            let logits = self.network.forward(&batch);
+            let logits =
+                self.prior
+                    .priors(&active_problems, &assignments, &destroy_mask, &self.device);
             assignments = decode_op.decode(logits, destroy_mask, assignments, &active_problems);
             rows = to_rows(&assignments, active_problems.len(), n);
 

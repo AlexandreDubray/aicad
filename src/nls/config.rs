@@ -25,6 +25,8 @@ pub struct SolveConfig {
     pub decode_kind: String,
     #[config(default = 1)]
     pub bp_iterations: usize,
+    #[config(default = "String::from(\"network\")")]
+    pub prior_kind: String,
     /// Upper bound on how many `batch_size`-sized chunks `chunked_run` may have in flight on the
     /// GPU/device at once -- independent of `crate::utils::worker_pool`'s (CPU-sized) thread
     /// count, which bounds a different resource (CPU cores for belief-propagation work) and would
@@ -74,6 +76,7 @@ impl Default for SolveConfig {
             temperature: 1.0,
             decode_kind: String::from("logits"),
             bp_iterations: 1,
+            prior_kind: String::from("network"),
             max_concurrent_chunks: 1,
         }
     }
