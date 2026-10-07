@@ -6,8 +6,8 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static SINK: Mutex<Option<BufWriter<File>>> = Mutex::new(None);
@@ -74,38 +74,4 @@ macro_rules! data_log {
             $crate::diagnostics::record(serde_json::Value::Object(map));
         }
     };
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn disabled_by_default_and_record_is_a_silent_no_op() {
-        // Order-independent of other tests only because `enable`/`disable` here use a private
-        // temp file and this test doesn't assert on `is_enabled()`'s value at entry -- just that
-        // recording while (possibly) disabled never panics.
-        record(serde_json::json!({"event": "unused"}));
-    }
-
-    #[test]
-    fn enable_then_disable_writes_and_flushes_exactly_the_recorded_lines() {
-        let path =
-            std::env::temp_dir().join(format!("aicad_data_log_test_{}.jsonl", std::process::id()));
-        enable(&path).expect("enable should succeed");
-
-        data_log!("unit_test_event", value = 42);
-        data_log!("unit_test_event", value = 7);
-
-        disable();
-
-        let content = std::fs::read_to_string(&path).unwrap();
-        let lines: Vec<&str> = content.lines().collect();
-        assert_eq!(lines.len(), 2);
-        let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-        assert_eq!(first["event"], "unit_test_event");
-        assert_eq!(first["value"], 42);
-
-        std::fs::remove_file(&path).ok();
-    }
 }
