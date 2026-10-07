@@ -1,6 +1,6 @@
+use super::view::{MddView, MddViewWithOrder};
 #[cfg(test)]
 use super::Mdd;
-use super::view::{MddView, MddViewWithOrder};
 use crate::modelling::ValueIndex;
 
 /// Full, unclamped forward (WMC) pass over `mdd`: `alpha[layer][node]` is the total mass reaching
@@ -201,7 +201,7 @@ pub fn partial_backward<T: MddViewWithOrder>(
 mod tests {
     use super::*;
     use crate::mdd::heuristics::{MergeHeuristic, OrderingHeuristic, SelectHeuristic};
-    use crate::modelling::{ConstraintIndex, Problem, all_different, not_equals};
+    use crate::modelling::{all_different, not_equals, ConstraintIndex, Problem};
     use std::sync::Arc;
 
     fn build_mdd(problem: Arc<Problem>, constraints: &[ConstraintIndex]) -> Mdd {
@@ -297,9 +297,9 @@ mod tests {
         let assignment = vec![ValueIndex(0); problem.number_variables()];
         let decided = vec![false; problem.number_variables()];
         let mut weights_by_variable = vec![Vec::new(); problem.number_variables()];
-        for layer in 0..mdd.number_layers() - 1 {
+        for (layer, w) in weights.iter().enumerate().take(mdd.number_layers() - 1) {
             let variable = mdd.decision_at_layer(layer);
-            weights_by_variable[variable.0] = weights[layer].clone();
+            weights_by_variable[variable.0] = w.clone();
         }
 
         for layer in 0..=mdd.sink().0 {

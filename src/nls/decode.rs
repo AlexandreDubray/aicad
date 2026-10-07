@@ -20,7 +20,7 @@ use crate::mdd::arena::compile_constraint;
 use crate::mdd::{CompiledConstraint, MddArena};
 use crate::modelling::{Problem, ValueIndex, VariableIndex};
 use crate::sampling::bp::belief_propagation;
-use crate::sampling::{DecodeMode, argmax, sample_categorical};
+use crate::sampling::{argmax, sample_categorical, DecodeMode};
 use crate::utils::tensor::to_rows;
 
 /// Turns this iteration's logits into the next assignment. Only positions
@@ -398,7 +398,10 @@ mod tests {
     fn prepare_warms_the_cache_so_decode_never_needs_to_compile() {
         let problem = clique_problem(6, 5);
         let op = mdd_sampling_decode(5);
-        <MddSamplingDecode as DecodingOperator<NdArray>>::prepare(&op, &[problem.clone()]);
+        <MddSamplingDecode as DecodingOperator<NdArray>>::prepare(
+            &op,
+            std::slice::from_ref(&problem),
+        );
 
         // `mdds_for` after `prepare` must be a pure cache hit -- calling it twice more should
         // keep returning the exact same `Arc`, never a freshly compiled one.

@@ -7,16 +7,16 @@ use crate::utils::MemoryReport;
 use num_bigint::BigUint;
 
 use rand;
-use rand::SeedableRng;
 use rand::prelude::*;
+use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256Plus;
 use std::cell::RefCell;
 
 use rustc_hash::FxHashMap;
 use std::cmp::Reverse;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::BinaryHeap;
 use std::collections::HashSet;
-use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -890,7 +890,8 @@ impl Mdd {
                 let from = self.edges[layer][index].from();
                 let to = self.edges[layer][index].to();
                 if self.edges[layer][index].is_active()
-                    && !(map_node_index.contains_key(&from) || map_node_index.contains_key(&to))
+                    && map_node_index.contains_key(&from)
+                    && map_node_index.contains_key(&to)
                 {
                     map_edge_index.insert(EdgeIndex(layer, index), EdgeIndex(layer, new_index));
                     self.edges[layer].swap(new_index, index);
