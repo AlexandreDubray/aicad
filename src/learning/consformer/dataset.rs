@@ -43,10 +43,9 @@ pub(super) fn consformer_mask_data(problem: &Problem) -> ConsFormerMaskData {
             .collect::<Vec<VariableIndex>>();
         for i in 0..scope.len() {
             let u = *scope[i];
-            for j in i + 1..scope.len() {
-                let v = *scope[j];
-                flat_attention_mask[u * n + v] = true;
-                flat_attention_mask[v * n + u] = true;
+            for v in scope.iter().skip(i + 1).copied() {
+                flat_attention_mask[u * n + *v] = true;
+                flat_attention_mask[*v * n + u] = true;
             }
         }
     }
@@ -194,13 +193,12 @@ pub(super) fn stack_masks_and_sample_assignments<B: Backend>(
 
     let init = problems
         .iter()
-        .map(|problem| {
+        .flat_map(|problem| {
             problem
                 .iter_variables()
                 .map(|v| problem[v].sample() as i64)
                 .collect::<Vec<i64>>()
         })
-        .flatten()
         .collect::<Vec<i64>>();
     let assignments: Tensor<B, 2, Int> =
         Tensor::<B, 1, Int>::from_data(init.as_slice(), device).reshape([problems.len(), n]);

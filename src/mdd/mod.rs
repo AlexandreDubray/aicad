@@ -2,6 +2,7 @@ pub mod arena;
 pub mod edge;
 pub mod heuristics;
 pub mod layer;
+#[allow(clippy::module_inception)]
 pub mod mdd;
 pub mod node;
 pub mod structure;

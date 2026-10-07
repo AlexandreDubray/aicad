@@ -1,6 +1,6 @@
 use burn::config::Config;
-use burn::data::dataloader::DataLoaderBuilder;
 use burn::data::dataloader::batcher::Batcher;
+use burn::data::dataloader::DataLoaderBuilder;
 use burn::data::dataset::Dataset;
 use burn::grad_clipping::GradientClippingConfig;
 use burn::module::{AutodiffModule, Module};
@@ -160,11 +160,12 @@ fn compute_horizons(
 /// training: Configuration of the training loop
 /// device: Device to launch the training on (cpu or gpu) -- also valid as `B::InnerBackend`'s
 ///         device, since `Autodiff<X>::Device == X::Device`
+#[allow(clippy::too_many_arguments)]
 pub fn train_model<B, NC, S, TBatch, Ba, L, SValid, VBatch>(
     network_config: NC,
     problems: &[Arc<Problem>],
-    train_dataset: impl Dataset<S> + Send + Sync + 'static,
-    valid_dataset: impl Dataset<SValid> + Send + Sync + 'static,
+    train_dataset: impl Dataset<S> + 'static,
+    valid_dataset: impl Dataset<SValid> + 'static,
     batcher: Ba,
     loss_fn: L,
     training: TrainingConfig,
@@ -497,9 +498,7 @@ mod test_compute_horizons {
         let horizons = compute_horizons(5000, 10, 15);
         assert_eq!(
             horizons,
-            vec![
-                10, 20, 40, 60, 90, 140, 220, 350, 540, 850, 1320, 2060, 3210, 5000
-            ]
+            vec![10, 20, 40, 60, 90, 140, 220, 350, 540, 850, 1320, 2060, 3210, 5000]
         );
     }
 
@@ -550,7 +549,7 @@ mod test_horizon_checkpoint_layout {
     use crate::learning::consformer::{
         ConsFormerBatcher, ConsFormerConfig, ConsFormerDataset, ConsFormerLoss,
     };
-    use crate::modelling::{Problem, not_equals};
+    use crate::modelling::{not_equals, Problem};
     use crate::nls::load_network;
 
     /// End-to-end: a horizon checkpoint must be its own self-contained, loadable directory --

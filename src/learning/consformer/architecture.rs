@@ -6,7 +6,7 @@ use burn::module::{Module, Param};
 use burn::nn::{
     Dropout, DropoutConfig, EmbeddingConfig, Gelu, LayerNorm, LayerNormConfig, Linear, LinearConfig,
 };
-use burn::tensor::{Bool, Int, Tensor, backend::Backend};
+use burn::tensor::{backend::Backend, Bool, Int, Tensor};
 
 use super::ConsFormerInputs;
 use crate::learning::*;
@@ -118,10 +118,7 @@ impl<B: Backend> StructuredPositionalEmbedding<B> {
             .map(|a| positions.iter().map(|coords| coords[a]).collect())
             .collect();
 
-        StructuredPositionalEmbedding {
-            axes,
-            axis_ids: axis_ids,
-        }
+        StructuredPositionalEmbedding { axes, axis_ids }
     }
 
     /// batch_size: number of parallel assignments in this forward call.

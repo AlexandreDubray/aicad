@@ -55,7 +55,7 @@ impl Variable {
     }
 
     pub fn in_domain(&self, value: isize) -> bool {
-        self.domain.iter().copied().find(|&v| v == value).is_some()
+        self.domain.iter().copied().any(|v| v == value)
     }
 
     /// Sets the domain of the variable to the given values

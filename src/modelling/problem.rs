@@ -36,10 +36,7 @@ impl Problem {
     }
 
     /// Adds a constraint to the problem and returns its index.
-    pub fn add_constraint(
-        &mut self,
-        constraint: impl Constraint + 'static + Send + Sync,
-    ) -> ConstraintIndex {
+    pub fn add_constraint(&mut self, constraint: impl Constraint + 'static) -> ConstraintIndex {
         self.add_constraint_boxed(Box::new(constraint))
     }
 

@@ -7,16 +7,16 @@ use crate::utils::MemoryReport;
 use num_bigint::BigUint;
 
 use rand;
-use rand::SeedableRng;
 use rand::prelude::*;
+use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256Plus;
 use std::cell::RefCell;
 
 use rustc_hash::FxHashMap;
 use std::cmp::Reverse;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::BinaryHeap;
 use std::collections::HashSet;
-use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -158,7 +158,7 @@ impl Mdd {
             .collect::<Vec<Box<dyn Constraint>>>();
         let mut mdd = Self {
             scope: mdd_scope,
-            constraints: constraints,
+            constraints,
             nodes: vec![vec![]; number_layers + 1],
             edges: vec![vec![]; number_layers],
             order: vec![],
@@ -767,8 +767,7 @@ impl Mdd {
         }
         if !self.merge_heuristic.bucket_merge() {
             let into = node_ranks[active_nodes - max_width];
-            for i in 0..active_nodes - max_width {
-                let from = node_ranks[i];
+            for &from in node_ranks.iter().take(active_nodes - max_width) {
                 self.merge_nodes(from, into);
             }
         } else {
@@ -779,16 +778,14 @@ impl Mdd {
             let mut i = 0;
             for _ in 0..max_width - r {
                 let into = node_ranks[i];
-                for j in (i + 1)..(i + q) {
-                    let from = node_ranks[j];
+                for &from in node_ranks.iter().take(i + q).skip(i + 1) {
                     self.merge_nodes(from, into);
                 }
                 i += q;
             }
             for _ in 0..r {
                 let into = node_ranks[i];
-                for j in (i + 1)..(i + q + 1) {
-                    let from = node_ranks[j];
+                for &from in node_ranks.iter().take(i + q + 1).skip(i + 1) {
                     self.merge_nodes(from, into);
                 }
                 i += q + 1;
@@ -893,7 +890,7 @@ impl Mdd {
                 let from = self.edges[layer][index].from();
                 let to = self.edges[layer][index].to();
                 if self.edges[layer][index].is_active()
-                    && !(map_node_index.get(&from).is_none() || map_node_index.get(&to).is_none())
+                    && !(map_node_index.contains_key(&from) || map_node_index.contains_key(&to))
                 {
                     map_edge_index.insert(EdgeIndex(layer, index), EdgeIndex(layer, new_index));
                     self.edges[layer].swap(new_index, index);
@@ -1061,11 +1058,16 @@ impl Mdd {
         let mut counts: Vec<Vec<BigUint>> = self
             .nodes
             .iter()
-            .map(|layer| vec![BigUint::from(0u32); layer.len()])
+            .enumerate()
+            .map(|(layer_index, layer)| {
+                let value = if layer_index != last_layer {
+                    BigUint::from(0u32)
+                } else {
+                    BigUint::from(1u32)
+                };
+                vec![value; layer.len()]
+            })
             .collect();
-        for i in 0..self.nodes[last_layer].len() {
-            counts[last_layer][i] = BigUint::from(1u32);
-        }
         for layer in (0..last_layer).rev() {
             for i in 0..self.nodes[layer].len() {
                 let node = NodeIndex(layer, i);
