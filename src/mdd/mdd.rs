@@ -7,16 +7,16 @@ use crate::utils::MemoryReport;
 use num_bigint::BigUint;
 
 use rand;
-use rand::prelude::*;
 use rand::SeedableRng;
+use rand::prelude::*;
 use rand_xoshiro::Xoshiro256Plus;
 use std::cell::RefCell;
 
 use rustc_hash::FxHashMap;
 use std::cmp::Reverse;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::BinaryHeap;
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;

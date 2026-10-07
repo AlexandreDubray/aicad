@@ -20,7 +20,7 @@ use crate::mdd::arena::compile_constraint;
 use crate::mdd::{CompiledConstraint, MddArena};
 use crate::modelling::{Problem, ValueIndex, VariableIndex};
 use crate::sampling::bp::belief_propagation;
-use crate::sampling::{argmax, sample_categorical, DecodeMode};
+use crate::sampling::{DecodeMode, argmax, sample_categorical};
 use crate::utils::tensor::to_rows;
 
 /// Turns this iteration's logits into the next assignment. Only positions

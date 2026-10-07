@@ -1,6 +1,6 @@
-use super::view::{MddView, MddViewWithOrder};
 #[cfg(test)]
 use super::Mdd;
+use super::view::{MddView, MddViewWithOrder};
 use crate::modelling::ValueIndex;
 
 /// Full, unclamped forward (WMC) pass over `mdd`: `alpha[layer][node]` is the total mass reaching
@@ -201,7 +201,7 @@ pub fn partial_backward<T: MddViewWithOrder>(
 mod tests {
     use super::*;
     use crate::mdd::heuristics::{MergeHeuristic, OrderingHeuristic, SelectHeuristic};
-    use crate::modelling::{all_different, not_equals, ConstraintIndex, Problem};
+    use crate::modelling::{ConstraintIndex, Problem, all_different, not_equals};
     use std::sync::Arc;
 
     fn build_mdd(problem: Arc<Problem>, constraints: &[ConstraintIndex]) -> Mdd {
