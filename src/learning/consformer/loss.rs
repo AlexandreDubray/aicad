@@ -8,8 +8,8 @@ use rayon::prelude::*;
 
 use crate::constraints::{AllDifferent, Constraint, NotEquals};
 use crate::learning::{BatchProblems, Loss};
-use crate::mdd::wmc::wmc_and_gradient;
 use crate::mdd::CompiledConstraint;
+use crate::mdd::wmc::wmc_and_gradient;
 use crate::modelling::Problem;
 
 use super::dataset::ConsFormerBatch;
@@ -418,12 +418,12 @@ mod mdd_loss_tests {
     use burn::data::dataset::Dataset;
 
     use crate::mdd::MddArena;
-    use crate::modelling::{all_different, not_equals, Problem};
+    use crate::modelling::{Problem, all_different, not_equals};
 
+    use super::super::ConsFormerDataConfig;
     use super::super::mdd_dataset::{
         ConsFormerMddBatcher, ConsFormerMddDataset, ConsFormerMddSample, MddCompilationConfig,
     };
-    use super::super::ConsFormerDataConfig;
     use super::*;
 
     /// Every problem is 3 variables, domain `{0,1,2}`, with an `AllDifferent` over all three and

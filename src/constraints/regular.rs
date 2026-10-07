@@ -194,7 +194,9 @@ impl Constraint for Regular {
             if !parent.states.contains(state) {
                 continue;
             }
-            if let Some(next) = self.transitions[state][symbol] && child.states.contains(next) {
+            if let Some(next) = self.transitions[state][symbol]
+                && child.states.contains(next)
+            {
                 return false;
             }
         }
@@ -278,7 +280,9 @@ impl ConstraintProperty for RegularProperty {
         if in_scope {
             let symbol = *self.val_to_symbol.get(&assignment).unwrap();
             for state in 0..self.num_states {
-                if let Some(next) = self.transitions[state][symbol] && other.states.contains(next) {
+                if let Some(next) = self.transitions[state][symbol]
+                    && other.states.contains(next)
+                {
                     self.states.insert(state);
                 }
             }
