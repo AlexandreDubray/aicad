@@ -68,7 +68,14 @@ impl Gcc {
                 }
                 Some(&(l, u)) => {
                     if l != lb || u != ub {
-                        log::warn!("GCC constraint has multiple bounds for value {}: First bound ({}, {}), second bound ({}, {}). Last bound is kept.", value, l, u, lb, ub);
+                        log::warn!(
+                            "GCC constraint has multiple bounds for value {}: First bound ({}, {}), second bound ({}, {}). Last bound is kept.",
+                            value,
+                            l,
+                            u,
+                            lb,
+                            ub
+                        );
                     }
                 }
             };

@@ -122,7 +122,9 @@ impl Constraint for Regular {
         // for a `Regular` compiled outside `Mdd::new`'s repair pass) rather than silently
         // building a `layer_in_scope` bitset that doesn't match the automaton's actual sequence.
         if observed_order != self.variables {
-            panic!("Regular constraint's variables must keep their declared relative order in the chosen variable ordering");
+            panic!(
+                "Regular constraint's variables must keep their declared relative order in the chosen variable ordering"
+            );
         }
     }
 

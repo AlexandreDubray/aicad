@@ -1,9 +1,9 @@
 use burn::config::Config;
-use burn::data::dataloader::batcher::Batcher;
 use burn::data::dataloader::DataLoaderBuilder;
+use burn::data::dataloader::batcher::Batcher;
 use burn::data::dataset::Dataset;
-use burn::module::{AutodiffModule, Module};
 use burn::grad_clipping::GradientClippingConfig;
+use burn::module::{AutodiffModule, Module};
 use burn::optim::decay::WeightDecayConfig;
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
 use burn::prelude::ElementConversion;
@@ -104,7 +104,11 @@ pub struct TrainingConfig {
 /// horizons are a constant multiplicative step apart, so absolute spacing grows over the run
 /// (e.g. num_epochs=5000, validation_interval=10, num_checkpoints=15 gives roughly
 /// `[10, 20, 40, 60, 90, 140, 220, 350, 540, 850, 1320, 2060, 3210, 5000]`).
-fn compute_horizons(num_epochs: usize, validation_interval: usize, num_checkpoints: usize) -> Vec<usize> {
+fn compute_horizons(
+    num_epochs: usize,
+    validation_interval: usize,
+    num_checkpoints: usize,
+) -> Vec<usize> {
     if validation_interval == 0 || num_checkpoints == 0 {
         return Vec::new();
     }
@@ -174,7 +178,8 @@ where
     <NC::N as AutodiffModule<B>>::InnerModule: Network<B::InnerBackend, VBatch>,
     S: Send + Sync + Clone + std::fmt::Debug + 'static,
     SValid: Send + Sync + Clone + std::fmt::Debug + 'static,
-    TBatch: BatchProblems<B> + ConsFormerInputs<B> + Clone + Send + Sync + std::fmt::Debug + 'static,
+    TBatch:
+        BatchProblems<B> + ConsFormerInputs<B> + Clone + Send + Sync + std::fmt::Debug + 'static,
     VBatch: BatchProblems<B::InnerBackend>
         + ConsFormerInputs<B::InnerBackend>
         + Clone
@@ -208,17 +213,14 @@ where
         .with_epsilon(training.epsilon as f32)
         .with_amsgrad(training.amsgrad);
     if let Some(penalty) = training.weight_decay {
-        adam_config =
-            adam_config.with_weight_decay(Some(WeightDecayConfig::new(penalty as f32)));
+        adam_config = adam_config.with_weight_decay(Some(WeightDecayConfig::new(penalty as f32)));
     }
     if let Some(norm) = training.grad_clip_norm {
-        adam_config = adam_config.with_grad_clipping(Some(GradientClippingConfig::Norm(
-            norm as f32,
-        )));
+        adam_config =
+            adam_config.with_grad_clipping(Some(GradientClippingConfig::Norm(norm as f32)));
     } else if let Some(value) = training.grad_clip_value {
-        adam_config = adam_config.with_grad_clipping(Some(GradientClippingConfig::Value(
-            value as f32,
-        )));
+        adam_config =
+            adam_config.with_grad_clipping(Some(GradientClippingConfig::Value(value as f32)));
     }
     let mut optim = adam_config.init();
 
@@ -422,7 +424,12 @@ where
                 if let Some(best) = &best_network {
                     let epoch_dir = out_dir.join(format!("epoch_{:05}", epoch + 1));
                     let saved = std::fs::create_dir_all(&epoch_dir)
-                        .and_then(|_| std::fs::copy(out_dir.join("config.json"), epoch_dir.join("config.json")))
+                        .and_then(|_| {
+                            std::fs::copy(
+                                out_dir.join("config.json"),
+                                epoch_dir.join("config.json"),
+                            )
+                        })
                         .map_err(|e| e.to_string())
                         .and_then(|_| {
                             best.clone()
@@ -438,8 +445,7 @@ where
                             }));
                             if let Err(e) = std::fs::write(
                                 out_dir.join("horizons_manifest.json"),
-                                serde_json::to_string_pretty(&horizon_manifest)
-                                    .unwrap_or_default(),
+                                serde_json::to_string_pretty(&horizon_manifest).unwrap_or_default(),
                             ) {
                                 log::warn!("warning: failed to write horizons manifest: {e}");
                             }
@@ -491,18 +497,29 @@ mod test_compute_horizons {
         let horizons = compute_horizons(5000, 10, 15);
         assert_eq!(
             horizons,
-            vec![10, 20, 40, 60, 90, 140, 220, 350, 540, 850, 1320, 2060, 3210, 5000]
+            vec![
+                10, 20, 40, 60, 90, 140, 220, 350, 540, 850, 1320, 2060, 3210, 5000
+            ]
         );
     }
 
     #[test]
     fn is_front_loaded_and_ends_at_the_final_validation_event() {
         let horizons = compute_horizons(1000, 10, 8);
-        assert!(horizons.windows(2).all(|w| w[0] < w[1]), "must be strictly increasing");
+        assert!(
+            horizons.windows(2).all(|w| w[0] < w[1]),
+            "must be strictly increasing"
+        );
         assert_eq!(*horizons.last().unwrap(), 1000);
         // front-loaded: the gaps should grow monotonically (geometric spacing)
-        let gaps: Vec<i64> = horizons.windows(2).map(|w| w[1] as i64 - w[0] as i64).collect();
-        assert!(gaps.windows(2).all(|w| w[0] <= w[1]), "gaps should be non-decreasing: {gaps:?}");
+        let gaps: Vec<i64> = horizons
+            .windows(2)
+            .map(|w| w[1] as i64 - w[0] as i64)
+            .collect();
+        assert!(
+            gaps.windows(2).all(|w| w[0] <= w[1]),
+            "gaps should be non-decreasing: {gaps:?}"
+        );
     }
 
     #[test]
@@ -533,7 +550,7 @@ mod test_horizon_checkpoint_layout {
     use crate::learning::consformer::{
         ConsFormerBatcher, ConsFormerConfig, ConsFormerDataset, ConsFormerLoss,
     };
-    use crate::modelling::{not_equals, Problem};
+    use crate::modelling::{Problem, not_equals};
     use crate::nls::load_network;
 
     /// End-to-end: a horizon checkpoint must be its own self-contained, loadable directory --
@@ -557,8 +574,7 @@ mod test_horizon_checkpoint_layout {
         not_equals(&mut problem, x, y);
         let problems = vec![Arc::new(problem)];
 
-        let network_config =
-            ConsFormerConfig::new(3, 4, 4, 1, 4, 0, 0.5, 1.0).with_num_layers(1);
+        let network_config = ConsFormerConfig::new(3, 4, 4, 1, 4, 0, 0.5, 1.0).with_num_layers(1);
 
         // Mirrors `pyaicad::learn::prepare_checkpoint_dir`, called before `train_model` in every
         // real caller -- `train_model` itself only ever reads `out_dir/config.json` (to copy it
@@ -577,16 +593,7 @@ mod test_horizon_checkpoint_layout {
             .with_save_horizons(true)
             .with_num_checkpoints(1);
 
-        train_model::<
-            ADBackend,
-            ConsFormerConfig,
-            _,
-            _,
-            _,
-            ConsFormerLoss,
-            _,
-            _,
-        >(
+        train_model::<ADBackend, ConsFormerConfig, _, _, _, ConsFormerLoss, _, _>(
             network_config,
             &problems,
             train_dataset,
@@ -622,10 +629,8 @@ mod test_horizon_checkpoint_layout {
         type ADBackend = Autodiff<NdArray>;
         let device = NdArrayDevice::default();
 
-        let out_dir = std::env::temp_dir().join(format!(
-            "aicad_test_early_stopping_{}",
-            std::process::id()
-        ));
+        let out_dir =
+            std::env::temp_dir().join(format!("aicad_test_early_stopping_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out_dir);
 
         let mut problem = Problem::default();
@@ -634,8 +639,7 @@ mod test_horizon_checkpoint_layout {
         not_equals(&mut problem, x, y);
         let problems = vec![Arc::new(problem)];
 
-        let network_config =
-            ConsFormerConfig::new(3, 4, 4, 1, 4, 0, 0.5, 1.0).with_num_layers(1);
+        let network_config = ConsFormerConfig::new(3, 4, 4, 1, 4, 0, 0.5, 1.0).with_num_layers(1);
 
         std::fs::create_dir_all(&out_dir).unwrap();
         network_config.save(out_dir.join("config.json")).unwrap();
@@ -657,16 +661,7 @@ mod test_horizon_checkpoint_layout {
             .with_save_horizons(true)
             .with_num_checkpoints(1);
 
-        train_model::<
-            ADBackend,
-            ConsFormerConfig,
-            _,
-            _,
-            _,
-            ConsFormerLoss,
-            _,
-            _,
-        >(
+        train_model::<ADBackend, ConsFormerConfig, _, _, _, ConsFormerLoss, _, _>(
             network_config,
             &problems,
             train_dataset,
@@ -690,10 +685,8 @@ mod test_horizon_checkpoint_layout {
         type ADBackend = Autodiff<NdArray>;
         let device = NdArrayDevice::default();
 
-        let out_dir = std::env::temp_dir().join(format!(
-            "aicad_test_timing_log_{}",
-            std::process::id()
-        ));
+        let out_dir =
+            std::env::temp_dir().join(format!("aicad_test_timing_log_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out_dir);
         std::fs::create_dir_all(&out_dir).unwrap();
 
@@ -703,8 +696,7 @@ mod test_horizon_checkpoint_layout {
         not_equals(&mut problem, x, y);
         let problems = vec![Arc::new(problem)];
 
-        let network_config =
-            ConsFormerConfig::new(3, 4, 4, 1, 4, 0, 0.5, 1.0).with_num_layers(1);
+        let network_config = ConsFormerConfig::new(3, 4, 4, 1, 4, 0, 0.5, 1.0).with_num_layers(1);
         network_config.save(out_dir.join("config.json")).unwrap();
 
         let train_dataset = ConsFormerDataset::<ADBackend>::new(problems.clone(), &device);
@@ -739,8 +731,14 @@ mod test_horizon_checkpoint_layout {
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
 
-        let train_events: Vec<_> = events.iter().filter(|e| e["event"] == "train_epoch").collect();
-        let valid_events: Vec<_> = events.iter().filter(|e| e["event"] == "valid_epoch").collect();
+        let train_events: Vec<_> = events
+            .iter()
+            .filter(|e| e["event"] == "train_epoch")
+            .collect();
+        let valid_events: Vec<_> = events
+            .iter()
+            .filter(|e| e["event"] == "valid_epoch")
+            .collect();
 
         assert_eq!(train_events.len(), 2, "{events:?}");
         assert_eq!(valid_events.len(), 2, "{events:?}");
@@ -773,8 +771,7 @@ mod test_horizon_checkpoint_layout {
         not_equals(&mut problem, x, y);
         let problems = vec![Arc::new(problem)];
 
-        let network_config =
-            ConsFormerConfig::new(3, 4, 4, 1, 4, 0, 0.5, 1.0).with_num_layers(1);
+        let network_config = ConsFormerConfig::new(3, 4, 4, 1, 4, 0, 0.5, 1.0).with_num_layers(1);
 
         std::fs::create_dir_all(&out_dir).unwrap();
         network_config.save(out_dir.join("config.json")).unwrap();
@@ -788,16 +785,7 @@ mod test_horizon_checkpoint_layout {
             .with_validation_interval(1)
             .with_batch_size(1);
 
-        train_model::<
-            ADBackend,
-            ConsFormerConfig,
-            _,
-            _,
-            _,
-            ConsFormerLoss,
-            _,
-            _,
-        >(
+        train_model::<ADBackend, ConsFormerConfig, _, _, _, ConsFormerLoss, _, _>(
             network_config,
             &problems,
             train_dataset,

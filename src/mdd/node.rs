@@ -21,7 +21,6 @@ pub struct Node {
 }
 
 impl Node {
-
     pub fn new(layer: usize, index_in_layer: usize, relaxed: bool) -> Self {
         Self {
             layer,
@@ -136,7 +135,7 @@ impl Node {
         self.property_flag = false;
     }
 
-    pub fn update_edge_indices(&mut self, map: &FxHashMap::<EdgeIndex, EdgeIndex>) {
+    pub fn update_edge_indices(&mut self, map: &FxHashMap<EdgeIndex, EdgeIndex>) {
         for i in (0..self.parents_edges.len()).rev() {
             match map.get(&self.parents_edges[i]) {
                 Some(&new_index) => self.parents_edges[i] = new_index,

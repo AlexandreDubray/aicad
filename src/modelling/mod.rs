@@ -10,11 +10,7 @@ pub fn all_different(problem: &mut Problem, variables: Vec<VariableIndex>) -> Co
     problem.add_constraint(constraint)
 }
 
-pub fn not_equals(
-    problem: &mut Problem,
-    x: VariableIndex,
-    y: VariableIndex,
-) -> ConstraintIndex {
+pub fn not_equals(problem: &mut Problem, x: VariableIndex, y: VariableIndex) -> ConstraintIndex {
     let constraint = NotEquals::new(x, y, problem);
     problem.add_constraint(constraint)
 }

@@ -5,9 +5,9 @@ use std::time::Instant;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
+use burn::backend::Autodiff;
 use burn::backend::cuda::{Cuda, CudaDevice};
 use burn::backend::ndarray::{NdArray, NdArrayDevice};
-use burn::backend::Autodiff;
 use burn::config::Config;
 use burn::data::dataset::Dataset;
 use burn::tensor::backend::{AutodiffBackend, Backend};
@@ -20,7 +20,7 @@ use crate::learning::consformer::{
     ConsFormerLoss, ConsFormerMddBatch, ConsFormerMddBatcher, ConsFormerMddDataset,
     ConsFormerMddLoss, ConsFormerMddSample, ConsFormerSample, MddCompilationConfig,
 };
-use crate::learning::train::{train_model, ModelSelection, TrainingConfig};
+use crate::learning::train::{ModelSelection, TrainingConfig, train_model};
 use crate::mdd::MddArena;
 use crate::modelling::Problem;
 use crate::utils::with_rng;

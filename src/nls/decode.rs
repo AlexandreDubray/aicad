@@ -20,7 +20,7 @@ use crate::mdd::arena::compile_constraint;
 use crate::mdd::{CompiledConstraint, MddArena};
 use crate::modelling::{Problem, ValueIndex, VariableIndex};
 use crate::sampling::bp::belief_propagation;
-use crate::sampling::{argmax, sample_categorical, DecodeMode};
+use crate::sampling::{DecodeMode, argmax, sample_categorical};
 use crate::utils::tensor::to_rows;
 
 /// Turns this iteration's logits into the next assignment. Only positions
@@ -382,9 +382,7 @@ mod tests {
     fn detect_unsat_is_false_when_a_clique_has_enough_colours() {
         let problem = clique_problem(6, 6);
         let op = mdd_sampling_decode(6);
-        assert!(
-            !<MddSamplingDecode as DecodingOperator<NdArray>>::detect_unsat(&op, &problem)
-        );
+        assert!(!<MddSamplingDecode as DecodingOperator<NdArray>>::detect_unsat(&op, &problem));
     }
 
     #[test]

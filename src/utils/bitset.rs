@@ -49,7 +49,10 @@ impl Bitset {
     }
 
     pub fn size(&self) -> usize {
-        self.words().iter().map(|word| word.count_ones()).sum::<u32>() as usize
+        self.words()
+            .iter()
+            .map(|word| word.count_ones())
+            .sum::<u32>() as usize
     }
 
     pub fn size_union(&self, other: &Bitset) -> usize {
@@ -75,7 +78,12 @@ impl Bitset {
         let bit_word = bit / 64;
         let bit_mask = 1u64 << (bit % 64);
         let other_words = other.words();
-        for (i, (word, other_word)) in self.words_mut().iter_mut().zip(other_words.iter()).enumerate() {
+        for (i, (word, other_word)) in self
+            .words_mut()
+            .iter_mut()
+            .zip(other_words.iter())
+            .enumerate()
+        {
             let extra = if i == bit_word { bit_mask } else { 0 };
             *word |= other_word | extra;
         }
@@ -94,7 +102,12 @@ impl Bitset {
         let bit_word = bit / 64;
         let bit_mask = 1u64 << (bit % 64);
         let other_words = other.words();
-        for (i, (word, other_word)) in self.words_mut().iter_mut().zip(other_words.iter()).enumerate() {
+        for (i, (word, other_word)) in self
+            .words_mut()
+            .iter_mut()
+            .zip(other_words.iter())
+            .enumerate()
+        {
             let extra = if i == bit_word { bit_mask } else { 0 };
             *word &= other_word | extra;
         }

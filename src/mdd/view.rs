@@ -11,7 +11,9 @@ use crate::modelling::VariableIndex;
 /// The purely structural surface: everything `crate::mdd::wmc::forward`/`backward`/`wmc`/
 /// `gradient` need, and nothing that depends on which real problem or `VariableIndex`s this
 /// diagram was compiled for.
-pub trait MddView: std::ops::Index<NodeIndex, Output = Node> + std::ops::Index<super::EdgeIndex, Output = Edge> {
+pub trait MddView:
+    std::ops::Index<NodeIndex, Output = Node> + std::ops::Index<super::EdgeIndex, Output = Edge>
+{
     fn root(&self) -> NodeIndex;
     fn sink(&self) -> NodeIndex;
     fn number_layers(&self) -> usize;

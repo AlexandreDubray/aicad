@@ -16,7 +16,7 @@ impl SelectHeuristic {
                     }
                 }
                 None
-            },
+            }
         }
     }
 }

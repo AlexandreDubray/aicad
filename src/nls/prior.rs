@@ -49,12 +49,8 @@ where
         destroy_mask: &Tensor<B, 2, Int>,
         device: &B::Device,
     ) -> Tensor<B, 3> {
-        let batch = Ba::for_assignments(
-            problems,
-            assignments.clone(),
-            destroy_mask.clone(),
-            device,
-        );
+        let batch =
+            Ba::for_assignments(problems, assignments.clone(), destroy_mask.clone(), device);
         self.network.forward(&batch)
     }
 }
@@ -118,8 +114,13 @@ mod tests {
         let problems = vec![problem_over(vec![0, 1, 2]), problem_over(vec![0, 1, 2])];
         let assignments = Tensor::<NdArray, 2, Int>::zeros([2, 2], &device);
         let mask = Tensor::<NdArray, 2, Int>::ones([2, 2], &device);
-        let logits =
-            PriorHeuristic::<NdArray>::priors(&UniformPrior::new(3), &problems, &assignments, &mask, &device);
+        let logits = PriorHeuristic::<NdArray>::priors(
+            &UniformPrior::new(3),
+            &problems,
+            &assignments,
+            &mask,
+            &device,
+        );
         assert_eq!(logits.dims(), [2, 2, 3]);
         let values: Vec<f32> = logits.into_data().to_vec().unwrap();
         assert!(values.iter().all(|&v| v == 0.0));

@@ -13,7 +13,6 @@ pub struct Layer {
 }
 
 impl Layer {
-
     /// Adds a node the the layer and returns its index
     pub fn add_node(&mut self, node: NodeIndex) {
         self.nodes.push(node);

@@ -19,7 +19,7 @@ use crate::mdd::{CompiledConstraint, MddArena};
 use crate::modelling::Problem;
 
 use super::dataset::{
-    consformer_mask_data, stack_masks_and_sample_assignments, ConsFormerMaskData,
+    ConsFormerMaskData, consformer_mask_data, stack_masks_and_sample_assignments,
 };
 use super::{ConsFormerDataConfig, ConsFormerInputs};
 

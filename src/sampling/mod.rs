@@ -7,11 +7,7 @@ use rand::RngExt;
 const LOG_ZERO: f64 = -745.0;
 
 fn safe_ln(p: f64) -> f64 {
-    if p > 0.0 {
-        p.ln()
-    } else {
-        LOG_ZERO
-    }
+    if p > 0.0 { p.ln() } else { LOG_ZERO }
 }
 
 /// How a variable's combined distribution turns into a value: `sample_categorical` or `argmax`.
@@ -44,10 +40,7 @@ fn normalize_or_uniform(mut weights: Vec<f64>, domain_size: usize) -> Vec<f64> {
 /// `CompiledConstraint`, see `crate::mdd::arena`), so this works for either representation; `num_vars`
 /// is passed explicitly rather than read off `mdd.problem()` since a `CompiledConstraint` carries no
 /// `Arc<Problem>` of its own (that's the whole point of the split -- see the arena module doc).
-fn build_var_to_mdds<T: MddViewWithOrder>(
-    mdds: &[T],
-    num_vars: usize,
-) -> Vec<Vec<(usize, usize)>> {
+fn build_var_to_mdds<T: MddViewWithOrder>(mdds: &[T], num_vars: usize) -> Vec<Vec<(usize, usize)>> {
     let mut var_to_mdds: Vec<Vec<(usize, usize)>> = vec![Vec::new(); num_vars];
     for (mdd_index, mdd) in mdds.iter().enumerate() {
         for layer in 0..mdd.number_layers() - 1 {

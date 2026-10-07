@@ -23,8 +23,8 @@ use burn::record::CompactRecorder;
 use burn::tensor::backend::Backend;
 use burn::tensor::{Int, Tensor};
 
-use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rand::rngs::StdRng;
 
 use crate::learning::NetworkConfig;
 use crate::modelling::Problem;
@@ -444,8 +444,8 @@ mod tests {
     }
 
     #[test]
-    fn resolve_status_reports_unsatisfiable_when_the_operator_flags_it_and_the_row_does_not_solve_it(
-    ) {
+    fn resolve_status_reports_unsatisfiable_when_the_operator_flags_it_and_the_row_does_not_solve_it()
+     {
         let problem = not_equals_problem();
         let op = FixedUnsatDecode(true);
         let (status, solution) = resolve_status(&op, &problem, &[0, 0])

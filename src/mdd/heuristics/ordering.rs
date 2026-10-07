@@ -7,10 +7,15 @@ pub enum OrderingHeuristic {
 }
 
 impl OrderingHeuristic {
-
     pub fn get_order(&self, problem: &Problem, variables: &[VariableIndex]) -> Vec<VariableIndex> {
         match self {
-            Self::Custom(order) => return order.iter().copied().map(VariableIndex).collect::<Vec<VariableIndex>>(),
+            Self::Custom(order) => {
+                return order
+                    .iter()
+                    .copied()
+                    .map(VariableIndex)
+                    .collect::<Vec<VariableIndex>>();
+            }
             Self::MinDomMaxLinked => {
                 let mut candidates = variables.iter().copied().collect::<Vec<VariableIndex>>();
                 let mut scores = vec![0; problem.number_variables()];
@@ -50,8 +55,7 @@ impl OrderingHeuristic {
                     candidates.swap_remove(best_index);
                 }
                 order
-            },
+            }
         }
     }
-
 }

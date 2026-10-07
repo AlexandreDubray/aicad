@@ -8,8 +8,8 @@ use rayon::prelude::*;
 
 use crate::constraints::{AllDifferent, Constraint, NotEquals};
 use crate::learning::{BatchProblems, Loss};
-use crate::mdd::wmc::wmc_and_gradient;
 use crate::mdd::CompiledConstraint;
+use crate::mdd::wmc::wmc_and_gradient;
 use crate::modelling::Problem;
 
 use super::dataset::ConsFormerBatch;
@@ -320,7 +320,13 @@ fn sample_loss_and_gradient(
     let mut grad = vec![0.0f32; number_vars * domain_size];
     let mut loss_sum = 0.0;
     for constraint in constraints {
-        loss_sum += mdd_loss_and_gradient(constraint, real_problem, probs_for_sample, domain_size, &mut grad);
+        loss_sum += mdd_loss_and_gradient(
+            constraint,
+            real_problem,
+            probs_for_sample,
+            domain_size,
+            &mut grad,
+        );
     }
     // `.max(1)` so a (degenerate) sample with zero constraints reads back as zero loss instead of
     // `0.0 / 0.0`, matching the previous floor-based behaviour's result in that case.
@@ -345,10 +351,7 @@ pub struct ConsFormerMddLoss;
 /// `probs.detach()` are constants as far as autodiff is concerned. This keeps the whole hand-rolled
 /// backward pass outside Burn's graph -- nothing per-layer gets recorded or replayed -- while
 /// still letting `loss.backward()` reach every parameter upstream of `probs` normally.
-fn mdd_wmc_loss<B: Backend>(
-    probs: Tensor<B, 3>,
-    batch: &ConsFormerMddBatch<B>,
-) -> Tensor<B, 1> {
+fn mdd_wmc_loss<B: Backend>(probs: Tensor<B, 3>, batch: &ConsFormerMddBatch<B>) -> Tensor<B, 1> {
     let device = probs.device();
     let [batch_size, number_vars, domain_size] = probs.dims();
 
@@ -415,12 +418,12 @@ mod mdd_loss_tests {
     use burn::data::dataset::Dataset;
 
     use crate::mdd::MddArena;
-    use crate::modelling::{all_different, not_equals, Problem};
+    use crate::modelling::{Problem, all_different, not_equals};
 
+    use super::super::ConsFormerDataConfig;
     use super::super::mdd_dataset::{
         ConsFormerMddBatcher, ConsFormerMddDataset, ConsFormerMddSample, MddCompilationConfig,
     };
-    use super::super::ConsFormerDataConfig;
     use super::*;
 
     /// Every problem is 3 variables, domain `{0,1,2}`, with an `AllDifferent` over all three and
@@ -663,7 +666,8 @@ mod mdd_loss_tests {
                     domain_size,
                 ]);
             let bumped_loss_tensor = mdd_wmc_loss(bumped_tensor, &batch_plain);
-            let bumped_loss: f64 = bumped_loss_tensor.into_data().to_vec::<f32>().unwrap()[0] as f64;
+            let bumped_loss: f64 =
+                bumped_loss_tensor.into_data().to_vec::<f32>().unwrap()[0] as f64;
             let finite_diff = (bumped_loss - base_loss) / eps as f64;
             assert!(
                 (finite_diff - grad_values[i] as f64).abs() < 1e-2,

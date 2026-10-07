@@ -28,11 +28,11 @@
 //! full backward pass per MDD per iteration, with every layer's local belief read off the same pair
 //! of arrays in a single combined pass (`mdd_local_beliefs`).
 
-use crate::mdd::wmc::gradient as mdd_gradient;
-use crate::mdd::MddViewWithOrder;
-use crate::modelling::ValueIndex;
 #[cfg(test)]
 use crate::mdd::Mdd;
+use crate::mdd::MddViewWithOrder;
+use crate::mdd::wmc::gradient as mdd_gradient;
+use crate::modelling::ValueIndex;
 
 use super::{build_var_to_mdds, log_combine_and_normalize, normalize_or_uniform, safe_ln};
 
@@ -273,7 +273,8 @@ mod tests {
     }
 
     #[test]
-    fn single_not_equals_mdd_with_symmetric_conflicting_prior_becomes_uniform_after_one_iteration() {
+    fn single_not_equals_mdd_with_symmetric_conflicting_prior_becomes_uniform_after_one_iteration()
+    {
         // x != y over {0,1} x {0,1}, both variables' priors favouring the *same* value (0) equally
         // strongly. Hand-derivable: with domain size 2, the MDD's local belief for each variable is
         // exactly the *other* variable's message reversed (the only way to satisfy != is to take
@@ -361,7 +362,8 @@ mod tests {
             for iterations in [1, 3] {
                 let assignment = vec![ValueIndex(0)];
                 let decided = vec![false];
-                let marginals = belief_propagation(&mdds, &probs, &assignment, &decided, iterations);
+                let marginals =
+                    belief_propagation(&mdds, &probs, &assignment, &decided, iterations);
                 assert_eq!(marginals.len(), 1);
                 for d in 0..3 {
                     assert!(

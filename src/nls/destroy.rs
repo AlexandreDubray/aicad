@@ -4,9 +4,9 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use rand::RngExt;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
-use rand::RngExt;
 
 use crate::modelling::Problem;
 
@@ -154,4 +154,3 @@ fn bernoulli_select(
         })
         .collect()
 }
-

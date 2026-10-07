@@ -1,6 +1,6 @@
-use super::view::{MddView, MddViewWithOrder};
 #[cfg(test)]
 use super::Mdd;
+use super::view::{MddView, MddViewWithOrder};
 use crate::modelling::ValueIndex;
 
 /// Full, unclamped forward (WMC) pass over `mdd`: `alpha[layer][node]` is the total mass reaching
@@ -201,7 +201,7 @@ pub fn partial_backward<T: MddViewWithOrder>(
 mod tests {
     use super::*;
     use crate::mdd::heuristics::{MergeHeuristic, OrderingHeuristic, SelectHeuristic};
-    use crate::modelling::{all_different, not_equals, ConstraintIndex, Problem};
+    use crate::modelling::{ConstraintIndex, Problem, all_different, not_equals};
     use std::sync::Arc;
 
     fn build_mdd(problem: Arc<Problem>, constraints: &[ConstraintIndex]) -> Mdd {
@@ -253,7 +253,11 @@ mod tests {
         let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
         let mdd = build_mdd(problem, &constraints);
 
-        let weights = vec![vec![0.2, 0.5, 0.3], vec![0.1, 0.3, 0.6], vec![0.4, 0.4, 0.2]];
+        let weights = vec![
+            vec![0.2, 0.5, 0.3],
+            vec![0.1, 0.3, 0.6],
+            vec![0.4, 0.4, 0.2],
+        ];
         let (base_wmc, grad) = wmc_and_gradient(&mdd, &weights);
         assert!((wmc(&mdd, &weights) - base_wmc).abs() < 1e-12);
 
@@ -274,8 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_forward_partial_backward_agree_with_full_forward_backward_when_nothing_is_decided()
-    {
+    fn partial_forward_partial_backward_agree_with_full_forward_backward_when_nothing_is_decided() {
         let mut problem = Problem::default();
         let vars = problem.add_variables(3, vec![0, 1, 2], None);
         all_different(&mut problem, vars.clone());
@@ -283,7 +286,11 @@ mod tests {
         let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
         let mdd = build_mdd(problem.clone(), &constraints);
 
-        let weights = vec![vec![0.2, 0.5, 0.3], vec![0.1, 0.3, 0.6], vec![0.4, 0.4, 0.2]];
+        let weights = vec![
+            vec![0.2, 0.5, 0.3],
+            vec![0.1, 0.3, 0.6],
+            vec![0.4, 0.4, 0.2],
+        ];
         let alpha = forward(&mdd, &weights);
         let beta = backward(&mdd, &weights);
 
@@ -296,13 +303,15 @@ mod tests {
         }
 
         for layer in 0..=mdd.sink().0 {
-            let partial_alpha = partial_forward(&mdd, layer, &weights_by_variable, &assignment, &decided);
+            let partial_alpha =
+                partial_forward(&mdd, layer, &weights_by_variable, &assignment, &decided);
             assert_eq!(partial_alpha.len(), alpha[layer].len());
             for (a, b) in partial_alpha.iter().zip(&alpha[layer]) {
                 assert!((a - b).abs() < 1e-9);
             }
 
-            let partial_beta = partial_backward(&mdd, layer, &weights_by_variable, &assignment, &decided);
+            let partial_beta =
+                partial_backward(&mdd, layer, &weights_by_variable, &assignment, &decided);
             assert_eq!(partial_beta.len(), beta[layer].len());
             for (a, b) in partial_beta.iter().zip(&beta[layer]) {
                 assert!((a - b).abs() < 1e-9);

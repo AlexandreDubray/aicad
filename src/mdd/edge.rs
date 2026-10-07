@@ -11,7 +11,6 @@ pub struct Edge {
 }
 
 impl Edge {
-    
     pub fn new(from: NodeIndex, to: NodeIndex, assignment: ValueIndex) -> Self {
         Self {
             from,
@@ -49,7 +48,7 @@ impl Edge {
         self.active
     }
 
-    pub fn update_node_indices(&mut self, map: &FxHashMap::<NodeIndex, NodeIndex>) {
+    pub fn update_node_indices(&mut self, map: &FxHashMap<NodeIndex, NodeIndex>) {
         self.from = map[&self.from];
         self.to = map[&self.to];
     }

@@ -4,8 +4,8 @@ use burn::prelude::ElementConversion;
 use burn::tensor::backend::Backend;
 use burn::tensor::{Int, Tensor};
 
-use crate::learning::consformer::ConsFormerInputs;
 use crate::learning::BatchProblems;
+use crate::learning::consformer::ConsFormerInputs;
 
 struct ConstraintStats {
     count: usize,
@@ -77,7 +77,8 @@ impl SatisfactionReport {
         let batch_size = problems.len();
 
         let proposed: Tensor<B, 2, Int> = logits.argmax(2).squeeze_dim(2);
-        let assignment: Tensor<B, 2, Int> = batch.assignments().mask_where(batch.var_masks(), proposed);
+        let assignment: Tensor<B, 2, Int> =
+            batch.assignments().mask_where(batch.var_masks(), proposed);
         let assignment: Vec<i64> = assignment
             .into_data()
             .to_vec::<B::IntElem>()

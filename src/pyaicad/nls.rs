@@ -21,8 +21,8 @@ use crate::modelling::Problem;
 use crate::nls::decode::{Argmax, DecodingOperator, MddSamplingDecode, Sampling};
 use crate::nls::destroy::{DestroyOperator, RandomDestroy, RelatedDestroy, WorstDestroy};
 use crate::nls::{
-    load_network, Budget, NetworkPrior, NeuralLocalSearch, PriorHeuristic, Solution, SolveConfig,
-    Status, UniformPrior,
+    Budget, NetworkPrior, NeuralLocalSearch, PriorHeuristic, Solution, SolveConfig, Status,
+    UniformPrior, load_network,
 };
 use crate::sampling::DecodeMode;
 
@@ -509,7 +509,8 @@ fn run<B: Backend>(
     let prior_kind = PyPriorKind::parse(&config.prior_kind)?;
     let decode_kind = PyDecodeKind::parse(&config.decode_kind)?;
 
-    if matches!(prior_kind, PyPriorKind::Uniform) && !matches!(decode_kind, PyDecodeKind::MddSampling)
+    if matches!(prior_kind, PyPriorKind::Uniform)
+        && !matches!(decode_kind, PyDecodeKind::MddSampling)
     {
         return Err(PyValueError::new_err(
             "prior_kind=uniform needs decode_kind=mdd_sampling: decoding flat logits directly \
@@ -534,7 +535,9 @@ fn run<B: Backend>(
                     load_network::<B, ConsFormerConfig>(dir, &problems, &device)
                         .map_err(|e| load_error(dir, &e))?;
                 (
-                    Box::new(NetworkPrior::<ConsFormer<B>, ConsFormerBatch<B>>::new(network)),
+                    Box::new(NetworkPrior::<ConsFormer<B>, ConsFormerBatch<B>>::new(
+                        network,
+                    )),
                     network_config.domain_size,
                 )
             }
@@ -543,9 +546,11 @@ fn run<B: Backend>(
                 // variant would use, so take it from the checkpoint's config when one is given
                 // (its weights are not loaded); otherwise cover the problems' own values.
                 let domain_size = match checkpoint_dir {
-                    Some(dir) => ConsFormerConfig::load(dir.join("config.json"))
-                        .map_err(|e| load_error(dir, &e))?
-                        .domain_size,
+                    Some(dir) => {
+                        ConsFormerConfig::load(dir.join("config.json"))
+                            .map_err(|e| load_error(dir, &e))?
+                            .domain_size
+                    }
                     None => UniformPrior::domain_size_covering(&problems),
                 };
                 (Box::new(UniformPrior::new(domain_size)), domain_size)
@@ -646,7 +651,12 @@ fn chunked_run<B: Backend>(
             let decode_op = decode_op_builder();
             let chunk_start = std::time::Instant::now();
             let chunk_solutions = nls.run(chunk, decode_op.as_ref(), budget, chunk_seed);
-            log_chunk_summary(chunk_idx, chunks.len(), &chunk_solutions, chunk_start.elapsed());
+            log_chunk_summary(
+                chunk_idx,
+                chunks.len(),
+                &chunk_solutions,
+                chunk_start.elapsed(),
+            );
             progress.inc(chunk_solutions.len() as u64);
             chunk_solutions
         },
@@ -666,9 +676,18 @@ fn chunked_run<B: Backend>(
 /// `elapsed` is the wall-clock time this specific chunk's `nls.run` call took, not summed across
 /// `chunk_solutions` -- those may individually report a smaller `runtime` (whichever iteration
 /// they were decided on), and summing them would double-count the shared search loop.
-fn log_chunk_summary(chunk_idx: usize, total_chunks: usize, chunk_solutions: &[Solution], elapsed: Duration) {
+fn log_chunk_summary(
+    chunk_idx: usize,
+    total_chunks: usize,
+    chunk_solutions: &[Solution],
+    elapsed: Duration,
+) {
     log_status_counts(
-        &format!("chunk {}/{total_chunks} done in {:.1}s", chunk_idx + 1, elapsed.as_secs_f64()),
+        &format!(
+            "chunk {}/{total_chunks} done in {:.1}s",
+            chunk_idx + 1,
+            elapsed.as_secs_f64()
+        ),
         chunk_solutions,
     );
 }

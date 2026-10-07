@@ -24,18 +24,23 @@ pub fn run_pulled<T: Send>(
     max_workers: usize,
     task: impl Fn(usize) -> T + Sync,
 ) -> Vec<T> {
-    let workers = max_workers.min(total).min(pool.current_num_threads()).max(1);
+    let workers = max_workers
+        .min(total)
+        .min(pool.current_num_threads())
+        .max(1);
     let next = AtomicUsize::new(0);
     let slots: Vec<Mutex<Option<T>>> = (0..total).map(|_| Mutex::new(None)).collect();
     pool.scope(|scope| {
         for _ in 0..workers {
-            scope.spawn(|_| loop {
-                let idx = next.fetch_add(1, Ordering::Relaxed);
-                if idx >= total {
-                    break;
+            scope.spawn(|_| {
+                loop {
+                    let idx = next.fetch_add(1, Ordering::Relaxed);
+                    if idx >= total {
+                        break;
+                    }
+                    let result = task(idx);
+                    *slots[idx].lock().expect("result slot lock poisoned") = Some(result);
                 }
-                let result = task(idx);
-                *slots[idx].lock().expect("result slot lock poisoned") = Some(result);
             });
         }
     });
@@ -52,8 +57,8 @@ pub fn run_pulled<T: Send>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
     use std::sync::atomic::AtomicUsize;
+    use std::sync::mpsc;
 
     fn pool(threads: usize) -> ThreadPool {
         rayon::ThreadPoolBuilder::new()
