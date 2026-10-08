@@ -1111,8 +1111,7 @@ mod test_among {
 
     #[test]
     fn the_initial_relaxation_never_loses_a_solution() {
-        // Width 1 keeps the first relaxation, with no splitting and no merging. This part of the
-        // sweep does not depend on the engine issue of the ignored test below.
+        // Width 1 keeps the first relaxation, with no splitting and no merging.
         let mut rng = Lcg(77);
         for _ in 0..200 {
             let n = 2 + rng.below(4) as usize;
@@ -1145,10 +1144,9 @@ mod test_among {
     }
 
     #[test]
-    #[ignore = "needs the dead-edge fix in Mdd::merge_nodes_with_flag, see the task \"Mdd merging reads dead edges\""]
     fn merging_nodes_keeps_the_edges_of_the_merged_node() {
-        // Smallest instance found by search: with width 3 the solution [0, 0, 1] is lost, because
-        // `merge_nodes_with_flag` takes the removed edges of the target node for live ones.
+        // Smallest instance found by search. `merge_nodes_with_flag` used to take the removed
+        // edges of the target node for live ones, which lost the solution [0, 0, 1] at width 3.
         let domains = [dom(3), dom(3), dom(2)];
         let (problem, _) = full(&domains, &[1], 0, 1);
         let got = accepted(&compile(problem, vec![0, 1, 2], 3));
@@ -1156,11 +1154,9 @@ mod test_among {
     }
 
     #[test]
-    #[ignore = "needs the dead-edge fix in Mdd::merge_nodes_with_flag, see the task \"Mdd merging reads dead edges\""]
     fn relaxed_mdds_never_lose_a_solution() {
         // For random instances and several width budgets, every solution of the oracle must be
-        // accepted: a relaxation may accept more, never less. Fails today for widths of 3 and
-        // more, because merging nodes reads edges that were already removed.
+        // accepted: a relaxation may accept more, never less.
         let mut rng = Lcg(77);
         for _ in 0..200 {
             let n = 2 + rng.below(4) as usize;

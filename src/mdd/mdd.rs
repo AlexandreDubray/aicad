@@ -815,11 +815,17 @@ impl Mdd {
             let mut existing_children = FxHashMap::<ValueIndex, NodeIndex>::default();
             for i in 0..self[into].number_children() {
                 let edge = self[into].child_edge_at(i);
+                if !self[edge].is_active() {
+                    continue;
+                }
                 existing_children.insert(self[edge].assignment(), self[edge].to());
             }
 
             for i in 0..self[from].number_children() {
                 let edge = self[from].child_edge_at(i);
+                if !self[edge].is_active() {
+                    continue;
+                }
                 let assignment = self[edge].assignment();
                 let child = self[edge].to();
                 match existing_children.get(&assignment).copied() {
@@ -1761,6 +1767,41 @@ pub mod test_mdd {
                 mdd.count_solutions(),
                 true_count
             );
+        }
+    }
+
+    #[test]
+    fn merging_does_not_read_removed_edges() {
+        // Three variables with the domain {0, 1, 2}, and at least two of them take a value in
+        // {0, 1}. With the order [2, 1, 0] and no width limit, `merge_nodes_with_flag` used to
+        // take the edges that a split had removed for live ones of the node it merged into,
+        // and the solutions [2, 0, 0] and [2, 0, 1] disappeared from the MDD.
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(3, vec![0, 1, 2], None);
+        at_least(&mut problem, vars, vec![0, 1], 2);
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mut mdd = Mdd::new(
+            Arc::clone(&problem),
+            OrderingHeuristic::Custom(vec![2, 1, 0]),
+            MergeHeuristic::LessRelaxed,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
+        mdd.refine(usize::MAX);
+        let solutions = get_all_solutions(&mdd);
+        for x in 0..3 {
+            for y in 0..3 {
+                for z in 0..3 {
+                    let assignment = vec![x, y, z];
+                    let satisfied = assignment.iter().filter(|&&v| v < 2).count() >= 2;
+                    assert_eq!(
+                        is_solution(assignment.clone(), &solutions),
+                        satisfied,
+                        "{assignment:?}"
+                    );
+                }
+            }
         }
     }
 }

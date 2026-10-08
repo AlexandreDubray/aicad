@@ -362,8 +362,8 @@ mod test_sum {
     /// Like `compile` with `usize::MAX`, then runs the propagation again until nothing changes.
     ///
     /// `Mdd::refine` propagates only one pass after its last split, so an MDD can keep paths that
-    /// a second pass would remove (see the ignored test below and the task "MDD propagation is
-    /// not iterated to a fixpoint"). The exactness tests need the fixpoint, because they check
+    /// a second pass would remove (see the task "MDD propagation is not iterated to a
+    /// fixpoint"). The exactness tests need the fixpoint, because they check
     /// what the constraint rules out, not how many passes the engine runs.
     fn settled(problem: Problem, order: Vec<usize>) -> Mdd {
         let mut mdd = compile(problem, order, usize::MAX);
@@ -1053,10 +1053,8 @@ mod test_sum {
     }
 
     #[test]
-    #[ignore = "known engine limitation: propagation is one pass (see task note)"]
-    fn refine_alone_leaves_no_path_that_another_pass_would_remove() {
-        // x, y in {0, 10}, x + y = 5. After the first pass only the edges with value 0 survive,
-        // which sum to 0; a second pass notices it and empties the MDD.
+    fn a_target_between_the_sums_of_the_edges_is_unsat() {
+        // x, y in {0, 10}, x + y = 5: no pair sums to 5, so the MDD must be empty.
         let domains = [vec![0, 10], vec![0, 10]];
         let (problem, _) = full(&domains, 5);
         let mdd = settled(problem, vec![0, 1]);
