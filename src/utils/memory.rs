@@ -48,7 +48,7 @@ impl MemoryReport {
 
         // Sort by total_bytes descending.
         let mut rows: Vec<(&str, &TypeStats)> = self.by_type.iter().map(|(k, v)| (*k, v)).collect();
-        rows.sort_by(|a, b| b.1.total_bytes.cmp(&a.1.total_bytes));
+        rows.sort_by_key(|b| std::cmp::Reverse(b.1.total_bytes));
 
         let name_width = rows.iter().map(|(n, _)| n.len()).max().unwrap_or(4).max(4);
 
