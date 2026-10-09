@@ -59,7 +59,6 @@ pub fn record(value: serde_json::Value) {
 /// ```ignore
 /// data_log!("mdd_entropy", problem_idx = idx, row = row, var = v, phase = "before", entropy = h);
 /// ```
-#[macro_export]
 macro_rules! data_log {
     ($event:expr, $($key:ident = $value:expr),+ $(,)?) => {
         if $crate::diagnostics::is_enabled() {
@@ -75,3 +74,5 @@ macro_rules! data_log {
         }
     };
 }
+
+pub(crate) use data_log;

@@ -504,7 +504,7 @@ fn run_training_mdd<B: AutodiffBackend>(
     let t = Instant::now();
     let train_dataset =
         ConsFormerMddDataset::<B>::new(problems, &arena, compilation.clone(), data_config, &device);
-    crate::data_log!(
+    crate::diagnostics::data_log!(
         "mdd_dataset_build",
         split = "train",
         num_problems = train_dataset.len(),
@@ -519,7 +519,7 @@ fn run_training_mdd<B: AutodiffBackend>(
         data_config,
         &device,
     );
-    crate::data_log!(
+    crate::diagnostics::data_log!(
         "mdd_dataset_build",
         split = "valid",
         num_problems = validation_dataset.len(),

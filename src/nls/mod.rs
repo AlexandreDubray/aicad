@@ -78,10 +78,6 @@ impl Solution {
         &self.solution
     }
 
-    pub fn is_sat(&self) -> bool {
-        self.solution.is_some()
-    }
-
     pub fn status(&self) -> Status {
         self.status
     }

@@ -322,7 +322,7 @@ where
         // two were otherwise on the same footing.
         let epoch_loss = epoch_loss_sum / epoch_batches.max(1) as f32;
         log::info!("epoch {epoch}: loss = {epoch_loss} ({epoch_rt} seconds)");
-        crate::data_log!(
+        crate::diagnostics::data_log!(
             "train_epoch",
             epoch = epoch,
             t_batch = t_batch,
@@ -398,7 +398,7 @@ where
                     1.0 - overall
                 }
             };
-            crate::data_log!(
+            crate::diagnostics::data_log!(
                 "valid_epoch",
                 epoch = epoch,
                 t_batch = t_valid_batch,

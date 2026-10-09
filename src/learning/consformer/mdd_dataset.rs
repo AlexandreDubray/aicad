@@ -26,7 +26,11 @@ use super::{ConsFormerDataConfig, ConsFormerInputs};
 #[derive(Clone, Debug)]
 pub struct MddCompilationConfig {
     pub ordering: OrderingHeuristic,
+    /// Not read today: the MDDs are compiled with unbounded width, which never merges.
+    #[allow(dead_code)]
     pub merge: MergeHeuristic,
+    /// Not read today, for the same reason as `merge`.
+    #[allow(dead_code)]
     pub select: SelectHeuristic,
     pub max_width: usize,
 }
@@ -117,17 +121,10 @@ pub struct ConsFormerMddSample<B: Backend> {
     mdds: Arc<Vec<CompiledConstraint>>,
 }
 
+#[cfg(test)]
 impl<B: Backend> ConsFormerMddSample<B> {
     pub fn problem(&self) -> &Arc<Problem> {
         &self.problem
-    }
-
-    pub fn attention_mask(&self) -> &Tensor<B, 2, Bool> {
-        &self.attention_mask
-    }
-
-    pub fn var_mask(&self) -> &Tensor<B, 1, Bool> {
-        &self.var_mask
     }
 
     pub fn mdds(&self) -> &Arc<Vec<CompiledConstraint>> {
