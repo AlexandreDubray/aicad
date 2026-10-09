@@ -818,11 +818,17 @@ impl Mdd {
             let mut existing_children = FxHashMap::<ValueIndex, NodeIndex>::default();
             for i in 0..self[into].number_children() {
                 let edge = self[into].child_edge_at(i);
+                if !self[edge].is_active() {
+                    continue;
+                }
                 existing_children.insert(self[edge].assignment(), self[edge].to());
             }
 
             for i in 0..self[from].number_children() {
                 let edge = self[from].child_edge_at(i);
+                if !self[edge].is_active() {
+                    continue;
+                }
                 let assignment = self[edge].assignment();
                 let child = self[edge].to();
                 match existing_children.get(&assignment).copied() {
