@@ -24,6 +24,12 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
+  layering:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/check_layering.py
+
   clippy:
     runs-on: ubuntu-latest
     steps:
