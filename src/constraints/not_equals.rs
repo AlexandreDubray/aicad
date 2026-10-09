@@ -287,6 +287,7 @@ impl ConstraintProperty for NotEqualsProperty {
 #[cfg(test)]
 mod test_not_equals {
     use super::NotEqualsProperty;
+    use crate::constraints::*;
     use crate::constraints::{
         AllDifferent, Constraint, ConstraintProperty, ConstraintShapeKey, NotEquals,
     };

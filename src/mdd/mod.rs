@@ -4,6 +4,7 @@ pub mod heuristics;
 pub mod layer;
 #[allow(clippy::module_inception)]
 pub mod mdd;
+mod memory;
 pub mod node;
 pub mod structure;
 pub mod view;

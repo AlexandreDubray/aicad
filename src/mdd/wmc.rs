@@ -200,8 +200,9 @@ pub fn partial_backward<T: MddViewWithOrder>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constraints::{all_different, not_equals};
     use crate::mdd::heuristics::{MergeHeuristic, OrderingHeuristic, SelectHeuristic};
-    use crate::modelling::{ConstraintIndex, Problem, all_different, not_equals};
+    use crate::modelling::{ConstraintIndex, Problem};
     use std::sync::Arc;
 
     fn build_mdd(problem: Arc<Problem>, constraints: &[ConstraintIndex]) -> Mdd {

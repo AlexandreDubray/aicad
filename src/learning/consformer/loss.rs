@@ -417,8 +417,9 @@ mod mdd_loss_tests {
     use burn::data::dataloader::batcher::Batcher;
     use burn::data::dataset::Dataset;
 
+    use crate::constraints::{all_different, not_equals};
     use crate::mdd::MddArena;
-    use crate::modelling::{Problem, all_different, not_equals};
+    use crate::modelling::Problem;
 
     use super::super::ConsFormerDataConfig;
     use super::super::mdd_dataset::{

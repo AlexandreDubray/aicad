@@ -1,8 +1,7 @@
 use super::heuristics::*;
+use super::memory::MemoryReport;
 use super::*;
-use crate::constraints::*;
 use crate::modelling::*;
-use crate::utils::MemoryReport;
 
 use num_bigint::BigUint;
 

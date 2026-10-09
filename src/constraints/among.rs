@@ -317,6 +317,7 @@ impl ConstraintProperty for AmongProperty {
 #[cfg(test)]
 mod test_among {
     use super::AmongProperty;
+    use crate::constraints::*;
     use crate::constraints::{
         AllDifferent, Among, Constraint, ConstraintProperty, ConstraintShapeKey,
     };

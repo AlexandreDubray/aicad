@@ -97,7 +97,7 @@ impl<B: Backend> PriorHeuristic<B> for UniformPrior {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modelling::not_equals;
+    use crate::constraints::not_equals;
     use burn::backend::ndarray::{NdArray, NdArrayDevice};
 
     fn problem_over(domain: Vec<isize>) -> Arc<Problem> {

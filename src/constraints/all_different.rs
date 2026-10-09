@@ -406,6 +406,7 @@ impl std::fmt::Display for AllDifferentProperty {
 #[cfg(test)]
 mod test_all_diff {
     use super::AllDifferentProperty;
+    use crate::constraints::*;
     use crate::constraints::{
         AllDifferent, Constraint, ConstraintProperty, ConstraintShapeKey, NotEquals,
     };

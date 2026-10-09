@@ -342,7 +342,7 @@ impl<B: Backend> DecodingOperator<B> for MddSamplingDecode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modelling::all_different;
+    use crate::constraints::all_different;
     use burn::backend::ndarray::NdArray;
 
     /// `size`-variable clique via a single `all_different` over `colours < size` values -- always

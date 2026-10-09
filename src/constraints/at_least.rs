@@ -345,6 +345,7 @@ impl ConstraintProperty for AtLeastProperty {
 #[cfg(test)]
 mod test_at_least {
     use super::AtLeastProperty;
+    use crate::constraints::*;
     use crate::constraints::{
         AllDifferent, AtLeast, Constraint, ConstraintProperty, ConstraintShapeKey,
     };

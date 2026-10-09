@@ -201,8 +201,9 @@ pub fn belief_propagation<T: MddViewWithOrder>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constraints::{gcc, not_equals};
     use crate::mdd::heuristics::{MergeHeuristic, OrderingHeuristic, SelectHeuristic};
-    use crate::modelling::{ConstraintIndex, Problem, gcc, not_equals};
+    use crate::modelling::{ConstraintIndex, Problem};
     use std::sync::Arc;
 
     /// Same helper as `super::tests::build_mdd` -- duplicated locally rather than exposed across

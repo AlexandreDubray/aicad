@@ -290,7 +290,7 @@ pub fn compile_constraint(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modelling::{all_different, gcc, not_equals};
+    use crate::constraints::{all_different, gcc, not_equals};
 
     #[test]
     fn structurally_identical_constraints_from_different_scopes_share_one_arena_entry() {

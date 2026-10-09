@@ -449,6 +449,7 @@ impl ConstraintProperty for GccProperty {
 #[cfg(test)]
 mod test_gcc {
     use super::GccProperty;
+    use crate::constraints::*;
     use crate::constraints::{
         AllDifferent, Constraint, ConstraintProperty, ConstraintShapeKey, Gcc,
     };

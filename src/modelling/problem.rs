@@ -1,6 +1,5 @@
 use super::variable::Variable;
 use super::*;
-use crate::constraints::Constraint;
 
 ///This structure represent a constrained optimisation problem.
 #[derive(Default)]

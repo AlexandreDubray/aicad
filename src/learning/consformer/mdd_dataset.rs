@@ -347,7 +347,7 @@ impl<B: Backend> Batcher<B, ConsFormerMddSample<B>, ConsFormerMddBatch<B>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modelling::{all_different, among, not_equals, sum};
+    use crate::constraints::{all_different, among, not_equals, sum};
 
     /// `real_domain_size` is what `problem[variable].domain_size()` used to be before the arena
     /// split -- since the group's structure is now compiled against the full nominal

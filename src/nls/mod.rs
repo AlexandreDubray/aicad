@@ -398,7 +398,7 @@ impl<B: Backend> NeuralLocalSearch<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modelling::not_equals;
+    use crate::constraints::not_equals;
     use burn::backend::ndarray::NdArray;
 
     /// A `DecodingOperator` whose `detect_unsat` always answers a fixed value, regardless of which

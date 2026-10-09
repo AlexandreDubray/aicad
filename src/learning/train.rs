@@ -548,10 +548,11 @@ mod test_horizon_checkpoint_layout {
     use burn::backend::ndarray::NdArrayDevice;
     use burn::backend::{Autodiff, NdArray};
 
+    use crate::constraints::not_equals;
     use crate::learning::consformer::{
         ConsFormerBatcher, ConsFormerConfig, ConsFormerDataset, ConsFormerLoss,
     };
-    use crate::modelling::{Problem, not_equals};
+    use crate::modelling::Problem;
     use crate::nls::load_network;
 
     /// End-to-end: a horizon checkpoint must be its own self-contained, loadable directory --

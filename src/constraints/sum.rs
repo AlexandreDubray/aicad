@@ -293,6 +293,7 @@ impl ConstraintProperty for SumProperty {
 #[cfg(test)]
 mod test_sum {
     use super::SumProperty;
+    use crate::constraints::*;
     use crate::constraints::{
         AllDifferent, Constraint, ConstraintProperty, ConstraintShapeKey, Sum,
     };

@@ -497,6 +497,7 @@ impl ConstraintProperty for RegularProperty {
 #[cfg(test)]
 mod test_regular {
     use super::RegularProperty;
+    use crate::constraints::*;
     use crate::constraints::{
         AllDifferent, Constraint, ConstraintProperty, ConstraintShapeKey, Regular,
     };

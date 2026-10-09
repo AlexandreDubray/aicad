@@ -1,4 +1,4 @@
-use crate::constraints::Constraint;
+use crate::modelling::Constraint;
 
 use std::collections::HashMap;
 
