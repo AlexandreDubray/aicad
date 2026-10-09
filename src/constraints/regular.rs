@@ -194,17 +194,27 @@ impl Regular {
         alphabet.sort_unstable();
         let num_states = transitions.len();
         if initial_state >= num_states {
-            panic!("Regular: the initial state {initial_state} is not a state of the automaton ({num_states} states)");
+            panic!(
+                "Regular: the initial state {initial_state} is not a state of the automaton ({num_states} states)"
+            );
         }
         if !accepting_states.iter().all(|&state| state < num_states) {
-            panic!("Regular: an accepting state is not a state of the automaton ({num_states} states)");
+            panic!(
+                "Regular: an accepting state is not a state of the automaton ({num_states} states)"
+            );
         }
         for (state, row) in transitions.iter().enumerate() {
             if row.len() < alphabet.len() {
-                panic!("Regular: state {state} has {} transitions for an alphabet of {} values", row.len(), alphabet.len());
+                panic!(
+                    "Regular: state {state} has {} transitions for an alphabet of {} values",
+                    row.len(),
+                    alphabet.len()
+                );
             }
             if !row.iter().flatten().all(|&next| next < num_states) {
-                panic!("Regular: a transition of state {state} leads outside the automaton ({num_states} states)");
+                panic!(
+                    "Regular: a transition of state {state} leads outside the automaton ({num_states} states)"
+                );
             }
         }
         let val_to_symbol = Arc::new(
