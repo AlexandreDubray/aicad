@@ -74,7 +74,7 @@ use std::sync::Arc;
 /// means no path has assigned either variable yet, which is the identity of `merge`. `merge` is
 /// the union, so a merged node over-approximates both parents.
 #[derive(Clone, deepsize::DeepSizeOf)]
-pub struct NotEqualsProperty {
+struct NotEqualsProperty {
     set: Bitset,
     map: Arc<FxHashMap<isize, usize>>,
 }

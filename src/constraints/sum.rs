@@ -76,7 +76,7 @@ use std::hash::Hasher;
 /// `merge`. `merge` takes the smallest minimum and the largest maximum, so a merged node
 /// over-approximates both parents. See the [module documentation](self).
 #[derive(Clone, deepsize::DeepSizeOf)]
-pub struct SumProperty {
+struct SumProperty {
     min: isize,
     max: isize,
 }

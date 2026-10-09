@@ -101,7 +101,7 @@ use std::sync::Arc;
 /// it is recognised by `min > max`. `merge` takes the smallest minimum and the largest maximum, so
 /// a merged node over-approximates both parents. See the [module documentation](self).
 #[derive(Clone, deepsize::DeepSizeOf)]
-pub struct AtLeastProperty {
+struct AtLeastProperty {
     /// The set $V$ of counted values.
     values: Arc<FxHashSet<isize>>,
     /// The bound at which the counts are capped.
