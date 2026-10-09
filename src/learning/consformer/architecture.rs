@@ -1,12 +1,9 @@
-//! ConsFormer architecture, ported from the official repository
-//! https://github.com/khalil-research/ConsFormer
-
 use burn::config::Config;
 use burn::module::{Module, Param};
 use burn::nn::{
     Dropout, DropoutConfig, EmbeddingConfig, Gelu, LayerNorm, LayerNormConfig, Linear, LinearConfig,
 };
-use burn::tensor::{Bool, Int, Tensor, backend::Backend};
+use burn::tensor::{backend::Backend, Bool, Int, Tensor};
 
 use super::ConsFormerInputs;
 use crate::learning::*;
