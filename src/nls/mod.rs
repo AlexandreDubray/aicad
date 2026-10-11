@@ -257,12 +257,20 @@ impl<B: Backend> NeuralLocalSearch<B> {
     /// fresh `decode_op` for each `run` call; callers that want to amortize compilation across
     /// several calls (e.g. training-time batches of structurally related problems) can instead
     /// build one `decode_op` once and pass the same instance to every call.
+    ///
+    /// If `progress` is given, `run` reports to it while it works: the bar is
+    /// advanced by one each time a problem of this call is solved, and its message shows the
+    /// current iteration. Problems that are *not* solved are not reported -- the caller advances
+    /// the bar for those once the call returns (they are the solutions with `Status::Unknown`),
+    /// so the bar can be shared by several concurrent calls. With one big batch this is what
+    /// makes the bar move: it otherwise only ticks when a whole call finishes.
     pub fn run(
         &self,
         problems: &[Arc<Problem>],
         decode_op: &dyn DecodingOperator<B>,
         budget: Budget,
         seed: u64,
+        progress: Option<&indicatif::ProgressBar>,
     ) -> Vec<Solution> {
         let mut rng = StdRng::seed_from_u64(seed);
         let mut stop = StoppingCriterion::new(budget);
@@ -340,7 +348,13 @@ impl<B: Backend> NeuralLocalSearch<B> {
                         solution,
                         status,
                     });
+                    if let Some(bar) = progress {
+                        bar.inc(1);
+                    }
                 }
+            }
+            if let Some(bar) = progress {
+                bar.set_message(format!("Solving instances (iteration {})", stop.iters_done));
             }
 
             if stop.iters_done.is_multiple_of(Self::COMPACTION_INTERVAL) {
