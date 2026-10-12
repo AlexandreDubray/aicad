@@ -66,12 +66,6 @@ pub fn set_verbosity_trace(py: Python<'_>) -> PyResult<()> {
     set_level(py, LEVEL_TRACE)
 }
 
-#[pyfunction]
-pub fn enable_console_logging(py: Python<'_>) -> PyResult<()> {
-    py.import("logging")?.call_method0("basicConfig")?;
-    Ok(())
-}
-
 /// Turns on `data_log!` recording for the rest of the process (or until `disable_data_log` is
 /// called): every enabled `data_log!` call site writes one JSON object per line to `path`,
 /// truncating it first. Unlike `set_verbosity_*`, this isn't about `log::*!` text records at

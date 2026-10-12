@@ -14,9 +14,8 @@ pub use learn::{
     train_consformer_mdd,
 };
 pub use logging::{
-    disable_data_log, enable_console_logging, enable_data_log, set_verbosity_debug,
-    set_verbosity_error, set_verbosity_info, set_verbosity_off, set_verbosity_trace,
-    set_verbosity_warning,
+    disable_data_log, enable_data_log, set_verbosity_debug, set_verbosity_error,
+    set_verbosity_info, set_verbosity_off, set_verbosity_trace, set_verbosity_warning,
 };
 pub use nls::{
     PyDecodeKind, PyDestroyKind, PyNetworkKind, PyPriorKind, PySolution, PySolveConfig, PyStatus,
@@ -25,7 +24,7 @@ pub use nls::{
 pub use problem::PyProblem;
 
 #[pymodule]
-fn pyaicad(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Scope pyo3-log to *this* crate's own log records only. The blanket
     // `pyo3_log::init()` forwards every crate's log records -- including
     // internal `log::*!` calls from dependencies (burn, its rayon-backed
@@ -43,7 +42,6 @@ fn pyaicad(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         .install()
         .expect("pyo3-log logger already installed");
 
-    logging::enable_console_logging(py)?;
     // Logging is opt-in: silent until a `set_verbosity_*` function below is
     // called from Python, like a CLI tool with no `-v` passed.
     logging::disable_by_default(py)?;
@@ -74,7 +72,6 @@ fn pyaicad(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_verbosity_info, m)?)?;
     m.add_function(wrap_pyfunction!(set_verbosity_debug, m)?)?;
     m.add_function(wrap_pyfunction!(set_verbosity_trace, m)?)?;
-    m.add_function(wrap_pyfunction!(enable_console_logging, m)?)?;
     m.add_function(wrap_pyfunction!(enable_data_log, m)?)?;
     m.add_function(wrap_pyfunction!(disable_data_log, m)?)?;
     Ok(())

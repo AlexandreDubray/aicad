@@ -122,6 +122,23 @@ impl PyProblem {
         Ok(())
     }
 
+    fn is_solution(&self, solution: Vec<isize>) -> bool {
+        self.inner.is_solution(&solution)
+    }
+
+    fn satisfied_fraction(&self, solution: Vec<isize>) -> f64 {
+        let total = self.inner.number_constraints();
+        if total == 0 {
+            return 1.0;
+        }
+        let satisfied = self
+            .inner
+            .iter_constraints()
+            .filter(|&c| self.inner[c].is_satisfied(&solution))
+            .count();
+        satisfied as f64 / total as f64
+    }
+
     // --- introspection: read-only, always available regardless of sharing --- //
 
     fn number_variables(&self) -> usize {

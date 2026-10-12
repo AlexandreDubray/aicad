@@ -306,7 +306,15 @@ type ProblemSplit = (Vec<Arc<Problem>>, Vec<Arc<Problem>>, Vec<Arc<Problem>>);
 /// full problem set that `train_model` wants for e.g. constraint-satisfaction model selection),
 /// while `train`/`validation` are a random 80/20 split of a shuffled copy. Shared by every
 /// `run_training_*` function so the split logic can't drift between recipes.
-fn split_train_validation(mut problems: Vec<Arc<Problem>>) -> ProblemSplit {
+fn split_train_validation(
+    mut problems: Vec<Arc<Problem>>,
+    validation: Option<Vec<Arc<Problem>>>,
+) -> ProblemSplit {
+    if let Some(validation_problems) = validation {
+        let mut all_problems = problems.clone();
+        all_problems.extend(validation_problems.iter().cloned());
+        return (all_problems, problems, validation_problems);
+    }
     let all_problems = problems.clone();
     let training_size = (problems.len() as f64 * 0.8).round() as usize;
     with_rng(|rng| problems.shuffle(rng));
@@ -356,14 +364,18 @@ fn enable_timing_log(checkpoint_dir: &Path) -> Option<TimingLogGuard> {
 /// forward each record to Python -- but the GIL isn't free again until this function returns, so
 /// every log line was queued up and only delivered in a burst at the very end.
 #[pyfunction]
+#[pyo3(signature = (problems, config, training, checkpoint_dir, validation=None))]
 pub fn train_consformer(
     py: Python<'_>,
     problems: Vec<PyRef<PyProblem>>,
     config: &PyConsFormerConfig,
     training: &PyTrainingConfig,
     checkpoint_dir: String,
+    validation: Option<Vec<PyRef<PyProblem>>>,
 ) -> PyResult<()> {
     let problems: Vec<Arc<Problem>> = problems.iter().map(|p| p.arc()).collect();
+    let validation: Option<Vec<Arc<Problem>>> =
+        validation.map(|v| v.iter().map(|p| p.arc()).collect());
     let network_config: ConsFormerConfig = config.into();
     let training_config: TrainingConfig = training.into();
     let checkpoint_dir = PathBuf::from(checkpoint_dir);
@@ -372,6 +384,7 @@ pub fn train_consformer(
         dispatch_backend!(
             run_training,
             problems,
+            validation,
             network_config,
             training_config,
             &checkpoint_dir,
@@ -384,6 +397,7 @@ pub fn train_consformer(
 fn run_training<B: AutodiffBackend>(
     device: B::Device,
     problems: Vec<Arc<Problem>>,
+    validation: Option<Vec<Arc<Problem>>>,
     network_config: ConsFormerConfig,
     training_config: TrainingConfig,
     checkpoint_dir: &Path,
@@ -391,7 +405,8 @@ fn run_training<B: AutodiffBackend>(
     prepare_checkpoint_dir(checkpoint_dir, &network_config)?;
     let _timing_log = enable_timing_log(checkpoint_dir);
 
-    let (all_problems, problems, validation_problems) = split_train_validation(problems);
+    let (all_problems, problems, validation_problems) =
+        split_train_validation(problems, validation);
     let train_dataset = ConsFormerDataset::<B>::new(problems, &device);
     let validation_dataset =
         ConsFormerDataset::<B::InnerBackend>::new(validation_problems, &device);
@@ -441,7 +456,8 @@ fn run_training<B: AutodiffBackend>(
 #[pyo3(signature = (problems, config, training, checkpoint_dir,
         pyordering=PyOrderingHeuristic::MinDomMaxLinked(),
         pymerge=PyMergeHeuristic::LessRelaxed,
-        pyselect=PySelectHeuristic::Greedy))]
+        pyselect=PySelectHeuristic::Greedy,
+        validation=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn train_consformer_mdd(
     py: Python<'_>,
@@ -452,8 +468,11 @@ pub fn train_consformer_mdd(
     pyordering: PyOrderingHeuristic,
     pymerge: PyMergeHeuristic,
     pyselect: PySelectHeuristic,
+    validation: Option<Vec<PyRef<PyProblem>>>,
 ) -> PyResult<()> {
     let problems: Vec<Arc<Problem>> = problems.iter().map(|p| p.arc()).collect();
+    let validation: Option<Vec<Arc<Problem>>> =
+        validation.map(|v| v.iter().map(|p| p.arc()).collect());
     let network_config: ConsFormerConfig = config.into();
     let training_config: TrainingConfig = training.into();
     let checkpoint_dir = PathBuf::from(checkpoint_dir);
@@ -468,6 +487,7 @@ pub fn train_consformer_mdd(
         dispatch_backend!(
             run_training_mdd,
             problems,
+            validation,
             network_config,
             training_config,
             compilation,
@@ -485,6 +505,7 @@ pub fn train_consformer_mdd(
 fn run_training_mdd<B: AutodiffBackend>(
     device: B::Device,
     problems: Vec<Arc<Problem>>,
+    validation: Option<Vec<Arc<Problem>>>,
     network_config: ConsFormerConfig,
     training_config: TrainingConfig,
     compilation: MddCompilationConfig,
@@ -493,7 +514,8 @@ fn run_training_mdd<B: AutodiffBackend>(
     prepare_checkpoint_dir(checkpoint_dir, &network_config)?;
     let _timing_log = enable_timing_log(checkpoint_dir);
 
-    let (all_problems, problems, validation_problems) = split_train_validation(problems);
+    let (all_problems, problems, validation_problems) =
+        split_train_validation(problems, validation);
 
     let data_config = ConsFormerDataConfig::from(&network_config);
     // Shared across both datasets so a constraint group shape compiled for training reuses its
