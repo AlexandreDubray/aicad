@@ -24,7 +24,8 @@ use burn::tensor::backend::Backend;
 use burn::tensor::{Int, Tensor};
 
 use rand::rngs::StdRng;
-use rand::SeedableRng;
+use rand::{RngExt, SeedableRng};
+use rayon::prelude::*;
 
 use crate::learning::NetworkConfig;
 use crate::modelling::Problem;
@@ -208,8 +209,9 @@ fn resolve_status<B: Backend>(
     decode_op: &dyn DecodingOperator<B>,
     problem: &Arc<Problem>,
     row: &[isize],
+    solved: bool,
 ) -> Option<(Status, Option<Vec<isize>>)> {
-    if problem.is_solution(row) {
+    if solved {
         Some((Status::Satisfiable, Some(row.to_owned())))
     } else if decode_op.detect_unsat(problem) {
         Some((Status::Unsatisfiable, None))
@@ -291,26 +293,36 @@ impl<B: Backend> NeuralLocalSearch<B> {
         let mut rows = to_rows(&assignments, problems.len(), n);
 
         while !stop.is_exhausted() && solutions.iter().any(Option::is_none) {
-            let mut destroy_mask_data = vec![0i64; rows.len() * n];
-            for (row_idx, row) in rows.iter().enumerate() {
-                // Frozen: this problem already has a solution, leave its row untouched until it's
-                // compacted out.
-                if solutions[row_idx].is_some() {
-                    continue;
-                }
-                let problem = &active_problems[row_idx];
+            let pending: Vec<bool> = active
+                .iter()
+                .map(|&problem_idx| solutions[problem_idx].is_none())
+                .collect();
+            let seeds: Vec<u64> = (0..rows.len()).map(|_| rng.random::<u64>()).collect();
+            let destroy_op = &self.destroy_op;
+            let destroyed_per_row: Vec<Vec<usize>> = crate::utils::worker_pool().install(|| {
+                rows.par_iter()
+                    .zip(active_problems.par_iter())
+                    .zip(seeds.par_iter())
+                    .zip(pending.par_iter())
+                    .map(|(((row, problem), &seed), &is_pending)| {
+                        if !is_pending {
+                            return Vec::new();
+                        }
+                        let mut row_rng = StdRng::seed_from_u64(seed);
+                        destroy_op.destroy(problem, row, &mut row_rng)
+                    })
+                    .collect()
+            });
 
-                if row_idx == 0 && log::log_enabled!(log::Level::Debug) {
+            let mut destroy_mask_data = vec![0i64; rows.len() * n];
+            for (row_idx, destroyed) in destroyed_per_row.into_iter().enumerate() {
+                if row_idx == 0 && pending[0] && log::log_enabled!(log::Level::Debug) {
+                    let problem = &active_problems[0];
                     log::debug!(
                         "iter {}: problem 0 satisfaction -- {}",
                         stop.iters_done + 1,
-                        satisfaction_report_line(problem, row),
+                        satisfaction_report_line(problem, &rows[0]),
                     );
-                }
-
-                let destroyed = self.destroy_op.destroy(problem, row, &mut rng);
-
-                if row_idx == 0 && log::log_enabled!(log::Level::Debug) {
                     log::debug!(
                         "iter {}: problem 0 destroying -- {}",
                         stop.iters_done + 1,
@@ -334,13 +346,23 @@ impl<B: Backend> NeuralLocalSearch<B> {
 
             stop.tick();
 
+            let solved_now: Vec<bool> = crate::utils::worker_pool().install(|| {
+                rows.par_iter()
+                    .zip(active_problems.par_iter())
+                    .zip(pending.par_iter())
+                    .map(|((row, problem), &is_pending)| is_pending && problem.is_solution(row))
+                    .collect()
+            });
+
             for (local_idx, &problem_idx) in active.iter().enumerate() {
-                if solutions[problem_idx].is_some() {
+                if !pending[local_idx] {
                     continue;
                 }
                 let problem = &active_problems[local_idx];
                 let row = &rows[local_idx];
-                if let Some((status, solution)) = resolve_status(decode_op, problem, row) {
+                if let Some((status, solution)) =
+                    resolve_status(decode_op, problem, row, solved_now[local_idx])
+                {
                     solutions[problem_idx] = Some(Solution {
                         runtime: stop.start.elapsed().as_secs_f64(),
                         compilation_runtime,
@@ -451,8 +473,8 @@ mod tests {
     {
         let problem = not_equals_problem();
         let op = FixedUnsatDecode(true);
-        let (status, solution) =
-            resolve_status(&op, &problem, &[0, 1]).expect("a solving row must resolve to a status");
+        let (status, solution) = resolve_status(&op, &problem, &[0, 1], true)
+            .expect("a solving row must resolve to a status");
         assert!(matches!(status, Status::Satisfiable));
         assert_eq!(solution, Some(vec![0, 1]));
     }
@@ -462,16 +484,101 @@ mod tests {
     ) {
         let problem = not_equals_problem();
         let op = FixedUnsatDecode(true);
-        let (status, solution) = resolve_status(&op, &problem, &[0, 0])
+        let (status, solution) = resolve_status(&op, &problem, &[0, 0], false)
             .expect("an operator-flagged problem must resolve to a status");
         assert!(matches!(status, Status::Unsatisfiable));
         assert_eq!(solution, None);
+    }
+
+    struct CallCounter {
+        calls: std::sync::Mutex<std::collections::HashMap<usize, usize>>,
+    }
+
+    impl DestroyOperator for CallCounter {
+        fn destroy(
+            &self,
+            problem: &Problem,
+            _assignment: &[isize],
+            _rng: &mut StdRng,
+        ) -> Vec<usize> {
+            *self
+                .calls
+                .lock()
+                .unwrap()
+                .entry(problem as *const Problem as usize)
+                .or_default() += 1;
+            Vec::new()
+        }
+    }
+
+    struct Keep;
+
+    impl DecodingOperator<NdArray> for Keep {
+        fn decode(
+            &self,
+            _logits: Tensor<NdArray, 3>,
+            _destroy_mask: Tensor<NdArray, 2, Int>,
+            current: Tensor<NdArray, 2, Int>,
+            _problems: &[Arc<Problem>],
+        ) -> Tensor<NdArray, 2, Int> {
+            current
+        }
+    }
+
+    fn three_binary_variables(unsatisfiable: bool) -> Arc<Problem> {
+        let mut problem = Problem::default();
+        let vars: Vec<_> = (0..3)
+            .map(|_| problem.add_variable(vec![0, 1], None))
+            .collect();
+        if unsatisfiable {
+            crate::modelling::all_different(&mut problem, vars);
+        }
+        Arc::new(problem)
+    }
+
+    #[test]
+    fn unsolved_problems_keep_being_destroyed_after_others_were_compacted_away() {
+        use burn::backend::ndarray::NdArrayDevice;
+
+        let problems = vec![
+            three_binary_variables(false),
+            three_binary_variables(false),
+            three_binary_variables(true),
+            three_binary_variables(true),
+        ];
+        let counter = Arc::new(CallCounter {
+            calls: Default::default(),
+        });
+        struct Shared(Arc<CallCounter>);
+        impl DestroyOperator for Shared {
+            fn destroy(&self, p: &Problem, a: &[isize], rng: &mut StdRng) -> Vec<usize> {
+                self.0.destroy(p, a, rng)
+            }
+        }
+        let search = NeuralLocalSearch::<NdArray>::new(
+            Box::new(UniformPrior::new(2)),
+            Box::new(Shared(counter.clone())),
+            NdArrayDevice::default(),
+        );
+        let budget = Budget {
+            time_limit: Duration::MAX,
+            iteration_limit: 250,
+        };
+        let solutions = search.run(&problems, &Keep, budget, 0, None);
+
+        assert!(solutions[0].solution.is_some() && solutions[1].solution.is_some());
+        assert!(solutions[2].solution.is_none() && solutions[3].solution.is_none());
+        let calls = counter.calls.lock().unwrap();
+        for unsolved in &problems[2..] {
+            let key = Arc::as_ptr(unsolved) as usize;
+            assert_eq!(calls[&key], 250);
+        }
     }
 
     #[test]
     fn resolve_status_returns_none_when_neither_solved_nor_flagged() {
         let problem = not_equals_problem();
         let op = FixedUnsatDecode(false);
-        assert!(resolve_status(&op, &problem, &[0, 0]).is_none());
+        assert!(resolve_status(&op, &problem, &[0, 0], false).is_none());
     }
 }

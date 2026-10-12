@@ -232,15 +232,27 @@ fn destroyed_var_masks(
     init: &[i64],
     n: usize,
 ) -> Vec<bool> {
+    let seeds: Vec<u64> =
+        crate::utils::with_rng(|rng| (0..problems.len()).map(|_| rng.random::<u64>()).collect());
+    let selected: Vec<Vec<usize>> = crate::utils::worker_pool().install(|| {
+        problems
+            .par_iter()
+            .zip(seeds.par_iter())
+            .enumerate()
+            .map(|(i, (problem, &seed))| {
+                let row: Vec<isize> = init[i * n..(i + 1) * n]
+                    .iter()
+                    .map(|&v| v as isize)
+                    .collect();
+                let mut rng = StdRng::seed_from_u64(seed);
+                destroy.select(problem, &row, &mut rng)
+            })
+            .collect()
+    });
+
     let mut masks = vec![false; problems.len() * n];
-    let seed = crate::utils::with_rng(|rng| rng.random::<u64>());
-    let mut rng = StdRng::seed_from_u64(seed);
-    for (i, problem) in problems.iter().enumerate() {
-        let row: Vec<isize> = init[i * n..(i + 1) * n]
-            .iter()
-            .map(|&v| v as isize)
-            .collect();
-        for var in destroy.select(problem, &row, &mut rng) {
+    for (i, vars) in selected.into_iter().enumerate() {
+        for var in vars {
             masks[i * n + var] = true;
         }
     }
