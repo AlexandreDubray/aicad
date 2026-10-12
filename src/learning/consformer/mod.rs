@@ -9,6 +9,7 @@ pub use architecture::ConsFormer;
 use architecture::*;
 pub use dataset::{
     consformer_masks, ConsFormerBatch, ConsFormerBatcher, ConsFormerDataset, ConsFormerSample,
+    TrainingDestroy,
 };
 pub use loss::{ConsFormerLoss, ConsFormerMddLoss, ConstraintLoss};
 pub use mdd_dataset::{

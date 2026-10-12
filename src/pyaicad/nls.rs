@@ -17,6 +17,7 @@ use rand::RngExt;
 use crate::learning::consformer::{
     ConsFormer, ConsFormerBatch, ConsFormerConfig, MddCompilationConfig,
 };
+use crate::learning::consformer::TrainingDestroy;
 use crate::modelling::Problem;
 use crate::nls::decode::{Argmax, DecodingOperator, MddSamplingDecode, Sampling};
 use crate::nls::destroy::{DestroyOperator, RandomDestroy, RelatedDestroy, WorstDestroy};
@@ -117,6 +118,14 @@ impl PyDestroyKind {
             PyDestroyKind::Random => Box::new(RandomDestroy { fraction }),
             PyDestroyKind::Worst => Box::new(WorstDestroy { fraction }),
             PyDestroyKind::Related => Box::new(RelatedDestroy { fraction }),
+        }
+    }
+
+    pub(super) fn training_operator(&self, fraction: f64) -> Option<Arc<dyn TrainingDestroy>> {
+        match self {
+            PyDestroyKind::Random => None,
+            PyDestroyKind::Worst => Some(Arc::new(WorstDestroy { fraction })),
+            PyDestroyKind::Related => Some(Arc::new(RelatedDestroy { fraction })),
         }
     }
 

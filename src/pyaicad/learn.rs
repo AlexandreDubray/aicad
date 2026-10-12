@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 use burn::backend::cuda::{Cuda, CudaDevice};
@@ -19,6 +19,7 @@ use crate::learning::consformer::{
     ConsFormerBatch, ConsFormerBatcher, ConsFormerConfig, ConsFormerDataConfig, ConsFormerDataset,
     ConsFormerLoss, ConsFormerMddBatch, ConsFormerMddBatcher, ConsFormerMddDataset,
     ConsFormerMddLoss, ConsFormerMddSample, ConsFormerSample, MddCompilationConfig,
+    TrainingDestroy,
 };
 use crate::learning::train::{train_model, ModelSelection, TrainingConfig};
 use crate::mdd::MddArena;
@@ -26,6 +27,7 @@ use crate::modelling::Problem;
 use crate::utils::with_rng;
 
 use super::heuristics::{PyMergeHeuristic, PyOrderingHeuristic, PySelectHeuristic};
+use super::nls::PyDestroyKind;
 use super::problem::PyProblem;
 
 #[pyclass]
@@ -172,6 +174,7 @@ pub struct PyTrainingConfig {
     /// How much `model_selection`'s score must improve to count as progress rather than
     /// stagnation. Only used when `early_stopping_patience` is set.
     pub early_stopping_min_delta: f64,
+    pub destroy_kind: PyDestroyKind,
 }
 
 #[pymethods]
@@ -181,7 +184,7 @@ impl PyTrainingConfig {
             model_selection=PyModelSelection::Loss, beta_1=0.9, beta_2=0.999, epsilon=1e-5,
             amsgrad=false, weight_decay=None, grad_clip_norm=None, grad_clip_value=None,
             save_horizons=false, num_checkpoints=15, early_stopping_patience=None,
-            early_stopping_min_delta=1e-4))]
+            early_stopping_min_delta=1e-4, destroy_kind=PyDestroyKind::Random))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         lr: f64,
@@ -200,6 +203,7 @@ impl PyTrainingConfig {
         num_checkpoints: usize,
         early_stopping_patience: Option<usize>,
         early_stopping_min_delta: f64,
+        destroy_kind: PyDestroyKind,
     ) -> Self {
         PyTrainingConfig {
             lr,
@@ -218,6 +222,7 @@ impl PyTrainingConfig {
             num_checkpoints,
             early_stopping_patience,
             early_stopping_min_delta,
+            destroy_kind,
         }
     }
 }
@@ -366,6 +371,9 @@ pub fn train_consformer(
     let problems: Vec<Arc<Problem>> = problems.iter().map(|p| p.arc()).collect();
     let network_config: ConsFormerConfig = config.into();
     let training_config: TrainingConfig = training.into();
+    let destroy = training
+        .destroy_kind
+        .training_operator(network_config.mask_fraction);
     let checkpoint_dir = PathBuf::from(checkpoint_dir);
 
     py.detach(move || {
@@ -374,6 +382,7 @@ pub fn train_consformer(
             problems,
             network_config,
             training_config,
+            destroy,
             &checkpoint_dir,
         )
     })
@@ -386,6 +395,7 @@ fn run_training<B: AutodiffBackend>(
     problems: Vec<Arc<Problem>>,
     network_config: ConsFormerConfig,
     training_config: TrainingConfig,
+    destroy: Option<Arc<dyn TrainingDestroy>>,
     checkpoint_dir: &Path,
 ) -> PyResult<()> {
     prepare_checkpoint_dir(checkpoint_dir, &network_config)?;
@@ -397,6 +407,7 @@ fn run_training<B: AutodiffBackend>(
         ConsFormerDataset::<B::InnerBackend>::new(validation_problems, &device);
     let batcher = ConsFormerBatcher {
         mask_fraction: network_config.mask_fraction,
+        destroy,
     };
 
     // Create and train the network
@@ -456,6 +467,11 @@ pub fn train_consformer_mdd(
     let problems: Vec<Arc<Problem>> = problems.iter().map(|p| p.arc()).collect();
     let network_config: ConsFormerConfig = config.into();
     let training_config: TrainingConfig = training.into();
+    if !matches!(training.destroy_kind, PyDestroyKind::Random) {
+        return Err(PyValueError::new_err(
+            "train_consformer_mdd masks every variable and does not take a destroy_kind",
+        ));
+    }
     let checkpoint_dir = PathBuf::from(checkpoint_dir);
     let compilation = MddCompilationConfig {
         ordering: pyordering.into(),
