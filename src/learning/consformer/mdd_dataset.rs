@@ -328,6 +328,7 @@ impl<B: Backend> Batcher<B, ConsFormerMddSample<B>, ConsFormerMddBatch<B>>
             &var_mask_tensors,
             &problems,
             self.mask_fraction,
+            None,
             device,
         );
 

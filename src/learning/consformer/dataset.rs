@@ -6,7 +6,8 @@ use burn::prelude::ElementConversion;
 use burn::tensor::backend::Backend;
 use burn::tensor::{Bool, Int, Tensor};
 
-use rand::RngExt;
+use rand::rngs::StdRng;
+use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
 
 use crate::learning::{Batch, BatchProblems};
@@ -161,14 +162,36 @@ pub(super) fn stack_masks_and_sample_assignments<B: Backend>(
     var_mask_tensors: &[Tensor<B, 1, Bool>],
     problems: &[Arc<Problem>],
     mask_fraction: f64,
+    destroy: Option<&dyn TrainingDestroy>,
     device: &B::Device,
 ) -> (Tensor<B, 3, Bool>, Tensor<B, 2, Bool>, Tensor<B, 2, Int>) {
     let attention_masks = Tensor::stack(attention_mask_tensors, 0);
 
     let n = problems[0].number_variables();
-    let mut var_masks_data: Vec<bool> = Vec::with_capacity(problems.len() * n);
-    // One `with_rng` call for the whole batch (rather than one per candidate) so a seeded run
-    // only takes the shared RNG's lock once here, not once per variable.
+    let (var_masks_data, init) = match destroy {
+        None => {
+            let masks = random_var_masks::<B>(var_mask_tensors, mask_fraction);
+            (masks, sample_initial_assignments(problems))
+        }
+        Some(destroy) => {
+            let init = sample_initial_assignments(problems);
+            (destroyed_var_masks(destroy, problems, &init, n), init)
+        }
+    };
+    let var_masks: Tensor<B, 2, Bool> =
+        Tensor::<B, 1, Bool>::from_data(var_masks_data.as_slice(), device)
+            .reshape([problems.len(), n]);
+    let assignments: Tensor<B, 2, Int> =
+        Tensor::<B, 1, Int>::from_data(init.as_slice(), device).reshape([problems.len(), n]);
+
+    (attention_masks, var_masks, assignments)
+}
+
+fn random_var_masks<B: Backend>(
+    var_mask_tensors: &[Tensor<B, 1, Bool>],
+    mask_fraction: f64,
+) -> Vec<bool> {
+    let mut var_masks_data: Vec<bool> = Vec::new();
     crate::utils::with_rng(|rng| {
         for var_mask in var_mask_tensors {
             let candidates: Vec<i64> = var_mask
@@ -187,11 +210,11 @@ pub(super) fn stack_masks_and_sample_assignments<B: Backend>(
             );
         }
     });
-    let var_masks: Tensor<B, 2, Bool> =
-        Tensor::<B, 1, Bool>::from_data(var_masks_data.as_slice(), device)
-            .reshape([problems.len(), n]);
+    var_masks_data
+}
 
-    let init = problems
+fn sample_initial_assignments(problems: &[Arc<Problem>]) -> Vec<i64> {
+    problems
         .iter()
         .flat_map(|problem| {
             problem
@@ -199,16 +222,50 @@ pub(super) fn stack_masks_and_sample_assignments<B: Backend>(
                 .map(|v| problem[v].sample() as i64)
                 .collect::<Vec<i64>>()
         })
-        .collect::<Vec<i64>>();
-    let assignments: Tensor<B, 2, Int> =
-        Tensor::<B, 1, Int>::from_data(init.as_slice(), device).reshape([problems.len(), n]);
-
-    (attention_masks, var_masks, assignments)
+        .collect()
 }
 
-#[derive(Clone, Copy)]
+fn destroyed_var_masks(
+    destroy: &dyn TrainingDestroy,
+    problems: &[Arc<Problem>],
+    init: &[i64],
+    n: usize,
+) -> Vec<bool> {
+    let seeds: Vec<u64> =
+        crate::utils::with_rng(|rng| (0..problems.len()).map(|_| rng.random::<u64>()).collect());
+    let selected: Vec<Vec<usize>> = crate::utils::worker_pool().install(|| {
+        problems
+            .par_iter()
+            .zip(seeds.par_iter())
+            .enumerate()
+            .map(|(i, (problem, &seed))| {
+                let row: Vec<isize> = init[i * n..(i + 1) * n]
+                    .iter()
+                    .map(|&v| v as isize)
+                    .collect();
+                let mut rng = StdRng::seed_from_u64(seed);
+                destroy.select(problem, &row, &mut rng)
+            })
+            .collect()
+    });
+
+    let mut masks = vec![false; problems.len() * n];
+    for (i, vars) in selected.into_iter().enumerate() {
+        for var in vars {
+            masks[i * n + var] = true;
+        }
+    }
+    masks
+}
+
+pub trait TrainingDestroy: Send + Sync {
+    fn select(&self, problem: &Problem, assignment: &[isize], rng: &mut StdRng) -> Vec<usize>;
+}
+
+#[derive(Clone)]
 pub struct ConsFormerBatcher {
     pub mask_fraction: f64,
+    pub destroy: Option<Arc<dyn TrainingDestroy>>,
 }
 
 /// A batch is just a collection of samples with the addition of initial assignments that are
@@ -251,6 +308,7 @@ impl<B: Backend> Batcher<B, ConsFormerSample<B>, ConsFormerBatch<B>> for ConsFor
             &var_mask_tensors,
             &problems,
             self.mask_fraction,
+            self.destroy.as_deref(),
             device,
         );
 
@@ -307,5 +365,58 @@ impl<B: Backend> Batch<B> for ConsFormerBatch<B> {
             var_masks: destroy_mask.equal_elem(1),
             problems: problems.to_vec(),
         }
+    }
+}
+
+#[cfg(test)]
+mod destroy_tests {
+    use super::*;
+    use crate::constraints::not_equals;
+    use burn::backend::ndarray::{NdArray, NdArrayDevice};
+
+    struct OnlyFirst;
+
+    impl TrainingDestroy for OnlyFirst {
+        fn select(&self, _: &Problem, _: &[isize], _: &mut StdRng) -> Vec<usize> {
+            vec![0]
+        }
+    }
+
+    fn batch_with(destroy: Option<Arc<dyn TrainingDestroy>>) -> ConsFormerBatch<NdArray> {
+        let device = NdArrayDevice::default();
+        let problems: Vec<Arc<Problem>> = (0..4)
+            .map(|_| {
+                let mut problem = Problem::default();
+                let vars: Vec<_> = (0..3)
+                    .map(|_| problem.add_variable(vec![0, 1, 2], None))
+                    .collect();
+                not_equals(&mut problem, vars[0], vars[1]);
+                not_equals(&mut problem, vars[1], vars[2]);
+                Arc::new(problem)
+            })
+            .collect();
+        let dataset = ConsFormerDataset::<NdArray>::new(problems, &device);
+        let samples: Vec<_> = (0..dataset.len())
+            .map(|i| dataset.get(i).unwrap())
+            .collect();
+        ConsFormerBatcher {
+            mask_fraction: 1.0,
+            destroy,
+        }
+        .batch(samples, &device)
+    }
+
+    #[test]
+    fn a_training_destroy_operator_decides_which_variables_are_masked() {
+        let batch = batch_with(Some(Arc::new(OnlyFirst)));
+        let masks: Vec<bool> = batch.var_masks.into_data().to_vec().unwrap();
+        assert_eq!(masks, [true, false, false].repeat(4),);
+    }
+
+    #[test]
+    fn without_a_destroy_operator_the_mask_fraction_decides() {
+        let batch = batch_with(None);
+        let masks: Vec<bool> = batch.var_masks.into_data().to_vec().unwrap();
+        assert!(masks.iter().all(|&m| m));
     }
 }

@@ -8,6 +8,7 @@ use rand::RngExt;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 
+use crate::learning::consformer::TrainingDestroy;
 use crate::modelling::Problem;
 
 /// Selects, for a single assignment row, the indices of variables to
@@ -18,6 +19,12 @@ pub trait DestroyOperator: Send + Sync {
     /// Called once by `NeuralLocalSearch::run`, before the destroy/repair loop starts, with the
     /// exact set of problems that run will search over. Stateless operators ignore it.
     fn on_run_start(&self, _problems: &[Arc<Problem>]) {}
+}
+
+impl<T: DestroyOperator> TrainingDestroy for T {
+    fn select(&self, problem: &Problem, assignment: &[isize], rng: &mut StdRng) -> Vec<usize> {
+        self.destroy(problem, assignment, rng)
+    }
 }
 
 /// Hard-violation info for the current assignment: how many currently
@@ -60,9 +67,9 @@ impl DestroyOperator for RandomDestroy {
     }
 }
 
-/// Stochastic worst removal: destroys variables with probability
-/// proportional to how many currently-violated constraints they take part
-/// in, normalised so the expected fraction destroyed matches `fraction`.
+/// Stochastic worst removal: each free variable is destroyed with a probability that is the
+/// sigmoid of its standardised count of currently-violated constraints, rescaled so the mean
+/// probability matches `fraction`. Every free variable keeps a non-zero probability.
 pub struct WorstDestroy {
     pub fraction: f64,
 }
@@ -70,7 +77,7 @@ pub struct WorstDestroy {
 impl DestroyOperator for WorstDestroy {
     fn destroy(&self, problem: &Problem, assignment: &[isize], rng: &mut StdRng) -> Vec<usize> {
         let info = ViolationInfo::compute(problem, assignment);
-        bernoulli_select(problem, &info.per_variable, self.fraction, rng)
+        sigmoid_select(problem, &info.per_variable, self.fraction, rng)
     }
 }
 
@@ -124,12 +131,7 @@ fn free_variables(problem: &Problem) -> Vec<usize> {
         .collect()
 }
 
-/// Selects free variables independently with `pi_i ~= score_i / sum(score) * fraction * n_free`
-/// , i.e. proportional to `score`, normalised so the mean
-/// selection probability over free variables matches `fraction`. Falls back
-/// to a uniform `fraction` when every score is 0 (e.g. a fully satisfied
-/// assignment).
-fn bernoulli_select(
+fn sigmoid_select(
     problem: &Problem,
     scores: &[usize],
     fraction: f64,
@@ -140,17 +142,79 @@ fn bernoulli_select(
         return free;
     }
 
-    let total: f64 = free.iter().map(|&i| scores[i] as f64).sum();
-    if total == 0.0 {
-        let p = fraction.clamp(0.0, 1.0);
-        return free.into_iter().filter(|_| rng.random_bool(p)).collect();
+    let n = free.len() as f64;
+    let values: Vec<f64> = free.iter().map(|&i| scores[i] as f64).collect();
+    let mean = values.iter().sum::<f64>() / n;
+    let std = if free.len() > 1 {
+        (values.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / (n - 1.0)).sqrt()
+    } else {
+        0.0
+    };
+    let probs: Vec<f64> = values
+        .iter()
+        .map(|s| 1.0 / (1.0 + (-(s - mean) / (std + SCORE_EPS)).exp()))
+        .collect();
+    let scale = fraction / (probs.iter().sum::<f64>() / n + SCORE_EPS);
+
+    free.into_iter()
+        .zip(probs)
+        .filter(|&(_, p)| rng.random_bool((p * scale).clamp(0.0, 1.0)))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+const SCORE_EPS: f64 = 1e-8;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constraints::not_equals;
+    use rand::SeedableRng;
+
+    fn two_pairs() -> Problem {
+        let mut problem = Problem::default();
+        let vars: Vec<_> = (0..4)
+            .map(|_| problem.add_variable(vec![0, 1, 2], None))
+            .collect();
+        not_equals(&mut problem, vars[0], vars[1]);
+        not_equals(&mut problem, vars[2], vars[3]);
+        problem
     }
 
-    let n_free = free.len() as f64;
-    free.into_iter()
-        .filter(|&i| {
-            let pi = (scores[i] as f64 / total) * fraction * n_free;
-            rng.random_bool(pi.clamp(0.0, 1.0))
-        })
-        .collect()
+    fn frequencies(
+        problem: &Problem,
+        assignment: &[isize],
+        fraction: f64,
+        draws: usize,
+    ) -> Vec<f64> {
+        let op = WorstDestroy { fraction };
+        let mut rng = StdRng::seed_from_u64(7);
+        let mut counts = vec![0usize; assignment.len()];
+        for _ in 0..draws {
+            for v in op.destroy(problem, assignment, &mut rng) {
+                counts[v] += 1;
+            }
+        }
+        counts
+            .into_iter()
+            .map(|c| c as f64 / draws as f64)
+            .collect()
+    }
+
+    #[test]
+    fn violated_variables_are_destroyed_more_often_but_not_exclusively() {
+        let problem = two_pairs();
+        let freq = frequencies(&problem, &[0, 0, 0, 1], 0.5, 20_000);
+        assert!((freq[0] - 0.704).abs() < 0.02, "{freq:?}");
+        assert!((freq[1] - 0.704).abs() < 0.02, "{freq:?}");
+        assert!((freq[2] - 0.296).abs() < 0.02, "{freq:?}");
+        assert!((freq[3] - 0.296).abs() < 0.02, "{freq:?}");
+    }
+
+    #[test]
+    fn a_satisfied_assignment_is_destroyed_uniformly_at_the_requested_fraction() {
+        let problem = two_pairs();
+        let freq = frequencies(&problem, &[0, 1, 0, 1], 0.3, 20_000);
+        assert!(freq.iter().all(|f| (f - 0.3).abs() < 0.02), "{freq:?}");
+    }
 }

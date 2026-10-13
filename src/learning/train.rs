@@ -586,7 +586,10 @@ mod test_horizon_checkpoint_layout {
 
         let train_dataset = ConsFormerDataset::<ADBackend>::new(problems.clone(), &device);
         let valid_dataset = ConsFormerDataset::<NdArray>::new(problems.clone(), &device);
-        let batcher = ConsFormerBatcher { mask_fraction: 0.5 };
+        let batcher = ConsFormerBatcher {
+            mask_fraction: 0.5,
+            destroy: None,
+        };
 
         let training = TrainingConfig::new(ModelSelection::Loss)
             .with_num_epochs(2)
@@ -648,7 +651,10 @@ mod test_horizon_checkpoint_layout {
 
         let train_dataset = ConsFormerDataset::<ADBackend>::new(problems.clone(), &device);
         let valid_dataset = ConsFormerDataset::<NdArray>::new(problems.clone(), &device);
-        let batcher = ConsFormerBatcher { mask_fraction: 0.5 };
+        let batcher = ConsFormerBatcher {
+            mask_fraction: 0.5,
+            destroy: None,
+        };
 
         // `early_stopping_min_delta` set unreasonably high so the very first improvement (from
         // `best_score = INFINITY`) is the only one that will ever count -- every validation check
@@ -706,7 +712,10 @@ mod test_horizon_checkpoint_layout {
 
         let train_dataset = ConsFormerDataset::<ADBackend>::new(problems.clone(), &device);
         let valid_dataset = ConsFormerDataset::<NdArray>::new(problems.clone(), &device);
-        let batcher = ConsFormerBatcher { mask_fraction: 0.5 };
+        let batcher = ConsFormerBatcher {
+            mask_fraction: 0.5,
+            destroy: None,
+        };
 
         let training = TrainingConfig::new(ModelSelection::ConstraintSatisfaction)
             .with_num_epochs(2)

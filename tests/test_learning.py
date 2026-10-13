@@ -48,6 +48,14 @@ def test_recipe_replace_routes_names():
         r.replace(selection="nope")
 
 
+def test_destroy_is_a_training_setting():
+    r = Recipe.named("consformer")
+    assert r.training.destroy == "random"
+    assert r.replace(destroy="worst").training.destroy == "worst"
+    with pytest.raises(ValueError):
+        r.replace(destroy="nope")
+
+
 def test_load_checks_the_checkpoint(tmp_path):
     with pytest.raises(CheckpointError):
         learning.load(tmp_path)

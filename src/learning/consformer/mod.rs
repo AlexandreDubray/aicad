@@ -7,7 +7,9 @@ use super::*;
 use crate::modelling::Problem;
 pub use architecture::ConsFormer;
 use architecture::*;
-pub use dataset::{ConsFormerBatch, ConsFormerBatcher, ConsFormerDataset, ConsFormerSample};
+pub use dataset::{
+    ConsFormerBatch, ConsFormerBatcher, ConsFormerDataset, ConsFormerSample, TrainingDestroy,
+};
 pub use loss::{ConsFormerLoss, ConsFormerMddLoss};
 pub use mdd_dataset::{
     ConsFormerMddBatch, ConsFormerMddBatcher, ConsFormerMddDataset, ConsFormerMddSample,

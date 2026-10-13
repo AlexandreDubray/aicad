@@ -14,6 +14,7 @@ use burn::tensor::backend::Backend;
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::RngExt;
 
+use crate::learning::consformer::TrainingDestroy;
 use crate::learning::consformer::{
     ConsFormer, ConsFormerBatch, ConsFormerConfig, MddCompilationConfig,
 };
@@ -117,6 +118,14 @@ impl PyDestroyKind {
             PyDestroyKind::Random => Box::new(RandomDestroy { fraction }),
             PyDestroyKind::Worst => Box::new(WorstDestroy { fraction }),
             PyDestroyKind::Related => Box::new(RelatedDestroy { fraction }),
+        }
+    }
+
+    pub(super) fn training_operator(&self, fraction: f64) -> Option<Arc<dyn TrainingDestroy>> {
+        match self {
+            PyDestroyKind::Random => None,
+            PyDestroyKind::Worst => Some(Arc::new(WorstDestroy { fraction })),
+            PyDestroyKind::Related => Some(Arc::new(RelatedDestroy { fraction })),
         }
     }
 
@@ -650,14 +659,26 @@ fn chunked_run<B: Backend>(
             let chunk_seed = seed.wrapping_add(chunk_idx as u64);
             let decode_op = decode_op_builder();
             let chunk_start = std::time::Instant::now();
-            let chunk_solutions = nls.run(chunk, decode_op.as_ref(), budget, chunk_seed);
+            let chunk_solutions = nls.run(
+                chunk,
+                decode_op.as_ref(),
+                budget,
+                chunk_seed,
+                Some(&progress),
+            );
             log_chunk_summary(
                 chunk_idx,
                 chunks.len(),
                 &chunk_solutions,
                 chunk_start.elapsed(),
             );
-            progress.inc(chunk_solutions.len() as u64);
+            // `run` already advanced the bar for every problem it solved; the
+            // ones it gave up on are only known now.
+            let unsolved = chunk_solutions
+                .iter()
+                .filter(|s| matches!(s.status(), Status::Unknown))
+                .count();
+            progress.inc(unsolved as u64);
             chunk_solutions
         },
     )

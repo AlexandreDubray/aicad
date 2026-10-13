@@ -105,6 +105,11 @@ class Dataset:
 # Recipes
 # --------------------------------------------------------------------------------------------
 
+_DESTROY = {
+    "random": _core.PyDestroyKind.Random,
+    "worst": _core.PyDestroyKind.Worst,
+    "related": _core.PyDestroyKind.Related,
+}
 _SELECTION = {
     "loss": _core.PyModelSelection.Loss,
     "satisfaction": _core.PyModelSelection.ConstraintSatisfaction,
@@ -158,10 +163,13 @@ class Training:
     num_checkpoints: int = 15
     early_stopping_patience: Optional[int] = None
     early_stopping_min_delta: float = 1e-4
+    destroy: str = "random"  # which variables are re-predicted in a training step; "consformer" only
 
     def __post_init__(self) -> None:
         if self.selection not in _SELECTION:
             raise ValueError(f"selection must be one of {sorted(_SELECTION)}, got {self.selection!r}")
+        if self.destroy not in _DESTROY:
+            raise ValueError(f"destroy must be one of {sorted(_DESTROY)}, got {self.destroy!r}")
 
 
 @dataclass(frozen=True)
@@ -327,6 +335,7 @@ def _native_training(t: Training) -> Any:
         num_checkpoints=t.num_checkpoints,
         early_stopping_patience=t.early_stopping_patience,
         early_stopping_min_delta=t.early_stopping_min_delta,
+        destroy_kind=_DESTROY[t.destroy],
     )
 
 
