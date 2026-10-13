@@ -1,13 +1,13 @@
 use std::hash::Hash;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, deepsize::DeepSizeOf)]
-pub enum Bitset {
+pub(crate) enum Bitset {
     Inline(u64),
     Heap(Vec<u64>),
 }
 
 impl Bitset {
-    pub fn new(n: usize) -> Self {
+    pub(crate) fn new(n: usize) -> Self {
         let number_words = (n / 64) + 1;
         if number_words == 1 {
             Self::Inline(0)
@@ -30,32 +30,26 @@ impl Bitset {
         }
     }
 
-    pub fn contains(&self, element: usize) -> bool {
+    pub(crate) fn contains(&self, element: usize) -> bool {
         let word = element / 64;
         let shift = element % 64;
         self.words()[word] & (1 << shift) != 0
     }
 
-    pub fn insert(&mut self, element: usize) {
+    pub(crate) fn insert(&mut self, element: usize) {
         let word = element / 64;
         let shift = element % 64;
         self.words_mut()[word] |= 1 << shift;
     }
 
-    pub fn _remove(&mut self, element: usize) {
-        let word = element / 64;
-        let shift = element % 64;
-        self.words_mut()[word] &= !(1 << shift);
-    }
-
-    pub fn size(&self) -> usize {
+    pub(crate) fn size(&self) -> usize {
         self.words()
             .iter()
             .map(|word| word.count_ones())
             .sum::<u32>() as usize
     }
 
-    pub fn size_union(&self, other: &Bitset) -> usize {
+    pub(crate) fn size_union(&self, other: &Bitset) -> usize {
         let other_words = other.words();
         self.words()
             .iter()
@@ -65,7 +59,7 @@ impl Bitset {
             .sum::<u32>() as usize
     }
 
-    pub fn union(&mut self, other: &Bitset) {
+    pub(crate) fn union(&mut self, other: &Bitset) {
         let other_words = other.words();
         let words = self.words_mut();
         debug_assert!(words.len() == other_words.len());
@@ -74,7 +68,7 @@ impl Bitset {
         }
     }
 
-    pub fn union_with_and_bit(&mut self, other: &Bitset, bit: usize) {
+    pub(crate) fn union_with_and_bit(&mut self, other: &Bitset, bit: usize) {
         let bit_word = bit / 64;
         let bit_mask = 1u64 << (bit % 64);
         let other_words = other.words();
@@ -89,7 +83,7 @@ impl Bitset {
         }
     }
 
-    pub fn intersect(&mut self, other: &Bitset) {
+    pub(crate) fn intersect(&mut self, other: &Bitset) {
         let other_words = other.words();
         let words = self.words_mut();
         debug_assert!(words.len() == other_words.len());
@@ -98,7 +92,7 @@ impl Bitset {
         }
     }
 
-    pub fn intersect_with_and_bit(&mut self, other: &Bitset, bit: usize) {
+    pub(crate) fn intersect_with_and_bit(&mut self, other: &Bitset, bit: usize) {
         let bit_word = bit / 64;
         let bit_mask = 1u64 << (bit % 64);
         let other_words = other.words();
@@ -113,13 +107,13 @@ impl Bitset {
         }
     }
 
-    pub fn reset(&mut self, value: u64) {
+    pub(crate) fn reset(&mut self, value: u64) {
         for word in self.words_mut().iter_mut() {
             *word = value;
         }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = u64> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = u64> {
         self.words().iter().copied()
     }
 }
@@ -188,26 +182,6 @@ mod test_bitset {
         assert!(b.contains(130));
         assert!(!b.contains(63));
         assert!(!b.contains(65));
-    }
-
-    #[test]
-    pub fn test_remove_inline() {
-        let mut b = Bitset::new(8);
-        b.insert(2);
-        b.insert(4);
-        b._remove(2);
-        assert!(!b.contains(2));
-        assert!(b.contains(4));
-    }
-
-    #[test]
-    pub fn test_remove_heap() {
-        let mut b = Bitset::new(200);
-        b.insert(70);
-        b.insert(140);
-        b._remove(70);
-        assert!(!b.contains(70));
-        assert!(b.contains(140));
     }
 
     #[test]

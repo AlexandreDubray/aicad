@@ -1,23 +1,23 @@
-pub mod arena;
-pub mod edge;
 pub mod heuristics;
-pub mod layer;
-#[allow(clippy::module_inception)]
-pub mod mdd;
-mod memory;
-pub mod node;
-pub mod structure;
-pub mod view;
 pub mod wmc;
 
-// re-export modules
-pub use arena::{CompiledConstraint, MddArena};
-pub use edge::Edge;
-pub use layer::Layer;
+pub(crate) mod arena;
+pub(crate) mod edge;
+#[allow(clippy::module_inception)]
+pub(crate) mod mdd;
+mod memory;
+pub(crate) mod node;
+pub(crate) mod structure;
+pub(crate) mod view;
+
+pub use arena::MddArena;
 pub use mdd::Mdd;
-pub use node::Node;
-pub use structure::MddStructure;
 pub use view::{MddView, MddViewWithOrder};
+
+pub(crate) use arena::CompiledConstraint;
+pub(crate) use edge::Edge;
+pub(crate) use node::Node;
+pub(crate) use structure::MddStructure;
 
 use crate::constraints::*;
 use std::hash::{Hash, Hasher};

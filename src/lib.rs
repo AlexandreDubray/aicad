@@ -19,6 +19,8 @@
 //! are private. Modules only depend on the ones listed before them, which `scripts/check_layering.py`
 //! checks in CI.
 
+#![cfg_attr(not(test), warn(unreachable_pub))]
+
 pub mod constraints;
 pub mod mdd;
 pub mod modelling;

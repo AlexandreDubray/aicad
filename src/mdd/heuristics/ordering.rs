@@ -7,7 +7,11 @@ pub enum OrderingHeuristic {
 }
 
 impl OrderingHeuristic {
-    pub fn get_order(&self, problem: &Problem, variables: &[VariableIndex]) -> Vec<VariableIndex> {
+    pub(crate) fn get_order(
+        &self,
+        problem: &Problem,
+        variables: &[VariableIndex],
+    ) -> Vec<VariableIndex> {
         match self {
             Self::Custom(order) => order
                 .iter()

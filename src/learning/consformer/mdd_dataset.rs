@@ -24,7 +24,7 @@ use super::dataset::{
 use super::{ConsFormerDataConfig, ConsFormerInputs};
 
 #[derive(Clone, Debug)]
-pub struct MddCompilationConfig {
+pub(crate) struct MddCompilationConfig {
     pub ordering: OrderingHeuristic,
     /// Not read today: the MDDs are compiled with unbounded width, which never merges.
     #[allow(dead_code)]
@@ -114,7 +114,7 @@ fn compile_constraint_mdds(
 /// `problem` -- each group's (possibly shared, see `crate::mdd::arena`) structure plus its own
 /// real branching order. `mdds` is `Arc`-wrapped since `Dataset::get` clones the sample on every
 /// access (once per epoch, per batch), and isn't free to deep-copy repeatedly.
-pub struct ConsFormerMddSample<B: Backend> {
+pub(crate) struct ConsFormerMddSample<B: Backend> {
     problem: Arc<Problem>,
     attention_mask: Tensor<B, 2, Bool>,
     var_mask: Tensor<B, 1, Bool>,
@@ -154,7 +154,7 @@ impl<B: Backend> std::fmt::Debug for ConsFormerMddSample<B> {
 
 /// A dataset is a vector of samples, one per problem, each with its constraint groups' MDDs
 /// precompiled.
-pub struct ConsFormerMddDataset<B: Backend> {
+pub(crate) struct ConsFormerMddDataset<B: Backend> {
     samples: Vec<ConsFormerMddSample<B>>,
 }
 
@@ -170,7 +170,7 @@ impl<B: Backend> ConsFormerMddDataset<B> {
     /// `arena` is a plain `&MddArena` rather than owned: callers building several datasets that
     /// should share compiled structures (e.g. `pyaicad::learn::run_training_mdd`'s train and
     /// validation datasets) pass the same `Arc<MddArena>` (dereferenced) to each call.
-    pub fn new(
+    pub(crate) fn new(
         problems: Vec<Arc<Problem>>,
         arena: &MddArena,
         compilation: MddCompilationConfig,
@@ -231,7 +231,7 @@ impl<B: Backend> Dataset<ConsFormerMddSample<B>> for ConsFormerMddDataset<B> {
 
 /// Batch used to train ConsFormer-MDD. Carries the same attention/var-mask/assignment inputs as
 /// the classical `ConsFormerBatch` (see `ConsFormerInputs`), plus every sample's compiled MDDs.
-pub struct ConsFormerMddBatch<B: Backend> {
+pub(crate) struct ConsFormerMddBatch<B: Backend> {
     /// (batch_size, number_vars, number_vars)
     pub attention_masks: Tensor<B, 3, Bool>,
     /// (batch_size, number_vars)
@@ -295,12 +295,12 @@ impl<B: Backend> ConsFormerInputs<B> for ConsFormerMddBatch<B> {
 
 /// Builds `ConsFormerMddBatch`es from `ConsFormerMddSample`s.
 #[derive(Clone, Copy)]
-pub struct ConsFormerMddBatcher {
+pub(crate) struct ConsFormerMddBatcher {
     mask_fraction: f64,
 }
 
 impl ConsFormerMddBatcher {
-    pub fn new(data_config: ConsFormerDataConfig) -> Self {
+    pub(crate) fn new(data_config: ConsFormerDataConfig) -> Self {
         Self {
             mask_fraction: data_config.mask_fraction,
         }

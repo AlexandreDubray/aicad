@@ -13,7 +13,7 @@ use crate::modelling::Problem;
 
 /// Selects, for a single assignment row, the indices of variables to
 /// unassign ("destroy") this iteration.
-pub trait DestroyOperator: Send + Sync {
+pub(crate) trait DestroyOperator: Send + Sync {
     fn destroy(&self, problem: &Problem, assignment: &[isize], rng: &mut StdRng) -> Vec<usize>;
 
     /// Called once by `NeuralLocalSearch::run`, before the destroy/repair loop starts, with the
@@ -50,7 +50,7 @@ impl ViolationInfo {
 
 /// Uniformly destroys a `fraction` of the free (domain size > 1) variables.
 /// Corresponds to the original ConsFormer's random subset selection.
-pub struct RandomDestroy {
+pub(crate) struct RandomDestroy {
     pub fraction: f64,
 }
 
@@ -70,7 +70,7 @@ impl DestroyOperator for RandomDestroy {
 /// Stochastic worst removal: each free variable is destroyed with a probability that is the
 /// sigmoid of its standardised count of currently-violated constraints, rescaled so the mean
 /// probability matches `fraction`. Every free variable keeps a non-zero probability.
-pub struct WorstDestroy {
+pub(crate) struct WorstDestroy {
     pub fraction: f64,
 }
 
@@ -86,7 +86,7 @@ impl DestroyOperator for WorstDestroy {
 /// independently with a probability rescaled so the expected number of
 /// destroyed variables tracks `fraction * n`, regardless of how many
 /// constraints the problem has relative to its variables
-pub struct RelatedDestroy {
+pub(crate) struct RelatedDestroy {
     pub fraction: f64,
 }
 

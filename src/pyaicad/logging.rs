@@ -32,37 +32,37 @@ pub(crate) fn disable_by_default(py: Python<'_>) -> PyResult<()> {
 /// Disables all logging from this crate. Equivalent to the default state
 /// before any `set_verbosity_*` call.
 #[pyfunction]
-pub fn set_verbosity_off(py: Python<'_>) -> PyResult<()> {
+pub(crate) fn set_verbosity_off(py: Python<'_>) -> PyResult<()> {
     set_level(py, LEVEL_OFF)
 }
 
 /// Only `log::error!` records are emitted.
 #[pyfunction]
-pub fn set_verbosity_error(py: Python<'_>) -> PyResult<()> {
+pub(crate) fn set_verbosity_error(py: Python<'_>) -> PyResult<()> {
     set_level(py, LEVEL_ERROR)
 }
 
 /// `log::warn!` and above.
 #[pyfunction]
-pub fn set_verbosity_warning(py: Python<'_>) -> PyResult<()> {
+pub(crate) fn set_verbosity_warning(py: Python<'_>) -> PyResult<()> {
     set_level(py, LEVEL_WARNING)
 }
 
 /// `log::info!` and above.
 #[pyfunction]
-pub fn set_verbosity_info(py: Python<'_>) -> PyResult<()> {
+pub(crate) fn set_verbosity_info(py: Python<'_>) -> PyResult<()> {
     set_level(py, LEVEL_INFO)
 }
 
 /// `log::debug!` and above.
 #[pyfunction]
-pub fn set_verbosity_debug(py: Python<'_>) -> PyResult<()> {
+pub(crate) fn set_verbosity_debug(py: Python<'_>) -> PyResult<()> {
     set_level(py, LEVEL_DEBUG)
 }
 
 /// Everything, including `log::trace!`.
 #[pyfunction]
-pub fn set_verbosity_trace(py: Python<'_>) -> PyResult<()> {
+pub(crate) fn set_verbosity_trace(py: Python<'_>) -> PyResult<()> {
     set_level(py, LEVEL_TRACE)
 }
 
@@ -72,7 +72,7 @@ pub fn set_verbosity_trace(py: Python<'_>) -> PyResult<()> {
 /// all -- it's a separate, structured sink meant for offline analysis (`pd.read_json(path,
 /// lines=True)`), not for reading in a terminal.
 #[pyfunction]
-pub fn enable_data_log(path: String) -> PyResult<()> {
+pub(crate) fn enable_data_log(path: String) -> PyResult<()> {
     diagnostics::enable(&PathBuf::from(path)).map_err(|e| PyOSError::new_err(e.to_string()))
 }
 
@@ -80,6 +80,6 @@ pub fn enable_data_log(path: String) -> PyResult<()> {
 /// call this once done -- the sink is a `static`, so nothing flushes it automatically at process
 /// exit.
 #[pyfunction]
-pub fn disable_data_log() {
+pub(crate) fn disable_data_log() {
     diagnostics::disable();
 }

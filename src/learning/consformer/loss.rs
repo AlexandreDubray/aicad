@@ -18,7 +18,7 @@ use super::mdd_dataset::ConsFormerMddBatch;
 /// Loss trait for ConsFormer. Given a tensor (number_var, domain_size), computes a penalty term
 /// for the constraint. We assume that the probability tensor sent to the constraint is restricted
 /// to its scope
-pub trait ConstraintLoss<B: Backend> {
+pub(crate) trait ConstraintLoss<B: Backend> {
     fn constraint_penalty(&self, probs: Tensor<B, 2>) -> Tensor<B, 1>;
 }
 
@@ -141,7 +141,7 @@ fn blend_with_current<B: Backend>(
     one_hot.mask_where(mask_3d, probs)
 }
 
-pub struct ConsFormerLoss;
+pub(crate) struct ConsFormerLoss;
 
 impl<B: Backend> Loss<B, ConsFormerBatch<B>> for ConsFormerLoss {
     fn loss(&self, logits: Tensor<B, 3>, batch: &ConsFormerBatch<B>) -> Tensor<B, 1> {
@@ -340,7 +340,7 @@ fn sample_loss_and_gradient(
 
 /// Plain (unweighted) per-constraint mean of `-log(wmc+eps)`, per-sample then per-batch -- see
 /// `sample_loss_and_gradient`.
-pub struct ConsFormerMddLoss;
+pub(crate) struct ConsFormerMddLoss;
 
 /// Computes the MDD-WMC loss and its exact gradient wrt `probs` by hand (see
 /// `mdd_loss_and_gradient`), then hands that gradient to Burn's autodiff via the standard

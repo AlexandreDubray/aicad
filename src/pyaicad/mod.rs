@@ -7,21 +7,21 @@ mod logging;
 mod nls;
 mod problem;
 
-pub use compiler::{Compiler, PyMdd};
-pub use heuristics::{PyMergeHeuristic, PyOrderingHeuristic, PySelectHeuristic};
-pub use learn::{
+pub(crate) use compiler::{Compiler, PyMdd};
+pub(crate) use heuristics::{PyMergeHeuristic, PyOrderingHeuristic, PySelectHeuristic};
+pub(crate) use learn::{
     PyConsFormerConfig, PyModelSelection, PyTrainingConfig, set_seed, train_consformer,
     train_consformer_mdd,
 };
-pub use logging::{
+pub(crate) use logging::{
     disable_data_log, enable_data_log, set_verbosity_debug, set_verbosity_error,
     set_verbosity_info, set_verbosity_off, set_verbosity_trace, set_verbosity_warning,
 };
-pub use nls::{
+pub(crate) use nls::{
     PyDecodeKind, PyDestroyKind, PyNetworkKind, PyPriorKind, PySolution, PySolveConfig, PyStatus,
     neural_local_search,
 };
-pub use problem::PyProblem;
+pub(crate) use problem::PyProblem;
 
 #[pymodule]
 fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {

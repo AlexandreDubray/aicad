@@ -3,15 +3,15 @@
 //! training loop entirely -- it only needs a loaded network, a problem, and
 //! a destroy/decode operator pair.
 
-pub mod config;
-pub mod decode;
-pub mod destroy;
-pub mod prior;
+pub(crate) mod config;
+pub(crate) mod decode;
+pub(crate) mod destroy;
+pub(crate) mod prior;
 
-pub use config::SolveConfig;
-pub use decode::DecodingOperator;
-pub use destroy::DestroyOperator;
-pub use prior::{NetworkPrior, PriorHeuristic, UniformPrior};
+pub(crate) use config::SolveConfig;
+pub(crate) use decode::DecodingOperator;
+pub(crate) use destroy::DestroyOperator;
+pub(crate) use prior::{NetworkPrior, PriorHeuristic, UniformPrior};
 
 use std::path::Path;
 use std::sync::Arc;
@@ -33,7 +33,7 @@ use crate::utils::tensor::*;
 
 /// A solution returned by the solver, with its statistics
 #[derive(Clone)]
-pub struct Solution {
+pub(crate) struct Solution {
     /// Seconds elapsed before finding the solution (or before the budget ran out). Sub-second
     /// precision (`.as_secs_f64()`), not whole seconds -- a coarser `u64` version of this field
     /// used to round every solve under a second down to `0`, which silently broke any per-
@@ -56,37 +56,37 @@ pub struct Solution {
 }
 
 #[derive(Clone, Copy)]
-pub enum Status {
+pub(crate) enum Status {
     Satisfiable,
     Unsatisfiable,
     Unknown,
 }
 
 impl Solution {
-    pub fn runtime(&self) -> f64 {
+    pub(crate) fn runtime(&self) -> f64 {
         self.runtime
     }
 
-    pub fn compilation_runtime(&self) -> f64 {
+    pub(crate) fn compilation_runtime(&self) -> f64 {
         self.compilation_runtime
     }
 
-    pub fn iterations(&self) -> usize {
+    pub(crate) fn iterations(&self) -> usize {
         self.iterations
     }
 
-    pub fn solution(&self) -> &Option<Vec<isize>> {
+    pub(crate) fn solution(&self) -> &Option<Vec<isize>> {
         &self.solution
     }
 
-    pub fn status(&self) -> Status {
+    pub(crate) fn status(&self) -> Status {
         self.status
     }
 }
 
 /// Stopping criterion for the search; whichever limit is first reached stops it.
 #[derive(Debug, Clone, Copy)]
-pub struct Budget {
+pub(crate) struct Budget {
     pub time_limit: Duration,
     pub iteration_limit: usize,
 }
@@ -149,7 +149,7 @@ impl StoppingCriterion {
 /// Loads a network's hyperparameters (JSON config) and trained weights from a checkpoint
 /// directory produced by `train_model`/`run_training`. Returns the config alongside the network
 /// (rather than just the network) so callers also have access to training hyperparameters.
-pub fn load_network<B, NC>(
+pub(crate) fn load_network<B, NC>(
     checkpoint_dir: &Path,
     problems: &[Arc<Problem>],
     device: &B::Device,
@@ -216,7 +216,7 @@ fn resolve_status<B: Backend>(
     }
 }
 
-pub struct NeuralLocalSearch<B: Backend> {
+pub(crate) struct NeuralLocalSearch<B: Backend> {
     /// Source of the per-position prior that guides each step (a trained network, uniform, ...)
     prior: Box<dyn PriorHeuristic<B>>,
     /// Heuristic for the destroy operator
@@ -237,7 +237,7 @@ impl<B: Backend> NeuralLocalSearch<B> {
     /// into `run` instead (see that method's doc) so a caller that wants each `run` call to pay
     /// its own MDD compilation cost, rather than sharing one `MddSamplingDecode`'s compiled-MDD
     /// cache across every `run` call this engine ever makes, can build a fresh one per call.
-    pub fn new(
+    pub(crate) fn new(
         prior: Box<dyn PriorHeuristic<B>>,
         destroy_op: Box<dyn DestroyOperator>,
         device: B::Device,
@@ -262,7 +262,7 @@ impl<B: Backend> NeuralLocalSearch<B> {
     /// the bar for those once the call returns (they are the solutions with `Status::Unknown`),
     /// so the bar can be shared by several concurrent calls. With one big batch this is what
     /// makes the bar move: it otherwise only ticks when a whole call finishes.
-    pub fn run(
+    pub(crate) fn run(
         &self,
         problems: &[Arc<Problem>],
         decode_op: &dyn DecodingOperator<B>,

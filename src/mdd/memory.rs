@@ -11,13 +11,13 @@ struct TypeStats {
     max_bytes: usize,
 }
 
-pub struct MemoryReport {
+pub(super) struct MemoryReport {
     by_type: HashMap<&'static str, TypeStats>,
     grand_total: usize,
 }
 
 impl MemoryReport {
-    pub fn build<'a>(
+    pub(super) fn build<'a>(
         constraints: impl Iterator<Item = &'a Box<dyn Constraint + Send + Sync>>,
     ) -> Self {
         let mut by_type: HashMap<&'static str, TypeStats> = HashMap::new();
@@ -40,7 +40,7 @@ impl MemoryReport {
 
     /// Pretty-print a sorted bar chart to the terminal.
     /// `width` controls how wide the bar column is (in characters).
-    pub fn print(&self, width: usize) {
+    pub(super) fn print(&self, width: usize) {
         if self.grand_total == 0 {
             log::warn!("Trying to show mdd memory report: no constraints recorded.");
             return;

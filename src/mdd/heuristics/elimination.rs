@@ -13,7 +13,7 @@ pub enum EliminationOrdering {
 }
 
 impl EliminationOrdering {
-    pub fn rolling_window_groups(
+    pub(crate) fn rolling_window_groups(
         &self,
         problem: &Problem,
         window_size: usize,

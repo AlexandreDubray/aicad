@@ -10,7 +10,7 @@ use burn::tensor::backend::Backend;
 use burn::tensor::{Int, Tensor};
 
 /// Packs `rows` (each of length `n`, raw problem values) into a `[rows.len(), n]` tensor.
-pub fn rows_to_tensor<B: Backend>(
+pub(crate) fn rows_to_tensor<B: Backend>(
     rows: &[Vec<isize>],
     n: usize,
     device: &B::Device,
@@ -24,7 +24,11 @@ pub fn rows_to_tensor<B: Backend>(
 
 /// The inverse of `rows_to_tensor`: unpacks a `[p, n]` tensor back into `p` rows of `n` raw
 /// problem values each.
-pub fn to_rows<B: Backend>(assignments: &Tensor<B, 2, Int>, p: usize, n: usize) -> Vec<Vec<isize>> {
+pub(crate) fn to_rows<B: Backend>(
+    assignments: &Tensor<B, 2, Int>,
+    p: usize,
+    n: usize,
+) -> Vec<Vec<isize>> {
     let flat: Vec<i64> = assignments
         .clone()
         .into_data()

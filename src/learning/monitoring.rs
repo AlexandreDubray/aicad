@@ -55,7 +55,7 @@ impl ConstraintStats {
     }
 }
 
-pub struct SatisfactionReport {
+pub(crate) struct SatisfactionReport {
     by_constraint: HashMap<&'static str, ConstraintStats>,
 }
 
@@ -69,7 +69,7 @@ impl SatisfactionReport {
     /// signal to do (`ConsFormerLoss`/`ConsFormerMddLoss` only score masked positions -- see
     /// `blend_with_current` in `consformer::loss`) -- so the printed satisfaction rate stays
     /// near-permanently at 0% even once training is actually working.
-    pub fn build<B: Backend, Ba: BatchProblems<B> + ConsFormerInputs<B>>(
+    pub(crate) fn build<B: Backend, Ba: BatchProblems<B> + ConsFormerInputs<B>>(
         logits: Tensor<B, 3>,
         batch: &Ba,
     ) -> Self {
@@ -131,7 +131,7 @@ impl SatisfactionReport {
 
     /// Merges another report into this one, e.g. across multiple batches in
     /// an epoch.
-    pub fn merge(&mut self, other: SatisfactionReport) {
+    pub(crate) fn merge(&mut self, other: SatisfactionReport) {
         for (name, stats) in other.by_constraint {
             let entry = self.by_constraint.entry(name).or_default();
             entry.count += stats.count;
@@ -142,7 +142,7 @@ impl SatisfactionReport {
         }
     }
 
-    pub fn overall_satisfaction(&self) -> f64 {
+    pub(crate) fn overall_satisfaction(&self) -> f64 {
         let mut sum_rate = 0.0;
         let mut count = 0usize;
         for stats in self.by_constraint.values() {
@@ -156,7 +156,7 @@ impl SatisfactionReport {
         }
     }
 
-    pub fn print(&self, width: usize) {
+    pub(crate) fn print(&self, width: usize) {
         if self.by_constraint.is_empty() {
             log::warn!("Can not show constraint satisfaction: no constraints recorded.");
             return;

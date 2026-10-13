@@ -24,7 +24,7 @@ impl Edge {
         self.from
     }
 
-    pub fn set_from(&mut self, from: NodeIndex) {
+    pub(crate) fn set_from(&mut self, from: NodeIndex) {
         self.from = from;
     }
 
@@ -32,7 +32,7 @@ impl Edge {
         self.to
     }
 
-    pub fn set_to(&mut self, to: NodeIndex) {
+    pub(crate) fn set_to(&mut self, to: NodeIndex) {
         self.to = to;
     }
 
@@ -40,15 +40,15 @@ impl Edge {
         self.assignment
     }
 
-    pub fn deactivate(&mut self) {
+    pub(crate) fn deactivate(&mut self) {
         self.active = false;
     }
 
-    pub fn is_active(&self) -> bool {
+    pub(crate) fn is_active(&self) -> bool {
         self.active
     }
 
-    pub fn update_node_indices(&mut self, map: &FxHashMap<NodeIndex, NodeIndex>) {
+    pub(crate) fn update_node_indices(&mut self, map: &FxHashMap<NodeIndex, NodeIndex>) {
         self.from = map[&self.from];
         self.to = map[&self.to];
     }

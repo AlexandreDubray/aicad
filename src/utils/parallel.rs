@@ -4,7 +4,7 @@ use std::sync::{Mutex, OnceLock};
 
 static WORKER_POOL: OnceLock<ThreadPool> = OnceLock::new();
 
-pub fn worker_pool() -> &'static ThreadPool {
+pub(crate) fn worker_pool() -> &'static ThreadPool {
     WORKER_POOL.get_or_init(|| {
         let available = std::thread::available_parallelism()
             .map(|n| n.get())
@@ -18,7 +18,7 @@ pub fn worker_pool() -> &'static ThreadPool {
     })
 }
 
-pub fn run_pulled<T: Send>(
+pub(crate) fn run_pulled<T: Send>(
     pool: &ThreadPool,
     total: usize,
     max_workers: usize,

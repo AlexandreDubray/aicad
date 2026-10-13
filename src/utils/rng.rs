@@ -28,7 +28,7 @@ static GLOBAL_RNG: OnceLock<Mutex<StdRng>> = OnceLock::new();
 /// between successive runs in the same process): each call replaces the shared state with a
 /// fresh `StdRng::seed_from_u64(seed)`, so the next `with_rng` call after `set_seed` always starts
 /// a new, deterministic sequence regardless of how much randomness a previous run consumed.
-pub fn set_seed(seed: u64) {
+pub(crate) fn set_seed(seed: u64) {
     let seeded = StdRng::seed_from_u64(seed);
     match GLOBAL_RNG.get() {
         Some(existing) => *existing.lock().unwrap() = seeded,
@@ -46,7 +46,7 @@ pub fn set_seed(seed: u64) {
 /// entropy-seeded `rand::rng()` otherwise -- i.e. this crate's behaviour before `set_seed`
 /// existed. Every call site that wants its randomness to become reproducible under `set_seed`
 /// should draw from here instead of calling `rand::rng()` directly.
-pub fn with_rng<T>(f: impl FnOnce(&mut dyn Rng) -> T) -> T {
+pub(crate) fn with_rng<T>(f: impl FnOnce(&mut dyn Rng) -> T) -> T {
     match GLOBAL_RNG.get() {
         Some(shared) => f(&mut *shared.lock().unwrap()),
         None => f(&mut rand::rng()),

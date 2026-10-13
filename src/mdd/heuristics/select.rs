@@ -6,7 +6,7 @@ pub enum SelectHeuristic {
 }
 
 impl SelectHeuristic {
-    pub fn select_node(&self, mdd: &Mdd, layer: usize) -> Option<NodeIndex> {
+    pub(crate) fn select_node(&self, mdd: &Mdd, layer: usize) -> Option<NodeIndex> {
         match self {
             Self::Greedy => {
                 for index in 0..mdd.number_nodes_in_layer(layer) {

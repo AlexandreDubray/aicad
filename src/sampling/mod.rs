@@ -1,4 +1,6 @@
-pub mod bp;
+mod bp;
+
+pub use bp::belief_propagation;
 
 use crate::mdd::MddViewWithOrder;
 

@@ -89,11 +89,11 @@ impl Variable {
         *self.domain.last().unwrap()
     }
 
-    pub fn set_position(&mut self, position: Vec<usize>) {
+    pub(crate) fn set_position(&mut self, position: Vec<usize>) {
         self.position = Some(position);
     }
 
-    pub fn position(&self) -> &Option<Vec<usize>> {
+    pub(crate) fn position(&self) -> &Option<Vec<usize>> {
         &self.position
     }
 }

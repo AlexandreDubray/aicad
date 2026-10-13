@@ -78,7 +78,7 @@ impl ConsFormerMaskData {
 }
 
 /// Computes the attention mask and variable indicator mask for ConsFormer
-pub fn consformer_masks<B: Backend>(
+pub(crate) fn consformer_masks<B: Backend>(
     problem: &Problem,
     device: &B::Device,
 ) -> (Tensor<B, 2, Bool>, Tensor<B, 1, Bool>) {
@@ -92,7 +92,7 @@ pub fn consformer_masks<B: Backend>(
 /// The var mask indicates which variable as a domain of size > 1.
 /// We pre-compute these tensors beforehand since they are invariant during training
 #[derive(Clone)]
-pub struct ConsFormerSample<B: Backend> {
+pub(crate) struct ConsFormerSample<B: Backend> {
     problem: Arc<Problem>,
     attention_mask: Tensor<B, 2, Bool>,
     var_mask: Tensor<B, 1, Bool>,
@@ -109,12 +109,12 @@ impl<B: Backend> std::fmt::Debug for ConsFormerSample<B> {
 }
 
 /// A dataset is just a vector of samples
-pub struct ConsFormerDataset<B: Backend> {
+pub(crate) struct ConsFormerDataset<B: Backend> {
     samples: Vec<ConsFormerSample<B>>,
 }
 
 impl<B: Backend> ConsFormerDataset<B> {
-    pub fn new(problems: Vec<Arc<Problem>>, device: &B::Device) -> Self {
+    pub(crate) fn new(problems: Vec<Arc<Problem>>, device: &B::Device) -> Self {
         let mask_data: Vec<ConsFormerMaskData> = crate::utils::worker_pool().install(|| {
             problems
                 .par_iter()
@@ -258,12 +258,12 @@ fn destroyed_var_masks(
     masks
 }
 
-pub trait TrainingDestroy: Send + Sync {
+pub(crate) trait TrainingDestroy: Send + Sync {
     fn select(&self, problem: &Problem, assignment: &[isize], rng: &mut StdRng) -> Vec<usize>;
 }
 
 #[derive(Clone)]
-pub struct ConsFormerBatcher {
+pub(crate) struct ConsFormerBatcher {
     pub mask_fraction: f64,
     pub destroy: Option<Arc<dyn TrainingDestroy>>,
 }
@@ -271,7 +271,7 @@ pub struct ConsFormerBatcher {
 /// A batch is just a collection of samples with the addition of initial assignments that are
 /// passed to the neural network.
 #[derive(Clone)]
-pub struct ConsFormerBatch<B: Backend> {
+pub(crate) struct ConsFormerBatch<B: Backend> {
     /// (batch_size, number_vars, number_vars)
     pub attention_masks: Tensor<B, 3, Bool>,
     /// (batch_size, number_vars)

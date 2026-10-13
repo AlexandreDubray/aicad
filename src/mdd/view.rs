@@ -23,7 +23,7 @@ pub trait MddView:
 }
 
 /// `MddView` plus the branching order -- needed by `crate::mdd::wmc::partial_forward`/
-/// `partial_backward` and `crate::sampling::bp::belief_propagation`, which index `weights` by
+/// `partial_backward` and `crate::sampling::belief_propagation`, which index `weights` by
 /// global variable id rather than by layer.
 pub trait MddViewWithOrder: MddView {
     fn decision_at_layer(&self, layer: usize) -> VariableIndex;

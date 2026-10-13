@@ -6,7 +6,7 @@ pub enum MergeHeuristic {
 }
 
 impl MergeHeuristic {
-    pub fn bucket_merge(&self) -> bool {
+    pub(crate) fn bucket_merge(&self) -> bool {
         match self {
             Self::LessRelaxed => false,
             Self::MostLikely => false,

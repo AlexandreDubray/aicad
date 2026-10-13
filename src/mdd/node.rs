@@ -41,11 +41,11 @@ impl Node {
         self.index_in_layer
     }
 
-    pub fn number_children(&self) -> usize {
+    pub(crate) fn number_children(&self) -> usize {
         self.children_edges.len()
     }
 
-    pub fn add_child_edge(&mut self, edge: EdgeIndex) {
+    pub(crate) fn add_child_edge(&mut self, edge: EdgeIndex) {
         self.children_edges.push(edge);
     }
 
@@ -53,7 +53,7 @@ impl Node {
         self.children_edges.copy_from_slice(edges);
     }
 
-    pub fn child_edge_at(&self, index: usize) -> EdgeIndex {
+    pub(crate) fn child_edge_at(&self, index: usize) -> EdgeIndex {
         self.children_edges[index]
     }
 
@@ -61,11 +61,11 @@ impl Node {
         &self.children_edges
     }
 
-    pub fn swap_remove_child_edge(&mut self, index: usize) {
+    pub(crate) fn swap_remove_child_edge(&mut self, index: usize) {
         self.children_edges.swap_remove(index);
     }
 
-    pub fn remove_child_edge(&mut self, edge: EdgeIndex) {
+    pub(crate) fn remove_child_edge(&mut self, edge: EdgeIndex) {
         for i in (0..self.children_edges.len()).rev() {
             if self.children_edges[i] == edge {
                 self.children_edges.swap_remove(i);
@@ -74,23 +74,23 @@ impl Node {
         }
     }
 
-    pub fn number_parents(&self) -> usize {
+    pub(crate) fn number_parents(&self) -> usize {
         self.parents_edges.len()
     }
 
-    pub fn add_parent_edge(&mut self, edge: EdgeIndex) {
+    pub(crate) fn add_parent_edge(&mut self, edge: EdgeIndex) {
         self.parents_edges.push(edge);
     }
 
-    pub fn parent_edge_at(&self, index: usize) -> EdgeIndex {
+    pub(crate) fn parent_edge_at(&self, index: usize) -> EdgeIndex {
         self.parents_edges[index]
     }
 
-    pub fn swap_remove_parent_edge(&mut self, index: usize) {
+    pub(crate) fn swap_remove_parent_edge(&mut self, index: usize) {
         self.parents_edges.swap_remove(index);
     }
 
-    pub fn remove_parent_edge(&mut self, edge: EdgeIndex) {
+    pub(crate) fn remove_parent_edge(&mut self, edge: EdgeIndex) {
         for i in (0..self.parents_edges.len()).rev() {
             if self.parents_edges[i] == edge {
                 self.parents_edges.swap_remove(i);
@@ -99,43 +99,43 @@ impl Node {
         }
     }
 
-    pub fn deactivate(&mut self) {
+    pub(crate) fn deactivate(&mut self) {
         self.active = false;
     }
 
-    pub fn is_active(&self) -> bool {
+    pub(crate) fn is_active(&self) -> bool {
         self.active
     }
 
-    pub fn iter_parents(&self) -> impl Iterator<Item = EdgeIndex> {
+    pub(crate) fn iter_parents(&self) -> impl Iterator<Item = EdgeIndex> {
         self.parents_edges.iter().copied()
     }
 
-    pub fn iter_children(&self) -> impl Iterator<Item = EdgeIndex> {
+    pub(crate) fn iter_children(&self) -> impl Iterator<Item = EdgeIndex> {
         self.children_edges.iter().copied()
     }
 
-    pub fn is_relaxed(&self) -> bool {
+    pub(crate) fn is_relaxed(&self) -> bool {
         self.relaxed
     }
 
-    pub fn set_relaxed(&mut self, relaxed: bool) {
+    pub(crate) fn set_relaxed(&mut self, relaxed: bool) {
         self.relaxed = relaxed
     }
 
-    pub fn is_property_flag(&self) -> bool {
+    pub(crate) fn is_property_flag(&self) -> bool {
         self.property_flag
     }
 
-    pub fn set_property_flag(&mut self) {
+    pub(crate) fn set_property_flag(&mut self) {
         self.property_flag = true;
     }
 
-    pub fn unset_property_flag(&mut self) {
+    pub(crate) fn unset_property_flag(&mut self) {
         self.property_flag = false;
     }
 
-    pub fn update_edge_indices(&mut self, map: &FxHashMap<EdgeIndex, EdgeIndex>) {
+    pub(crate) fn update_edge_indices(&mut self, map: &FxHashMap<EdgeIndex, EdgeIndex>) {
         for i in (0..self.parents_edges.len()).rev() {
             match map.get(&self.parents_edges[i]) {
                 Some(&new_index) => self.parents_edges[i] = new_index,

@@ -42,7 +42,7 @@ impl Problem {
     /// Adds an already-boxed constraint to the problem and returns its index. Used by
     /// `crate::mdd::arena` to rebuild a synthetic problem's constraints from a
     /// `ConstraintShapeKey` (where the concrete constraint type isn't known at the call site).
-    pub fn add_constraint_boxed(
+    pub(crate) fn add_constraint_boxed(
         &mut self,
         constraint: Box<dyn Constraint + Send + Sync>,
     ) -> ConstraintIndex {

@@ -12,11 +12,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static SINK: Mutex<Option<BufWriter<File>>> = Mutex::new(None);
 
-pub fn is_enabled() -> bool {
+pub(crate) fn is_enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-pub fn enable(path: &Path) -> std::io::Result<()> {
+pub(crate) fn enable(path: &Path) -> std::io::Result<()> {
     let file = File::create(path)?;
     *SINK.lock().unwrap() = Some(BufWriter::new(file));
     ENABLED.store(true, Ordering::Relaxed);
@@ -26,7 +26,7 @@ pub fn enable(path: &Path) -> std::io::Result<()> {
 /// Flushes and closes the sink. Also called implicitly by dropping the process, but since a
 /// `static` never runs its destructor, call this explicitly once done recording to guarantee
 /// every buffered event actually made it to disk.
-pub fn disable() {
+pub(crate) fn disable() {
     ENABLED.store(false, Ordering::Relaxed);
     if let Some(mut writer) = SINK.lock().unwrap().take() {
         let _ = writer.flush();
@@ -36,7 +36,7 @@ pub fn disable() {
 /// Writes `value` as one JSONL line. Flushes on every call -- this is an opt-in diagnostics path,
 /// not a hot one, and losing buffered events to a crash or a forgotten `disable()` would defeat
 /// the point.
-pub fn record(value: serde_json::Value) {
+pub(crate) fn record(value: serde_json::Value) {
     let Ok(mut guard) = SINK.lock() else {
         return;
     };

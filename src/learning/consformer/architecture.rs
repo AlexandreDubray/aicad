@@ -12,13 +12,13 @@ use crate::learning::*;
 
 /// Embeds a discrete assignment to the variables into the embedding space
 #[derive(Module, Debug)]
-pub struct AssignmentEmbedding<B: Backend> {
+pub(crate) struct AssignmentEmbedding<B: Backend> {
     embedding: burn::nn::Embedding<B>,
 }
 
 /// Parameters of the embedding module
 #[derive(Config, Debug)]
-pub struct AssignmentEmbeddingConfig {
+pub(crate) struct AssignmentEmbeddingConfig {
     /// Domain size of the variables
     pub domain_size: usize,
     /// Embedding size
@@ -26,7 +26,7 @@ pub struct AssignmentEmbeddingConfig {
 }
 
 impl AssignmentEmbeddingConfig {
-    pub fn init<B: Backend>(&self, device: &B::Device) -> AssignmentEmbedding<B> {
+    pub(crate) fn init<B: Backend>(&self, device: &B::Device) -> AssignmentEmbedding<B> {
         AssignmentEmbedding {
             embedding: EmbeddingConfig::new(self.domain_size, self.embedding_size).init(device),
         }
@@ -36,14 +36,14 @@ impl AssignmentEmbeddingConfig {
 impl<B: Backend> AssignmentEmbedding<B> {
     /// x: Input assignments (batch_size, number_variables)
     /// returns:             (batch_size, number_variables, embedding_size)
-    pub fn forward(&self, x: Tensor<B, 2, Int>) -> Tensor<B, 3> {
+    pub(crate) fn forward(&self, x: Tensor<B, 2, Int>) -> Tensor<B, 3> {
         self.embedding.forward(x)
     }
 }
 
 /// Positional embedding used for identify variables in the attention masks.
 #[derive(Module, Debug)]
-pub struct FixedPositionalEmbedding<B: Backend> {
+pub(crate) struct FixedPositionalEmbedding<B: Backend> {
     /// table: pre-computed table to map variable index to position. Tensor of shape (16384, embedding_size)
     table: Tensor<B, 2>,
 }
@@ -51,7 +51,7 @@ pub struct FixedPositionalEmbedding<B: Backend> {
 impl<B: Backend> FixedPositionalEmbedding<B> {
     /// Creates a new positional embedding for the variables. Pre-compute the table for each
     /// possible variable id (0, ..., max_len - 1) computes its (sin, cos) position.
-    pub fn new(embedding_size: usize, device: &B::Device) -> Self {
+    pub(crate) fn new(embedding_size: usize, device: &B::Device) -> Self {
         let half = embedding_size / 2;
 
         let inv_freq: Vec<f32> = (0..half)
@@ -73,7 +73,7 @@ impl<B: Backend> FixedPositionalEmbedding<B> {
 
     /// x: Input variable ids (batch_size, number_variables)
     /// returns:              (batch_size, number_variables, embedding_size)
-    pub fn forward(&self, x: Tensor<B, 2, Int>) -> Tensor<B, 3> {
+    pub(crate) fn forward(&self, x: Tensor<B, 2, Int>) -> Tensor<B, 3> {
         let [batch_size, number_variables] = x.dims();
         let embedding_size = self.table.dims()[1];
 
@@ -94,7 +94,7 @@ impl<B: Backend> FixedPositionalEmbedding<B> {
 /// axis count, and matches how the rest of the embedding mix (assignment,
 /// mask, position) is already combined by `EmbeddingMixer`.
 #[derive(Module, Debug)]
-pub struct StructuredPositionalEmbedding<B: Backend> {
+pub(crate) struct StructuredPositionalEmbedding<B: Backend> {
     /// One table per axis, each sized to that axis's cardinality.
     axes: Vec<FixedPositionalEmbedding<B>>,
     #[module(skip)]
@@ -103,7 +103,7 @@ pub struct StructuredPositionalEmbedding<B: Backend> {
 
 impl<B: Backend> StructuredPositionalEmbedding<B> {
     /// Creates a new structural positional embedding
-    pub fn new(
+    pub(crate) fn new(
         embedding_size: usize,
         num_axes: usize,
         positions: Vec<Vec<usize>>,
@@ -121,7 +121,7 @@ impl<B: Backend> StructuredPositionalEmbedding<B> {
     /// batch_size: number of parallel assignments in this forward call.
     /// returns: (batch_size, number_vars, embedding_size), summed across
     /// axes.
-    pub fn forward(&self, batch_size: usize, device: &B::Device) -> Tensor<B, 3> {
+    pub(crate) fn forward(&self, batch_size: usize, device: &B::Device) -> Tensor<B, 3> {
         let mut acc: Option<Tensor<B, 3>> = None;
         for (axis_embed, ids) in self.axes.iter().zip(self.axis_ids.iter()) {
             let number_vars = ids.len();
@@ -141,7 +141,7 @@ impl<B: Backend> StructuredPositionalEmbedding<B> {
 }
 
 #[derive(Module, Debug)]
-pub struct EmbeddingMixer<B: Backend> {
+pub(crate) struct EmbeddingMixer<B: Backend> {
     /// Weight the assignment embedding for mixing. Learnable float parameter.
     assignment_weight: Param<Tensor<B, 3>>,
     /// Weight the mask (i.e., which variable is being modified) embedding for mixing. Learnable float parameter.
@@ -151,12 +151,12 @@ pub struct EmbeddingMixer<B: Backend> {
 }
 
 #[derive(Config, Debug)]
-pub struct EmbeddingMixerConfig {
+pub(crate) struct EmbeddingMixerConfig {
     pub embedding_size: usize,
 }
 
 impl EmbeddingMixerConfig {
-    pub fn init<B: Backend>(&self, device: &B::Device) -> EmbeddingMixer<B> {
+    pub(crate) fn init<B: Backend>(&self, device: &B::Device) -> EmbeddingMixer<B> {
         EmbeddingMixer {
             assignment_weight: Param::from_tensor(Tensor::ones([1, 1, 1], device)),
             mask_weight: Param::from_tensor(Tensor::ones([1, 1, 1], device)),
@@ -170,7 +170,7 @@ impl<B: Backend> EmbeddingMixer<B> {
     /// mask_embedding: Learned mask for the embeddings.             Tensor of shape (embedding_size,)
     /// position_embeddings: Positional embeddings                   Tensor of shape (batch_size, number_var, embedding_size)
     /// mask_vars: Mask indicating which variable to change.         Tensor of shape (bathc_size, number_var)
-    pub fn forward(
+    pub(crate) fn forward(
         &self,
         assignment_embeddings: Tensor<B, 3>,
         mask_embedding: Tensor<B, 1>,
@@ -201,7 +201,7 @@ impl<B: Backend> EmbeddingMixer<B> {
 // --- Feed forward block --- //
 
 #[derive(Module, Debug)]
-pub struct FeedForward<B: Backend> {
+pub(crate) struct FeedForward<B: Backend> {
     fc1: Linear<B>,
     act: Gelu,
     fc2: Linear<B>,
@@ -209,7 +209,7 @@ pub struct FeedForward<B: Backend> {
 }
 
 #[derive(Config, Debug)]
-pub struct FeedForwardConfig {
+pub(crate) struct FeedForwardConfig {
     pub hidden_size: usize,
     pub expand_size: usize,
     #[config(default = 0.1)]
@@ -219,7 +219,7 @@ pub struct FeedForwardConfig {
 }
 
 impl FeedForwardConfig {
-    pub fn init<B: Backend>(&self, device: &B::Device) -> FeedForward<B> {
+    pub(crate) fn init<B: Backend>(&self, device: &B::Device) -> FeedForward<B> {
         FeedForward {
             fc1: LinearConfig::new(self.hidden_size, self.expand_size)
                 .with_bias(self.bias)
@@ -234,7 +234,7 @@ impl FeedForwardConfig {
 }
 
 impl<B: Backend> FeedForward<B> {
-    pub fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
+    pub(crate) fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
         let x = self.fc1.forward(x);
         let x = self.act.forward(x);
         let x = self.fc2.forward(x);
@@ -251,7 +251,7 @@ impl<B: Backend> FeedForward<B> {
 /// `f32::NEG_INFINITY`, gradients still flow through it and the model can learn to attend
 /// beyond the primal graph where that helps.
 #[derive(Module, Debug)]
-pub struct LearnedMaskBias<B: Backend> {
+pub(crate) struct LearnedMaskBias<B: Backend> {
     connected: Param<Tensor<B, 1>>,
     unconnected: Param<Tensor<B, 1>>,
 }
@@ -285,7 +285,7 @@ impl<B: Backend> LearnedMaskBias<B> {
 /// How `MultiHeadAttention` incorporates the primal-graph attention mask into the attention
 /// energy before softmax.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum MaskingKind {
+pub(crate) enum MaskingKind {
     /// Non-linked pairs get `f32::NEG_INFINITY` added to their energy (`Tensor::mask_fill`),
     /// giving them exactly zero softmax weight and zero gradient.
     Hard,
@@ -296,7 +296,7 @@ pub enum MaskingKind {
 }
 
 #[derive(Module, Debug)]
-pub struct MultiHeadAttention<B: Backend> {
+pub(crate) struct MultiHeadAttention<B: Backend> {
     q_proj: Linear<B>,
     k_proj: Linear<B>,
     v_proj: Linear<B>,
@@ -309,7 +309,7 @@ pub struct MultiHeadAttention<B: Backend> {
 }
 
 #[derive(Config, Debug)]
-pub struct MultiHeadAttentionConfig {
+pub(crate) struct MultiHeadAttentionConfig {
     /// Size of the embedding of the assignments
     pub embedding_size: usize,
     /// Size of the hidden representation of the multi-head attention block
@@ -326,7 +326,7 @@ pub struct MultiHeadAttentionConfig {
 }
 
 impl MultiHeadAttentionConfig {
-    pub fn init<B: Backend>(&self, device: &B::Device) -> MultiHeadAttention<B> {
+    pub(crate) fn init<B: Backend>(&self, device: &B::Device) -> MultiHeadAttention<B> {
         MultiHeadAttention {
             q_proj: LinearConfig::new(self.embedding_size, self.hidden_size * self.head_count)
                 .init(device),
@@ -352,7 +352,11 @@ impl<B: Backend> MultiHeadAttention<B> {
     /// attention_mask: Mask the attention of variables not neighbors in the primal graph of the
     /// problem.                                Tensor of shape (batch_size, number_vars, number_vars)
     /// Returns: TODO
-    pub fn forward(&self, x: Tensor<B, 3>, attention_mask: Tensor<B, 3, Bool>) -> Tensor<B, 3> {
+    pub(crate) fn forward(
+        &self,
+        x: Tensor<B, 3>,
+        attention_mask: Tensor<B, 3, Bool>,
+    ) -> Tensor<B, 3> {
         let [batch_size, number_vars, _] = x.dims();
 
         // What information each variable is looking from other
@@ -428,7 +432,7 @@ impl<B: Backend> MultiHeadAttention<B> {
 // --- Transformer --- //
 
 #[derive(Module, Debug)]
-pub struct TransformerBlock<B: Backend> {
+pub(crate) struct TransformerBlock<B: Backend> {
     norm1: LayerNorm<B>,
     attn: MultiHeadAttention<B>,
     norm2: LayerNorm<B>,
@@ -436,7 +440,7 @@ pub struct TransformerBlock<B: Backend> {
 }
 
 #[derive(Config, Debug)]
-pub struct TransformerBlockConfig {
+pub(crate) struct TransformerBlockConfig {
     /// Size of the embedding of the assignments
     pub embedding_size: usize,
     /// Size of the hidden representation of the multi-head attention block
@@ -469,7 +473,7 @@ impl TransformerBlockConfig {
     ///       generation
     ///    3. A new normalisation layer
     ///    4. A feed-forward block that allows each variable to look at its internal weight
-    pub fn init<B: Backend>(&self, device: &B::Device) -> TransformerBlock<B> {
+    pub(crate) fn init<B: Backend>(&self, device: &B::Device) -> TransformerBlock<B> {
         TransformerBlock {
             norm1: LayerNormConfig::new(self.hidden_size).init(device),
             attn: MultiHeadAttentionConfig::new(self.embedding_size, self.hidden_size)
@@ -487,7 +491,11 @@ impl TransformerBlockConfig {
 }
 
 impl<B: Backend> TransformerBlock<B> {
-    pub fn forward(&self, x: Tensor<B, 3>, attention_mask: Tensor<B, 3, Bool>) -> Tensor<B, 3> {
+    pub(crate) fn forward(
+        &self,
+        x: Tensor<B, 3>,
+        attention_mask: Tensor<B, 3, Bool>,
+    ) -> Tensor<B, 3> {
         // Applies the first normaliation block and the multi-head attention block
         let x = x.clone() + self.attn.forward(self.norm1.forward(x), attention_mask);
         // Applies the second normalisation block and the feed-forward block
@@ -498,7 +506,7 @@ impl<B: Backend> TransformerBlock<B> {
 // --- Consformer architecture, embedding the transformer blocks --- //
 
 #[derive(Module, Debug)]
-pub struct ConsFormer<B: Backend> {
+pub(crate) struct ConsFormer<B: Backend> {
     /// Learned embedding for the masked variables
     pub(crate) mask_embedding: Param<Tensor<B, 1>>,
     /// Module to map assignments to their embedding

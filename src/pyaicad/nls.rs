@@ -32,7 +32,7 @@ use super::problem::PyProblem;
 
 #[pyclass(from_py_object)]
 #[derive(Clone)]
-pub struct PySolution {
+pub(crate) struct PySolution {
     /// Seconds elapsed before finding the solution (or before the budget ran out).
     /// Sub-second precision -- see `nls::Solution::runtime`'s doc.
     #[pyo3(get)]
@@ -65,7 +65,7 @@ impl From<&Solution> for PySolution {
 
 #[pyclass(from_py_object)]
 #[derive(Clone)]
-pub enum PyStatus {
+pub(crate) enum PyStatus {
     Satisfiable,
     Unsatisfiable,
     Unknown,
@@ -206,7 +206,7 @@ impl PyDecodeKind {
 /// Builds the decode operator for neural local search. `decode_kind == "logits"` picks greedy
 /// (`Argmax`) vs. stochastic (`Sampling`) decoding of the network's raw logits, per
 /// `stochastic_decode`; `decode_kind == "mdd_sampling"` instead refines those same logits through
-/// one round of `sampling::bp::belief_propagation` over the problem's compiled MDDs before
+/// one round of `sampling::belief_propagation` over the problem's compiled MDDs before
 /// decoding -- see `MddSamplingDecode`'s doc.
 fn build_decode_op<B: Backend>(
     decode_kind: &PyDecodeKind,
@@ -244,7 +244,7 @@ fn build_decode_op<B: Backend>(
 /// `neural_local_search` can solve one problem or a whole batch through the
 /// same entry point.
 #[derive(FromPyObject)]
-pub enum PyProblemsArg<'py> {
+pub(crate) enum PyProblemsArg<'py> {
     Many(Vec<PyRef<'py, PyProblem>>),
     Single(PyRef<'py, PyProblem>),
 }
@@ -425,7 +425,7 @@ impl TryFrom<&SolveConfig> for PySolveConfig {
 /// left unset, it's `PySolveConfig()` -- today's zero-config defaults.
 #[pyfunction]
 #[pyo3(signature = (problems, checkpoint_dir=None, config=None))]
-pub fn neural_local_search(
+pub(crate) fn neural_local_search(
     py: Python<'_>,
     problems: PyProblemsArg<'_>,
     checkpoint_dir: Option<String>,

@@ -1,17 +1,17 @@
-pub mod architecture;
-pub mod dataset;
-pub mod loss;
-pub mod mdd_dataset;
+pub(crate) mod architecture;
+pub(crate) mod dataset;
+pub(crate) mod loss;
+pub(crate) mod mdd_dataset;
 
 use super::*;
 use crate::modelling::Problem;
-pub use architecture::ConsFormer;
+pub(crate) use architecture::ConsFormer;
 use architecture::*;
-pub use dataset::{
+pub(crate) use dataset::{
     ConsFormerBatch, ConsFormerBatcher, ConsFormerDataset, ConsFormerSample, TrainingDestroy,
 };
-pub use loss::{ConsFormerLoss, ConsFormerMddLoss};
-pub use mdd_dataset::{
+pub(crate) use loss::{ConsFormerLoss, ConsFormerMddLoss};
+pub(crate) use mdd_dataset::{
     ConsFormerMddBatch, ConsFormerMddBatcher, ConsFormerMddDataset, ConsFormerMddSample,
     MddCompilationConfig,
 };
@@ -29,7 +29,7 @@ use std::sync::Arc;
 /// structs -- e.g. `ConsFormerBatch` for the classical per-constraint-penalty
 /// loss, and a future dedicated batch for the MDD-WMC loss -- without
 /// merging their data into one shared batch type.
-pub trait ConsFormerInputs<B: Backend> {
+pub(crate) trait ConsFormerInputs<B: Backend> {
     /// (batch_size, number_vars, number_vars)
     fn attention_masks(&self) -> Tensor<B, 3, Bool>;
     /// (batch_size, number_vars)
@@ -39,7 +39,7 @@ pub trait ConsFormerInputs<B: Backend> {
 }
 
 #[derive(Config, Debug)]
-pub struct ConsFormerConfig {
+pub(crate) struct ConsFormerConfig {
     /// Size of the domains of the variables. Currently assumed fixed for all variables.
     pub domain_size: usize,
     /// Size of the embedding of the assignments
@@ -82,7 +82,7 @@ pub struct ConsFormerConfig {
 /// `ConsFormerDataConfig::from(&network_config)` rather than constructing it by hand, so it's
 /// always sourced from the same `ConsFormerConfig` the network itself was built with.
 #[derive(Clone, Copy, Debug)]
-pub struct ConsFormerDataConfig {
+pub(crate) struct ConsFormerDataConfig {
     /// Must match the network's `domain_size` -- every compiled MDD's edges are validated against
     /// this at dataset-construction time (see `mdd_dataset::compile_constraint_mdds`), and the
     /// training loss reads/writes the network's per-variable probability vector at this width.

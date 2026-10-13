@@ -7,7 +7,7 @@ use super::{Edge, EdgeIndex, Node, NodeIndex};
 /// The compiled shape of an MDD: nodes, edges, root and sink, with no reference to which real
 /// problem or which `VariableIndex`s were compiled. Built from an already-compiled (and normally
 /// already-`refine`d) `Mdd` via `Mdd::into_structure`.
-pub struct MddStructure {
+pub(crate) struct MddStructure {
     pub(super) nodes: Vec<Vec<Node>>,
     pub(super) edges: Vec<Vec<Edge>>,
     pub(super) root: NodeIndex,
@@ -16,35 +16,37 @@ pub struct MddStructure {
 }
 
 impl MddStructure {
-    pub fn number_nodes(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn number_nodes(&self) -> usize {
         self.nodes.iter().map(|layer| layer.len()).sum::<usize>()
     }
 
-    pub fn number_nodes_in_layer(&self, layer: usize) -> usize {
+    pub(crate) fn number_nodes_in_layer(&self, layer: usize) -> usize {
         self.nodes[layer].len()
     }
 
-    pub fn nodes_in_layer(&self, layer: usize) -> impl Iterator<Item = NodeIndex> + '_ {
+    pub(crate) fn nodes_in_layer(&self, layer: usize) -> impl Iterator<Item = NodeIndex> + '_ {
         (0..self.nodes[layer].len()).map(move |index| NodeIndex(layer, index))
     }
 
-    pub fn number_edges(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn number_edges(&self) -> usize {
         self.edges.len()
     }
 
-    pub fn number_layers(&self) -> usize {
+    pub(crate) fn number_layers(&self) -> usize {
         self.nodes.len()
     }
 
-    pub fn root(&self) -> NodeIndex {
+    pub(crate) fn root(&self) -> NodeIndex {
         self.root
     }
 
-    pub fn sink(&self) -> NodeIndex {
+    pub(crate) fn sink(&self) -> NodeIndex {
         self.sink
     }
 
-    pub fn is_unsat(&self) -> bool {
+    pub(crate) fn is_unsat(&self) -> bool {
         self.unsat
     }
 }

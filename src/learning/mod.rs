@@ -1,6 +1,6 @@
-pub mod consformer;
-pub mod monitoring;
-pub mod train;
+pub(crate) mod consformer;
+pub(crate) mod monitoring;
+pub(crate) mod train;
 
 use std::sync::Arc;
 
@@ -10,11 +10,11 @@ use burn::tensor::{Int, Tensor};
 
 use crate::modelling::Problem;
 
-pub trait BatchProblems<B: Backend> {
+pub(crate) trait BatchProblems<B: Backend> {
     fn problems(&self) -> &[Arc<Problem>];
 }
 
-pub trait Batch<B: Backend>:
+pub(crate) trait Batch<B: Backend>:
     BatchProblems<B> + Clone + Send + Sync + std::fmt::Debug + 'static
 {
     fn for_assignments(
@@ -25,16 +25,16 @@ pub trait Batch<B: Backend>:
     ) -> Self;
 }
 
-pub trait Network<B: Backend, Ba>: Module<B> {
+pub(crate) trait Network<B: Backend, Ba>: Module<B> {
     fn forward(&self, batch: &Ba) -> Tensor<B, 3>;
 }
 
-pub trait NetworkConfig<B: Backend> {
+pub(crate) trait NetworkConfig<B: Backend> {
     type N: Module<B>;
 
     fn init(&self, problems: &[Arc<Problem>], device: &B::Device) -> Self::N;
 }
 
-pub trait Loss<B: Backend, Ba> {
+pub(crate) trait Loss<B: Backend, Ba> {
     fn loss(&self, logits: Tensor<B, 3>, batch: &Ba) -> Tensor<B, 1>;
 }

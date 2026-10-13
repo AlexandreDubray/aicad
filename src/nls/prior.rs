@@ -11,7 +11,7 @@ use burn::tensor::{Int, Tensor};
 use crate::learning::{Batch, Network};
 use crate::modelling::Problem;
 
-pub trait PriorHeuristic<B: Backend>: Send + Sync {
+pub(crate) trait PriorHeuristic<B: Backend>: Send + Sync {
     /// Logits of shape `[rows, variables, domain_size]`, one row per problem in `problems`.
     fn priors(
         &self,
@@ -22,13 +22,13 @@ pub trait PriorHeuristic<B: Backend>: Send + Sync {
     ) -> Tensor<B, 3>;
 }
 
-pub struct NetworkPrior<N, Ba> {
+pub(crate) struct NetworkPrior<N, Ba> {
     network: N,
     _batch: PhantomData<fn() -> Ba>,
 }
 
 impl<N, Ba> NetworkPrior<N, Ba> {
-    pub fn new(network: N) -> Self {
+    pub(crate) fn new(network: N) -> Self {
         Self {
             network,
             _batch: PhantomData,
@@ -57,17 +57,17 @@ where
 
 /// Equal logits everywhere, so every in-domain value starts equally likely. No network is
 /// evaluated and no batch is built.
-pub struct UniformPrior {
+pub(crate) struct UniformPrior {
     domain_size: usize,
 }
 
 impl UniformPrior {
-    pub fn new(domain_size: usize) -> Self {
+    pub(crate) fn new(domain_size: usize) -> Self {
         Self { domain_size }
     }
 
     /// Smallest alphabet that covers every value any variable of any problem can take.
-    pub fn domain_size_covering(problems: &[Arc<Problem>]) -> usize {
+    pub(crate) fn domain_size_covering(problems: &[Arc<Problem>]) -> usize {
         problems
             .iter()
             .flat_map(|problem| {

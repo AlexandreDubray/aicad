@@ -281,7 +281,7 @@ pub(super) fn cuda_available() -> bool {
 /// backend a later `train_consformer`/`neural_local_search` call will pick, and seeding the one
 /// that won't be used is harmless.
 #[pyfunction]
-pub fn set_seed(seed: u64) {
+pub(crate) fn set_seed(seed: u64) {
     crate::utils::rng::set_seed(seed);
     NdArray::<f32>::seed(&NdArrayDevice::default(), seed);
     if cuda_available() {
@@ -370,7 +370,7 @@ fn enable_timing_log(checkpoint_dir: &Path) -> Option<TimingLogGuard> {
 /// every log line was queued up and only delivered in a burst at the very end.
 #[pyfunction]
 #[pyo3(signature = (problems, config, training, checkpoint_dir, validation=None))]
-pub fn train_consformer(
+pub(crate) fn train_consformer(
     py: Python<'_>,
     problems: Vec<PyRef<PyProblem>>,
     config: &PyConsFormerConfig,
@@ -470,7 +470,7 @@ fn run_training<B: AutodiffBackend>(
         pyselect=PySelectHeuristic::Greedy,
         validation=None))]
 #[allow(clippy::too_many_arguments)]
-pub fn train_consformer_mdd(
+pub(crate) fn train_consformer_mdd(
     py: Python<'_>,
     problems: Vec<PyRef<PyProblem>>,
     config: &PyConsFormerConfig,

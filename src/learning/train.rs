@@ -21,7 +21,7 @@ use crate::modelling::Problem;
 
 /// Heuristic to select the best model during training
 #[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
-pub enum ModelSelection {
+pub(crate) enum ModelSelection {
     /// Use the best training loss
     Loss,
     /// Use the best constraint satisfaction ratio
@@ -30,7 +30,7 @@ pub enum ModelSelection {
 
 /// Configuration of the training loop
 #[derive(Config, Debug)]
-pub struct TrainingConfig {
+pub(crate) struct TrainingConfig {
     /// Learning rate
     #[config(default = 3e-4)]
     pub lr: f64,
@@ -161,7 +161,7 @@ fn compute_horizons(
 /// device: Device to launch the training on (cpu or gpu) -- also valid as `B::InnerBackend`'s
 ///         device, since `Autodiff<X>::Device == X::Device`
 #[allow(clippy::too_many_arguments)]
-pub fn train_model<B, NC, S, TBatch, Ba, L, SValid, VBatch>(
+pub(crate) fn train_model<B, NC, S, TBatch, Ba, L, SValid, VBatch>(
     network_config: NC,
     problems: &[Arc<Problem>],
     train_dataset: impl Dataset<S> + 'static,

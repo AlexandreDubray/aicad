@@ -269,7 +269,7 @@ impl Mdd {
 
     /// Consumes this (already compiled, normally already `refine`d) `Mdd` and extracts just its
     /// structural part.
-    pub fn into_structure(self) -> MddStructure {
+    pub(crate) fn into_structure(self) -> MddStructure {
         MddStructure {
             nodes: self.nodes,
             edges: self.edges,
@@ -388,7 +388,7 @@ impl Mdd {
     /// The two passes must run in this order: bottom-up filtering compares a node's *already
     /// up to date* top-down property against its child's freshly-computed bottom-up property,
     /// so the top-down pass has to be complete first.
-    pub fn propagate_constraints(&mut self) {
+    pub(crate) fn propagate_constraints(&mut self) {
         self.update_top_down_properties();
         self.update_bottom_up_properties_and_filter_edges();
     }
@@ -942,7 +942,7 @@ impl Mdd {
         self.sink
     }
 
-    pub fn nodes_in_layer(&self, layer: usize) -> impl Iterator<Item = NodeIndex> + '_ {
+    pub(crate) fn nodes_in_layer(&self, layer: usize) -> impl Iterator<Item = NodeIndex> + '_ {
         (0..self.nodes[layer].len()).map(move |index| NodeIndex(layer, index))
     }
 
@@ -981,7 +981,7 @@ impl Mdd {
         panic!("TODO");
     }
 
-    pub fn get_edge_probability(&self, edge: EdgeIndex) -> f64 {
+    pub(crate) fn get_edge_probability(&self, edge: EdgeIndex) -> f64 {
         let EdgeIndex(source_layer, _) = edge;
         let variable = self.decision_at_layer(source_layer);
         let assignment = self[edge].assignment();

@@ -1,10 +1,11 @@
-pub mod constraint;
-pub mod problem;
-pub mod variable;
+pub(crate) mod constraint;
+pub(crate) mod problem;
+pub(crate) mod variable;
 
 #[doc(no_inline)]
 pub use constraint::{Constraint, ConstraintProperty, ConstraintShapeKey};
 pub use problem::Problem;
+pub use variable::Variable;
 
 pub fn equal(problem: &mut Problem, variable: VariableIndex, value: isize) {
     problem[variable].set_domain(vec![value]);

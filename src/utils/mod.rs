@@ -1,8 +1,8 @@
-pub mod bitset;
-pub mod parallel;
-pub mod rng;
-pub mod tensor;
+pub(crate) mod bitset;
+pub(crate) mod parallel;
+pub(crate) mod rng;
+pub(crate) mod tensor;
 
-pub use bitset::Bitset;
-pub use parallel::{run_pulled, worker_pool};
-pub use rng::with_rng;
+pub(crate) use bitset::Bitset;
+pub(crate) use parallel::{run_pulled, worker_pool};
+pub(crate) use rng::with_rng;

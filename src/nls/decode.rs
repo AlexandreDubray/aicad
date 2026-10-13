@@ -19,14 +19,14 @@ use crate::learning::consformer::MddCompilationConfig;
 use crate::mdd::arena::compile_constraint;
 use crate::mdd::{CompiledConstraint, MddArena};
 use crate::modelling::{Problem, ValueIndex, VariableIndex};
-use crate::sampling::bp::belief_propagation;
+use crate::sampling::belief_propagation;
 use crate::sampling::{DecodeMode, argmax, sample_categorical};
 use crate::utils::tensor::to_rows;
 
 /// Turns this iteration's logits into the next assignment. Only positions
 /// flagged in `destroy_mask` may change; everywhere else the current value
 /// is kept, regardless of what the network predicted there.
-pub trait DecodingOperator<B: Backend>: Send + Sync {
+pub(crate) trait DecodingOperator<B: Backend>: Send + Sync {
     fn decode(
         &self,
         logits: Tensor<B, 3>,
@@ -42,7 +42,7 @@ pub trait DecodingOperator<B: Backend>: Send + Sync {
 }
 
 /// Greedy / MAP decoding: takes the most likely value per variable.
-pub struct Argmax;
+pub(crate) struct Argmax;
 
 impl<B: Backend> DecodingOperator<B> for Argmax {
     fn decode(
@@ -59,7 +59,7 @@ impl<B: Backend> DecodingOperator<B> for Argmax {
 
 /// Stochastic decoding: samples a value per variable from
 /// `softmax(logits / temperature)`.
-pub struct Sampling {
+pub(crate) struct Sampling {
     pub temperature: f64,
 }
 
@@ -203,7 +203,7 @@ impl MddCache {
     }
 }
 
-pub struct MddSamplingDecode {
+pub(crate) struct MddSamplingDecode {
     mdds: MddCache,
     mode: DecodeMode,
     bp_iterations: usize,
@@ -213,7 +213,7 @@ impl MddSamplingDecode {
     /// `domain_size` must match the network's configured domain size -- it's the nominal alphabet
     /// every shared constraint-group structure is compiled against, see `crate::mdd::arena`'s
     /// module doc and `MddCache::domain_size`.
-    pub fn new(
+    pub(crate) fn new(
         compilation: MddCompilationConfig,
         domain_size: usize,
         mode: DecodeMode,

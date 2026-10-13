@@ -14,7 +14,7 @@ use crate::modelling::{ConstraintIndex, Problem, VariableIndex};
 /// byte-identical `MddStructure`s, regardless of which real `VariableIndex` or which real
 /// `Arc<Problem>` they come from.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct ConstraintCompileKey {
+pub(crate) struct ConstraintCompileKey {
     /// The constraint's own shape
     shape: ConstraintShapeKey,
     /// Domain size of all variable of the problem being solved (assumed to be identical)
@@ -175,13 +175,13 @@ impl MddArena {
 /// One real constraint's compiled structure (shared, via `MddArena`) plus its own real branching
 /// order (never shared -- cheap to recompute, and specific to this constraint's actual
 /// `VariableIndex`s).
-pub struct CompiledConstraint {
+pub(crate) struct CompiledConstraint {
     pub structure: Arc<MddStructure>,
     pub order: Vec<VariableIndex>,
 }
 
 impl CompiledConstraint {
-    pub fn decision_at_layer(&self, layer: usize) -> VariableIndex {
+    pub(crate) fn decision_at_layer(&self, layer: usize) -> VariableIndex {
         self.order[layer]
     }
 }
@@ -265,7 +265,7 @@ fn compute_constraint_order(
 /// template is compiled to -- `usize::MAX` for an always-exact caller like
 /// `mdd_dataset::compile_constraint_mdds`, or a caller's own configured search-time budget like
 /// `nls::decode::MddSamplingDecode`'s `MddCompilationConfig::max_width`.
-pub fn compile_constraint(
+pub(crate) fn compile_constraint(
     arena: &MddArena,
     problem: &Problem,
     constraint: ConstraintIndex,
