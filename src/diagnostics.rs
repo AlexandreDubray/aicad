@@ -6,8 +6,8 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static SINK: Mutex<Option<BufWriter<File>>> = Mutex::new(None);
