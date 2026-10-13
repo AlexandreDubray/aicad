@@ -1,21 +1,33 @@
-//! Process-wide, optionally-seeded randomness.
+//! Process-wide randomness that can be seeded to make a whole run reproducible.
 //!
-//! Most of this crate's randomness is already explicitly seeded where it matters for a single
-//! call (e.g. `neural_local_search`'s `seed` parameter feeds a local `StdRng`). What's left --
-//! the classical training recipe's per-batch variable masking, the train/validation shuffle, and
-//! `Variable::sample`'s initial-assignment draw -- goes through plain `rand::rng()` (a
-//! non-reseedable, OS-entropy-seeded thread-local), so there was previously no way to make a
-//! whole training/search run reproduce bit-for-bit.
+//! # Meaning
 //!
-//! `with_rng` is a drop-in replacement for `rand::rng()` at those call sites: before `set_seed` is
-//! ever called it behaves identically (fresh OS entropy, no locking), but once `set_seed(seed)`
-//! runs, every subsequent `with_rng` call -- on any thread -- draws from the same seeded `StdRng`
-//! instead. Combined with seeding `burn`'s own backend RNG (see `pyaicad::learn::set_seed`, which
-//! calls both this and `Backend::seed`), this covers the two independently-seedable randomness
-//! sources in the crate. It does not cover `mdd`'s internal tie-breaking RNG, which is seeded
-//! lazily, once per thread, from OS entropy the first time that thread compiles an MDD -- see that
-//! module's `RNG` thread-local for why threading a global seed through it isn't as
-//! straightforward.
+//! [`with_rng`] runs a closure against a random number generator. Until [`set_seed`] has been
+//! called it is a fresh, entropy-seeded `rand::rng()`; after `set_seed(seed)`, every call on any
+//! thread draws from one shared generator started from `seed`. Calling `set_seed` again restarts
+//! the sequence, whatever was drawn before.
+//!
+//! Call sites that do not receive an explicit seed (the shuffle of the training set, the random
+//! masks of the classical training recipe, the initial assignment drawn by `Variable::sample`)
+//! use `with_rng` instead of `rand::rng()`. Everything that takes a `seed` argument, such as the
+//! neural local search, keeps using its own generator.
+//!
+//! The seed does not reach the network's backend (the Python-facing `set_seed` seeds it next to
+//! this generator) nor the tie-breaking generator of the MDD compiler, which each thread seeds
+//! from the operating system the first time it compiles.
+//!
+//! # How it works
+//!
+//! The shared generator is a `StdRng` behind a mutex in a `OnceLock`. Before the first
+//! `set_seed` the cell is empty and `with_rng` takes no lock.
+//!
+//! # Design notes
+//!
+//! - **Reproducible only if the order of draws is.** Threads that draw from the shared generator
+//!   concurrently get values in the order they happen to lock it. Parallel code therefore draws
+//!   what it needs sequentially first (for example one seed per task) and hands it to the tasks.
+//! - **Unseeded behaviour is unchanged.** A process that never calls `set_seed` behaves as if
+//!   this module did not exist.
 
 use std::sync::{Mutex, OnceLock};
 

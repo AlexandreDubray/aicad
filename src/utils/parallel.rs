@@ -1,3 +1,36 @@
+//! The worker pool shared by the crate's CPU parallelism, and a scheduler for independent tasks.
+//!
+//! # Meaning
+//!
+//! [`worker_pool`] returns the process-wide rayon pool, built on first use. The training and
+//! inference code (batched solving, destroy operators, solution checks, building the diagrams of
+//! a batch) runs its parallel loops on it with `worker_pool().install(|| ...)`, so the number of
+//! threads these tasks may use is decided in one place. Compiling a single diagram is
+//! single-threaded and does not use the pool; several diagrams can be compiled at the same time,
+//! one per task.
+//!
+//! [`run_pulled`]`(pool, total, max_workers, task)` calls `task(i)` once for every
+//! $i \in 0..total$ and returns the results in index order. At most `max_workers` tasks run at
+//! the same time (never more than the pool has threads, and always at least one).
+//!
+//! # How it works
+//!
+//! The workers share an atomic counter. Each one takes the next unstarted index as soon as it
+//! finishes its current task, and writes the result into the slot of that index. The call returns
+//! once all workers are done.
+//!
+//! # Design notes
+//!
+//! - **The pool has a quarter of the available threads, and at least one.** The library is run
+//!   on shared servers, where taking every core would slow down other users; the pool is the one
+//!   place that limits it. The size is fixed when the pool is first used and cannot be set by the
+//!   caller.
+//! - **Tasks are pulled, not split in advance.** Tasks can take very different times (one
+//!   hard instance among easy ones), so a worker that finishes early takes the next task instead
+//!   of waiting for a share decided up front.
+//! - **Results are returned by index, not by completion order.** Callers derive seeds from the
+//!   index, so a run gives the same results whatever the scheduler does.
+
 use rayon::ThreadPool;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};

@@ -1207,6 +1207,17 @@ mod test_all_diff {
     }
 
     #[test]
+    fn domains_of_a_whole_number_of_words_count_every_solution() {
+        use num_bigint::BigUint;
+        for size in [63u32, 64, 65, 128] {
+            let (problem, _) = full(&[dom(size as isize), dom(size as isize)]);
+            let mdd = compile(problem, vec![0, 1], usize::MAX);
+            let expected = BigUint::from(size) * BigUint::from(size - 1);
+            assert_eq!(mdd.count_solutions(), expected, "domain size {size}");
+        }
+    }
+
+    #[test]
     #[should_panic]
     fn a_value_added_after_construction_panics() {
         // Documented limitation: the value 9 has no bit.

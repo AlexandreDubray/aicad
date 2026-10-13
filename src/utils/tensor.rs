@@ -1,9 +1,16 @@
-//! Small tensor <-> `Vec<Vec<isize>>` conversion helpers used by `nls::NeuralLocalSearch`, which
-//! represents a batch of rows -- one per (problem, population member) pair -- as a `[rows, n]`
-//! integer tensor holding each variable's raw problem value directly (not a domain index), and
-//! needs to move back and forth between that and plain Rust data to do CPU-side bookkeeping
-//! (constraint checking, destroy-operator heuristics, MDD-based conditionals, ...) that has no
-//! tensor equivalent.
+//! Conversions between rows of assignments and an integer tensor.
+//!
+//! # Meaning
+//!
+//! The neural local search keeps a batch as a `[rows, n]` integer tensor with one row per
+//! (problem, population member) pair, and does its bookkeeping (constraint checks, destroy
+//! operators, MDD conditioning) on plain `Vec<Vec<isize>>` rows on the CPU. [`rows_to_tensor`]
+//! and [`to_rows`] move between the two.
+//!
+//! # Design notes
+//!
+//! - **The tensor holds raw problem values, not domain indices.** A row can then be checked
+//!   against the constraints as it is, without translating through each variable's domain.
 
 use burn::prelude::ElementConversion;
 use burn::tensor::backend::Backend;

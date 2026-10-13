@@ -1,3 +1,38 @@
+//! A fixed-capacity set of small integers, stored one bit per element.
+//!
+//! # Meaning
+//!
+//! `Bitset::new(n)` holds the elements $0, \dots, n - 1$; it starts empty (all bits to 0).
+//! Membership and insertion address a single element, the set operations work word by word:
+//! [`union`](Bitset::union) and [`intersect`](Bitset::intersect) update `self` in place,
+//! [`size_union`](Bitset::size_union) counts $|A \cup B|$ without building the union, and the
+//! `*_with_and_bit` variants combine with `other` extended by one extra element. There is no
+//! removal.
+//!
+//! Both operands of a set operation must have been created with the same `n`. Using an element
+//! of $n$ or more, or combining sets of different sizes, results in a runtime error. The storage
+//! is made of whole 64-bit words, so an element below the next multiple of 64 is not rejected,
+//! and one beyond it panics.
+//!
+//! [`reset`](Bitset::reset) sets every *word* to the given value, not every element: `reset(0)`
+//! empties the set and `reset(!0)` sets all bits of the last word too, including those at $n$ and
+//! above.
+//!
+//! # How it works
+//!
+//! Element $e$ lives in bit $e \bmod 64$ of word $\lfloor e / 64 \rfloor$. Sizes up to 64
+//! fit in one word, kept inline in the enum; larger ones use a vector of words. Both are viewed as
+//! a slice of words, so every operation is the same loop over words whatever the representation.
+//!
+//! # Design notes
+//!
+//! - **One word is stored inline.** Constraints keep a bitset in the property of every node of
+//!   the diagram, and they are often small (the values of a domain, the states of an automaton),
+//!   so avoiding a heap allocation per node matters more than a uniform representation.
+//! - **Equality and hashing look at the words.** Two bitsets are equal exactly when they have the
+//!   same storage class and the same words, which is what lets properties be compared and used as
+//!   merge keys.
+
 use std::hash::Hash;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, deepsize::DeepSizeOf)]
@@ -8,7 +43,7 @@ pub(crate) enum Bitset {
 
 impl Bitset {
     pub(crate) fn new(n: usize) -> Self {
-        let number_words = (n / 64) + 1;
+        let number_words = n.div_ceil(64).max(1);
         if number_words == 1 {
             Self::Inline(0)
         } else {
@@ -139,15 +174,31 @@ mod test_bitset {
     }
 
     #[test]
-    pub fn test_new_is_inline_for_n_63() {
-        let b = Bitset::new(63);
+    pub fn test_new_is_inline_for_n_64() {
+        let b = Bitset::new(64);
         assert!(matches!(b, Bitset::Inline(_)));
     }
 
     #[test]
-    pub fn test_new_is_heap_for_n_64() {
-        let b = Bitset::new(64);
+    pub fn test_new_is_heap_for_n_65() {
+        let b = Bitset::new(65);
         assert!(matches!(b, Bitset::Heap(_)));
+    }
+
+    #[test]
+    pub fn test_new_with_zero_elements_is_inline() {
+        let b = Bitset::new(0);
+        assert!(matches!(b, Bitset::Inline(_)));
+    }
+
+    #[test]
+    pub fn test_the_last_element_of_a_full_word_and_of_the_next_one_fit() {
+        let mut inline = Bitset::new(64);
+        inline.insert(63);
+        assert!(inline.contains(63));
+        let mut heap = Bitset::new(65);
+        heap.insert(64);
+        assert!(heap.contains(64));
     }
 
     #[test]
