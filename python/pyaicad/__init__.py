@@ -19,7 +19,7 @@ Networks for :class:`NLS` are trained with :mod:`pyaicad.learning`.
 """
 
 from . import learning
-from ._runtime import set_log_level, set_seed
+from ._runtime import get_num_threads, set_log_level, set_num_threads, set_seed
 from .errors import AicadError, CheckpointError, ModelError
 from .mdd import MDD, compile
 from .model import (
@@ -66,6 +66,8 @@ __all__ = [
     "learning",
     # settings
     "set_seed",
+    "set_num_threads",
+    "get_num_threads",
     "set_log_level",
     # errors
     "AicadError",

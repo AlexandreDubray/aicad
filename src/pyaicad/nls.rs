@@ -647,7 +647,7 @@ fn chunked_run<B: Backend>(
     progress.set_message("Solving instances");
 
     let solutions: Vec<Solution> = crate::utils::run_pulled(
-        crate::utils::worker_pool(),
+        &crate::utils::worker_pool(),
         chunks.len(),
         max_concurrent_chunks,
         |chunk_idx| {

@@ -6,6 +6,7 @@ mod learn;
 mod logging;
 mod nls;
 mod problem;
+mod threads;
 
 pub(crate) use compiler::{Compiler, PyMdd};
 pub(crate) use heuristics::{PyMergeHeuristic, PyOrderingHeuristic, PySelectHeuristic};
@@ -22,6 +23,7 @@ pub(crate) use nls::{
     neural_local_search,
 };
 pub(crate) use problem::PyProblem;
+pub(crate) use threads::{get_num_threads, set_num_threads};
 
 #[pymodule]
 fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -63,6 +65,8 @@ fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySolution>()?;
     m.add_class::<PyStatus>()?;
     m.add_function(wrap_pyfunction!(set_seed, m)?)?;
+    m.add_function(wrap_pyfunction!(set_num_threads, m)?)?;
+    m.add_function(wrap_pyfunction!(get_num_threads, m)?)?;
     m.add_function(wrap_pyfunction!(train_consformer, m)?)?;
     m.add_function(wrap_pyfunction!(train_consformer_mdd, m)?)?;
     m.add_function(wrap_pyfunction!(neural_local_search, m)?)?;

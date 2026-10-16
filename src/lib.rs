@@ -15,6 +15,10 @@
 //! - [`mdd`]: the compiler and the compiled diagram.
 //! - [`sampling`]: belief propagation on a compiled diagram.
 //!
+//! One setting is public next to the core: the number of threads of the worker pool that runs
+//! the parallel parts of the library ([`set_num_threads`], [`num_threads`]), a quarter of the
+//! available threads unless set.
+//!
 //! Everything above the core (`learning`, `nls`, the Python bindings) and the helpers below it
 //! are private. Modules only depend on the ones listed before them, which `scripts/check_layering.py`
 //! checks in CI.
@@ -31,3 +35,5 @@ mod learning;
 mod nls;
 mod pyaicad;
 mod utils;
+
+pub use utils::{default_num_threads, num_threads, set_num_threads};
