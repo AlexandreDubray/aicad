@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 use crate::constraints::*;
@@ -56,7 +56,13 @@ impl PyProblem {
     }
 
     fn add_equal(&mut self, x: usize, value: isize) -> PyResult<()> {
-        equal(self.mutate()?, VariableIndex(x), value);
+        let problem = self.mutate()?;
+        if !problem[VariableIndex(x)].in_domain(value) {
+            return Err(PyValueError::new_err(format!(
+                "cannot fix variable {x} to {value}: it is not in its domain"
+            )));
+        }
+        equal(problem, VariableIndex(x), value);
         Ok(())
     }
 
