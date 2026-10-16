@@ -337,27 +337,6 @@ fn prepare_checkpoint_dir<C: Config>(checkpoint_dir: &Path, network_config: &C) 
         .map_err(|e| PyRuntimeError::new_err(format!("failed to save network config: {e}")))
 }
 
-struct TimingLogGuard;
-
-impl Drop for TimingLogGuard {
-    fn drop(&mut self) {
-        crate::diagnostics::disable();
-    }
-}
-
-fn enable_timing_log(checkpoint_dir: &Path) -> Option<TimingLogGuard> {
-    match crate::diagnostics::enable(&checkpoint_dir.join("timing.jsonl")) {
-        Ok(()) => Some(TimingLogGuard),
-        Err(e) => {
-            log::warn!(
-                "failed to open timing log at {}: {e}",
-                checkpoint_dir.display(),
-            );
-            None
-        }
-    }
-}
-
 /// Trains consformer on a set of problems.
 ///
 /// Releases the GIL for the whole training run (`py.detach`): everything this needs --
@@ -413,7 +392,6 @@ fn run_training<B: AutodiffBackend>(
     checkpoint_dir: &Path,
 ) -> PyResult<()> {
     prepare_checkpoint_dir(checkpoint_dir, &network_config)?;
-    let _timing_log = enable_timing_log(checkpoint_dir);
 
     let (all_problems, problems, validation_problems) =
         split_train_validation(problems, validation);
@@ -528,7 +506,6 @@ fn run_training_mdd<B: AutodiffBackend>(
     checkpoint_dir: &Path,
 ) -> PyResult<()> {
     prepare_checkpoint_dir(checkpoint_dir, &network_config)?;
-    let _timing_log = enable_timing_log(checkpoint_dir);
 
     let (all_problems, problems, validation_problems) =
         split_train_validation(problems, validation);

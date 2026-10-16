@@ -70,7 +70,8 @@ pub(crate) fn set_verbosity_trace(py: Python<'_>) -> PyResult<()> {
 /// called): every enabled `data_log!` call site writes one JSON object per line to `path`,
 /// truncating it first. Unlike `set_verbosity_*`, this isn't about `log::*!` text records at
 /// all -- it's a separate, structured sink meant for offline analysis (`pd.read_json(path,
-/// lines=True)`), not for reading in a terminal.
+/// lines=True)`), not for reading in a terminal. Raises `OSError` if `path` cannot be created
+/// or if recording is already on.
 #[pyfunction]
 pub(crate) fn enable_data_log(path: String) -> PyResult<()> {
     diagnostics::enable(&PathBuf::from(path)).map_err(|e| PyOSError::new_err(e.to_string()))
