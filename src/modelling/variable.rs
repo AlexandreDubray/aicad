@@ -19,6 +19,7 @@ use rand::distr::weighted::WeightedIndex;
 /// distributions computed in single precision, and nothing more.
 const PROBABILITY_SUM_TOLERANCE: f64 = 1e-6;
 
+/// Panics unless `domain` is non-empty and has no repeated value.
 fn check_domain(domain: &[isize]) {
     if domain.is_empty() {
         panic!("invalid domain: a variable needs at least one value in its domain");
@@ -34,6 +35,8 @@ fn check_domain(domain: &[isize]) {
     }
 }
 
+/// Panics unless `probabilities` has one entry per value of a domain of `domain_size` values,
+/// each finite and non-negative, and they sum to 1 within `PROBABILITY_SUM_TOLERANCE`.
 fn check_probabilities(domain_size: usize, probabilities: &[f64]) {
     if probabilities.len() != domain_size {
         panic!(
@@ -54,10 +57,12 @@ fn check_probabilities(domain_size: usize, probabilities: &[f64]) {
     }
 }
 
+/// The uniform distribution over a domain of `domain_size` values.
 fn uniform(domain_size: usize) -> Vec<f64> {
     vec![1.0 / domain_size as f64; domain_size]
 }
 
+/// The sampler for `probabilities`, which must already have passed `check_probabilities`.
 fn distribution(probabilities: &[f64]) -> WeightedIndex<f64> {
     WeightedIndex::new(probabilities.iter().copied())
         .expect("probabilities were checked to be non-negative and to sum to 1")

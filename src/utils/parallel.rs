@@ -35,8 +35,11 @@ use rayon::ThreadPool;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
+/// The pool behind `worker_pool`, empty until its first use.
 static WORKER_POOL: OnceLock<ThreadPool> = OnceLock::new();
 
+/// The process-wide pool, with a quarter of the available threads and at least one. Built on the
+/// first call; its size cannot be changed afterwards.
 pub(crate) fn worker_pool() -> &'static ThreadPool {
     WORKER_POOL.get_or_init(|| {
         let available = std::thread::available_parallelism()
@@ -51,6 +54,9 @@ pub(crate) fn worker_pool() -> &'static ThreadPool {
     })
 }
 
+/// Calls `task(i)` for every `i` in `0..total` on `pool` and returns the results in index order.
+/// At most `max_workers` run at once (never more than the pool has threads, and at least one);
+/// each worker takes the next unstarted index as soon as it is free.
 pub(crate) fn run_pulled<T: Send>(
     pool: &ThreadPool,
     total: usize,

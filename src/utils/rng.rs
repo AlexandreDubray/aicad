@@ -34,6 +34,7 @@ use std::sync::{Mutex, OnceLock};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
+/// The shared generator, empty until `set_seed` is first called.
 static GLOBAL_RNG: OnceLock<Mutex<StdRng>> = OnceLock::new();
 
 /// (Re)seeds the process-wide RNG that `with_rng` draws from. Safe to call more than once (e.g.

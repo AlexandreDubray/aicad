@@ -5,6 +5,8 @@
 //! ([`worker_pool`], [`run_pulled`]), the process-wide seedable randomness ([`with_rng`]) and
 //! the conversions between assignments and integer tensors.
 
+#![warn(clippy::missing_docs_in_private_items)]
+
 pub(crate) mod bitset;
 pub(crate) mod parallel;
 pub(crate) mod rng;

@@ -54,6 +54,9 @@
 //! assert!(problem.is_solution(&[2, 1, 3]));
 //! ```
 
+#![deny(missing_docs)]
+#![warn(clippy::missing_docs_in_private_items)]
+
 pub(crate) mod constraint;
 pub(crate) mod problem;
 pub(crate) mod variable;

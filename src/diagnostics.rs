@@ -44,18 +44,26 @@
 //! - **One global sink.** Threading a handle through the training code would touch every
 //!   signature for a facility that is off by default; the price is the single-sink rule above.
 
+#![warn(clippy::missing_docs_in_private_items)]
+
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+/// The open data log.
 struct Sink {
+    /// The log file, flushed after every event.
     writer: BufWriter<File>,
+    /// Where the log is written, for error messages.
     path: PathBuf,
 }
 
+/// Whether a sink is open. Read without locking by every call site, so that a disabled log costs
+/// one relaxed load.
 static ENABLED: AtomicBool = AtomicBool::new(false);
+/// The process-wide sink, if one is open. `ENABLED` is true exactly while this holds a sink.
 static SINK: Mutex<Option<Sink>> = Mutex::new(None);
 
 /// The sink, usable even if a thread panicked while holding it: the worst case is one truncated
@@ -64,6 +72,7 @@ fn lock_sink() -> MutexGuard<'static, Option<Sink>> {
     SINK.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Whether a sink is open, that is, whether an event would be recorded.
 pub(crate) fn is_enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }

@@ -35,13 +35,20 @@
 
 use std::hash::Hash;
 
+/// A set of small non-negative integers, stored as bits in 64-bit words.
+///
+/// A set that fits in one word is kept inline; a larger one is a vector of words. Which one a set
+/// uses depends only on the capacity given to [`Bitset::new`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash, deepsize::DeepSizeOf)]
 pub(crate) enum Bitset {
+    /// A capacity of at most 64: the single word, without a heap allocation.
     Inline(u64),
+    /// A larger capacity: one word per 64 elements.
     Heap(Vec<u64>),
 }
 
 impl Bitset {
+    /// The empty set able to hold the elements `0..n`.
     pub(crate) fn new(n: usize) -> Self {
         let number_words = n.div_ceil(64).max(1);
         if number_words == 1 {
@@ -51,6 +58,7 @@ impl Bitset {
         }
     }
 
+    /// The words of the set, lowest elements first.
     fn words(&self) -> &[u64] {
         match self {
             Bitset::Inline(w) => std::slice::from_ref(w),
@@ -58,6 +66,7 @@ impl Bitset {
         }
     }
 
+    /// The words of the set, mutably.
     fn words_mut(&mut self) -> &mut [u64] {
         match self {
             Bitset::Inline(w) => std::slice::from_mut(w),
@@ -65,18 +74,23 @@ impl Bitset {
         }
     }
 
+    /// Whether `element` is in the set. Panics if it is beyond the capacity (rounded up to a
+    /// multiple of 64).
     pub(crate) fn contains(&self, element: usize) -> bool {
         let word = element / 64;
         let shift = element % 64;
         self.words()[word] & (1 << shift) != 0
     }
 
+    /// Adds `element` to the set. Panics if it is beyond the capacity (rounded up to a multiple of
+    /// 64).
     pub(crate) fn insert(&mut self, element: usize) {
         let word = element / 64;
         let shift = element % 64;
         self.words_mut()[word] |= 1 << shift;
     }
 
+    /// The number of elements in the set.
     pub(crate) fn size(&self) -> usize {
         self.words()
             .iter()
@@ -84,6 +98,8 @@ impl Bitset {
             .sum::<u32>() as usize
     }
 
+    /// The number of elements in the union of `self` and `other`, without building it. The two
+    /// must have the same capacity.
     pub(crate) fn size_union(&self, other: &Bitset) -> usize {
         let other_words = other.words();
         self.words()
@@ -94,6 +110,7 @@ impl Bitset {
             .sum::<u32>() as usize
     }
 
+    /// Replaces `self` by its union with `other`. The two must have the same capacity.
     pub(crate) fn union(&mut self, other: &Bitset) {
         let other_words = other.words();
         let words = self.words_mut();
@@ -103,6 +120,7 @@ impl Bitset {
         }
     }
 
+    /// Replaces `self` by the union of `other` and the single element `bit`.
     pub(crate) fn union_with_and_bit(&mut self, other: &Bitset, bit: usize) {
         let bit_word = bit / 64;
         let bit_mask = 1u64 << (bit % 64);
@@ -118,6 +136,7 @@ impl Bitset {
         }
     }
 
+    /// Replaces `self` by its intersection with `other`. The two must have the same capacity.
     pub(crate) fn intersect(&mut self, other: &Bitset) {
         let other_words = other.words();
         let words = self.words_mut();
@@ -127,6 +146,8 @@ impl Bitset {
         }
     }
 
+    /// Replaces `self` by its intersection with the union of `other` and the single element
+    /// `bit`.
     pub(crate) fn intersect_with_and_bit(&mut self, other: &Bitset, bit: usize) {
         let bit_word = bit / 64;
         let bit_mask = 1u64 << (bit % 64);
@@ -142,12 +163,14 @@ impl Bitset {
         }
     }
 
+    /// Sets every word to `value`: 0 empties the set, `u64::MAX` fills every bit of its words.
     pub(crate) fn reset(&mut self, value: u64) {
         for word in self.words_mut().iter_mut() {
             *word = value;
         }
     }
 
+    /// The words of the set by value, lowest elements first.
     pub(crate) fn iter(&self) -> impl Iterator<Item = u64> {
         self.words().iter().copied()
     }
