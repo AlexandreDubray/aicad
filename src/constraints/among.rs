@@ -85,11 +85,14 @@ use std::sync::Arc;
 struct AmongProperty {
     /// The set $V$ of counted values.
     values: Arc<FxHashSet<isize>>,
+    /// The smallest count of values of $V$ over the paths summarised.
     min: usize,
+    /// The largest count of values of $V$ over the paths summarised.
     max: usize,
 }
 
 impl AmongProperty {
+    /// The summary with the given counts, for the counted `values`.
     fn new(values: Arc<FxHashSet<isize>>, min: usize, max: usize) -> Self {
         Self { values, min, max }
     }
@@ -108,7 +111,9 @@ pub struct Among {
     variables: Vec<VariableIndex>,
     /// The set $V$ of counted values.
     values: Arc<FxHashSet<isize>>,
+    /// The least number of variables that must take a value of $V$.
     lb: usize,
+    /// The most variables that may take a value of $V$.
     ub: usize,
     /// Bitset telling if a layer is in the scope of the constraint. Empty until
     /// `update_variable_ordering` is called, which is how a missing ordering is detected.

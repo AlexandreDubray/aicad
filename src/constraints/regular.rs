@@ -117,11 +117,14 @@ struct RegularProperty {
     val_to_symbol: Arc<FxHashMap<isize, usize>>,
     /// The transition table `[state][symbol]`. Shared with the constraint.
     transitions: Arc<Vec<Vec<Option<usize>>>>,
+    /// The number of states of the automaton.
     num_states: usize,
+    /// The automaton states that some summarised path ends in.
     states: Bitset,
 }
 
 impl RegularProperty {
+    /// The empty summary (no state reached), over the given automaton.
     fn new(
         num_states: usize,
         val_to_symbol: Arc<FxHashMap<isize, usize>>,

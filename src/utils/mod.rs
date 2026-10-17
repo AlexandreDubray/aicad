@@ -5,6 +5,7 @@
 //! ([`worker_pool`], [`run_pulled`], and its public size setting [`set_num_threads`]), the process-wide seedable randomness ([`with_rng`]) and
 //! the conversions between assignments and integer tensors.
 
+#![deny(missing_docs)]
 #![warn(clippy::missing_docs_in_private_items)]
 
 pub(crate) mod bitset;

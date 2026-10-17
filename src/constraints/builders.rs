@@ -4,16 +4,33 @@ use super::{AllDifferent, Among, AtLeast, Gcc, NotEquals, Regular, Sum};
 use crate::modelling::{ConstraintIndex, Problem, VariableIndex};
 use rustc_hash::FxHashSet;
 
+/// Adds [`AllDifferent`] over `variables` to `problem` and returns its index.
+///
+/// # Panics
+///
+/// As [`AllDifferent::new`]: a repeated variable is accepted with a warning and makes the
+/// problem unsatisfiable.
 pub fn all_different(problem: &mut Problem, variables: Vec<VariableIndex>) -> ConstraintIndex {
     let constraint = AllDifferent::new(variables, problem);
     problem.add_constraint(constraint)
 }
 
+/// Adds `x != y` ([`NotEquals`]) to `problem` and returns its index.
+///
+/// # Panics
+///
+/// As [`NotEquals::new`].
 pub fn not_equals(problem: &mut Problem, x: VariableIndex, y: VariableIndex) -> ConstraintIndex {
     let constraint = NotEquals::new(x, y, problem);
     problem.add_constraint(constraint)
 }
 
+/// Adds [`Among`] to `problem` and returns its index: between `lb` and `ub` of `variables` take a
+/// value in `values`.
+///
+/// # Panics
+///
+/// As [`Among::new`]: if a variable appears more than once in `variables`.
 pub fn among(
     problem: &mut Problem,
     variables: Vec<VariableIndex>,
@@ -29,11 +46,21 @@ pub fn among(
     ))
 }
 
+/// Adds [`Sum`] to `problem` and returns its index: the `variables` add up to `target`.
+///
+/// # Panics
+///
+/// As [`Sum::new`]: if a variable appears more than once in `variables`.
 pub fn sum(problem: &mut Problem, variables: Vec<VariableIndex>, target: isize) -> ConstraintIndex {
     problem.add_constraint(Sum::new(variables, target, problem))
 }
 
-/// At least `lb` of `variables` must take a value in `values`
+/// Adds [`AtLeast`] to `problem` and returns its index: at least `lb` of `variables` take a value
+/// in `values`.
+///
+/// # Panics
+///
+/// As [`AtLeast::new`]: if a variable appears more than once in `variables`.
 pub fn at_least(
     problem: &mut Problem,
     variables: Vec<VariableIndex>,
@@ -47,6 +74,12 @@ pub fn at_least(
     ))
 }
 
+/// Adds [`Gcc`] to `problem` and returns its index. `bounds` lists `(value, lo, hi)`: the value
+/// occurs between `lo` and `hi` times among `variables`; a value not listed is unconstrained.
+///
+/// # Panics
+///
+/// As [`Gcc::new`]: if a variable appears more than once in `variables`, or a value in `bounds`.
 pub fn gcc(
     problem: &mut Problem,
     variables: Vec<VariableIndex>,
@@ -62,6 +95,10 @@ pub fn gcc(
 ///
 /// Note that when using a regular constraint, the compilation order *MUST* follow the order stated
 /// in `variables`.
+///
+/// # Panics
+///
+/// As [`Regular::new`].
 pub fn regular(
     problem: &mut Problem,
     variables: Vec<VariableIndex>,

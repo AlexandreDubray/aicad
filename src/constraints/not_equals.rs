@@ -75,11 +75,14 @@ use std::sync::Arc;
 /// the union, so a merged node over-approximates both parents.
 #[derive(Clone, deepsize::DeepSizeOf)]
 struct NotEqualsProperty {
+    /// The values that the paths summarised give to `x` or `y`, as bits.
     set: Bitset,
+    /// The bit of each value, shared with the constraint.
     map: Arc<FxHashMap<isize, usize>>,
 }
 
 impl NotEqualsProperty {
+    /// The empty summary: no path has assigned `x` or `y`.
     fn new(map: Arc<FxHashMap<isize, usize>>) -> Self {
         Self {
             set: Bitset::new(map.len()),
@@ -92,7 +95,9 @@ impl NotEqualsProperty {
 /// it is compiled into an MDD.
 #[derive(Clone, deepsize::DeepSizeOf)]
 pub struct NotEquals {
+    /// The first variable.
     x: VariableIndex,
+    /// The second variable.
     y: VariableIndex,
     /// Map each value in the union of the domains of `x` and `y` to a bit.
     val_to_bit: Arc<FxHashMap<isize, usize>>,

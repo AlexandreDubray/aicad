@@ -181,6 +181,9 @@
 //! assert!(among.is_assignment_invalid(&*above, &*below, 1, 0));
 //! assert!(!among.is_assignment_invalid(&*above, &*below, 1, 1));
 //! ```
+#![deny(missing_docs)]
+#![warn(clippy::missing_docs_in_private_items)]
+
 pub mod all_different;
 pub mod among;
 pub mod at_least;

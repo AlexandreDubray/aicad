@@ -44,6 +44,7 @@
 //! - **One global sink.** Threading a handle through the training code would touch every
 //!   signature for a facility that is off by default; the price is the single-sink rule above.
 
+#![deny(missing_docs)]
 #![warn(clippy::missing_docs_in_private_items)]
 
 use std::fs::File;

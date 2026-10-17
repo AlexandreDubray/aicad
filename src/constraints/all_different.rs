@@ -98,6 +98,7 @@ use std::sync::Arc;
 /// [module documentation](self).
 #[derive(Clone, PartialEq, Eq, deepsize::DeepSizeOf)]
 struct AllDifferentProperty {
+    /// The bit of each value, shared with the constraint.
     map: Arc<FxHashMap<isize, usize>>,
     /// $A$: values taken on all paths.
     value_all_path: Bitset,

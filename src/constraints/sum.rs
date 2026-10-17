@@ -77,7 +77,9 @@ use std::hash::Hasher;
 /// over-approximates both parents. See the [module documentation](self).
 #[derive(Clone, deepsize::DeepSizeOf)]
 struct SumProperty {
+    /// The smallest sum of the paths summarised.
     min: isize,
+    /// The largest sum of the paths summarised.
     max: isize,
 }
 

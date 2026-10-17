@@ -122,6 +122,8 @@ struct GccProperty {
 }
 
 impl GccProperty {
+    /// The empty summary (every count is 0) for `n` bounded values, with their bit `map` and
+    /// bounds `lo` and `hi`.
     fn new(
         n: usize,
         map: Arc<FxHashMap<isize, usize>>,

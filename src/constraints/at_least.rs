@@ -106,11 +106,14 @@ struct AtLeastProperty {
     values: Arc<FxHashSet<isize>>,
     /// The bound at which the counts are capped.
     lb: usize,
+    /// The smallest capped count of the paths summarised.
     min: usize,
+    /// The largest capped count of the paths summarised.
     max: usize,
 }
 
 impl AtLeastProperty {
+    /// The summary with the given counts, for the counted `values` and the bound `lb`.
     fn new(values: Arc<FxHashSet<isize>>, lb: usize, min: usize, max: usize) -> Self {
         Self {
             values,
@@ -134,6 +137,7 @@ pub struct AtLeast {
     variables: Vec<VariableIndex>,
     /// The set $V$ of counted values.
     values: Arc<FxHashSet<isize>>,
+    /// The least number of variables that must take a value of $V$.
     lb: usize,
     /// Bitset telling if a layer is in the scope of the constraint. Empty until
     /// `update_variable_ordering` is called, which is how a missing ordering is detected.
