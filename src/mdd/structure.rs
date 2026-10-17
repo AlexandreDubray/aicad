@@ -48,7 +48,7 @@ impl MddStructure {
 
     #[cfg(test)]
     pub(crate) fn number_edges(&self) -> usize {
-        self.edges.len()
+        self.edges.iter().map(|e| e.len()).sum()
     }
 
     /// Number of layers, the sink's included (one more than the number of variables).
