@@ -680,114 +680,21 @@ impl Mdd {
         }
     }
 
-    /// Ranks this layer's active nodes according to `self.merge_heuristic`, worst/least-similar
-    /// first. Lives here (rather than on `MergeHeuristic` itself, as it used to) because
-    /// `StateSimilarity` needs each node's actual constraint properties, which are private to
-    /// `Mdd` -- keeping every variant's logic in the same place avoids splitting the merging
-    /// logic across two modules for what is really one concern.
-    fn rank_nodes(&self, layer: usize) -> Vec<NodeIndex> {
-        match self.merge_heuristic {
-            MergeHeuristic::LessRelaxed => {
-                let mut scores: Vec<(f64, NodeIndex)> = vec![];
-                for i in 0..self.number_nodes_in_layer(layer) {
-                    let node = NodeIndex(layer, i);
-                    if self[node].is_active() {
-                        let number_parents = self[node].number_parents() as f64;
-                        let number_parents_relaxed = self[node]
-                            .iter_parents()
-                            .map(|edge| self[edge].from())
-                            .filter(|parent| !self[*parent].is_relaxed())
-                            .count() as f64;
-                        scores.push((number_parents_relaxed / number_parents, node));
-                    }
-                }
-                scores.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
-                scores.into_iter().map(|(_, node)| node).collect()
-            }
-            MergeHeuristic::MostLikely => {
-                let mut scores: Vec<(f64, NodeIndex)> = vec![];
-                for i in 0..self.number_nodes_in_layer(layer) {
-                    let node = NodeIndex(layer, i);
-                    if self[node].is_active() {
-                        let number_parents = self[node].number_parents() as f64;
-                        let aggregate_probabilities = self[node]
-                            .iter_parents()
-                            .map(|edge| self.get_edge_probability(edge))
-                            .sum::<f64>();
-                        scores.push((aggregate_probabilities / number_parents, node));
-                    }
-                }
-                scores.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
-                scores.into_iter().map(|(_, node)| node).collect()
-            }
-            MergeHeuristic::StateSimilarity => {
-                // One composite key per node: every constraint's top-down `order_key()` then
-                // its bottom-up `order_key()`, in the MDD's own (local) constraint order.
-                // Sorting lexicographically -- rather than collapsing to one weighted scalar --
-                // avoids letting one constraint's scale (e.g. a Gcc key in the hundreds)
-                // dominate another's (e.g. a Regular popcount in the single digits): nodes
-                // agreeing on more constraints end up genuinely adjacent in the sort.
-                let mut keyed: Vec<(Vec<f64>, NodeIndex)> = vec![];
-                for i in 0..self.number_nodes_in_layer(layer) {
-                    let node = NodeIndex(layer, i);
-                    if !self[node].is_active() {
-                        continue;
-                    }
-                    let mut key = Vec::with_capacity(2 * self.constraints.len());
-                    for c in 0..self.constraints.len() {
-                        key.extend(self.top_down_properties[layer][i][c].order_key());
-                        key.extend(self.bottom_up_properties[layer][i][c].order_key());
-                    }
-                    keyed.push((key, node));
-                }
-                keyed.sort_unstable_by(|a, b| {
-                    for (x, y) in a.0.iter().zip(b.0.iter()) {
-                        match x.total_cmp(y) {
-                            std::cmp::Ordering::Equal => continue,
-                            other => return other,
-                        }
-                    }
-                    std::cmp::Ordering::Equal
-                });
-                keyed.into_iter().map(|(_, node)| node).collect()
-            }
-        }
-    }
-
+    /// Merges the nodes of `layer` that the merge heuristic picks until at most `max_width` remain.
+    /// The heuristic is only consulted when the layer has more active nodes than that.
     fn merge_layer(&mut self, layer: usize, max_width: usize) {
-        let number_nodes = self.nodes[layer].len();
-        if number_nodes <= max_width {
-            return;
-        }
-        let node_ranks = self.rank_nodes(layer);
-        let active_nodes = node_ranks.len();
+        let active_nodes = self
+            .nodes_in_layer(layer)
+            .filter(|&node| self[node].is_active())
+            .count();
         if active_nodes <= max_width {
             return;
         }
-        if !self.merge_heuristic.bucket_merge() {
-            let into = node_ranks[active_nodes - max_width];
-            for &from in node_ranks.iter().take(active_nodes - max_width) {
-                self.merge_nodes(from, into);
-            }
-        } else {
-            let q = node_ranks.len() / max_width;
-            let r = node_ranks.len() % max_width;
-            let mut bucket_sizes = vec![q; max_width - r];
-            bucket_sizes.extend(vec![q + 1; r]);
-            let mut i = 0;
-            for _ in 0..max_width - r {
-                let into = node_ranks[i];
-                for &from in node_ranks.iter().take(i + q).skip(i + 1) {
+        for group in self.merge_heuristic.group_nodes(self, layer, max_width) {
+            if let Some((&into, froms)) = group.split_first() {
+                for &from in froms {
                     self.merge_nodes(from, into);
                 }
-                i += q;
-            }
-            for _ in 0..r {
-                let into = node_ranks[i];
-                for &from in node_ranks.iter().take(i + q + 1).skip(i + 1) {
-                    self.merge_nodes(from, into);
-                }
-                i += q + 1;
             }
         }
     }
@@ -798,7 +705,18 @@ impl Mdd {
 
     fn merge_nodes_with_flag(&mut self, from: NodeIndex, into: NodeIndex, mark_relaxed: bool) {
         let mut worklist = vec![(from, into, mark_relaxed)];
+        // Nodes merged away so far, with the node that took them over. An entry of the worklist
+        // can name a node that an earlier entry has already absorbed: it is followed to the node
+        // that holds its paths now, since merging into a deactivated node would lose them.
+        let mut absorbed = FxHashMap::<NodeIndex, NodeIndex>::default();
         while let Some((from, into, mark_relaxed)) = worklist.pop() {
+            let resolve = |mut node: NodeIndex| {
+                while let Some(&next) = absorbed.get(&node) {
+                    node = next;
+                }
+                node
+            };
+            let (from, into) = (resolve(from), resolve(into));
             if from == into {
                 continue;
             }
@@ -847,6 +765,7 @@ impl Mdd {
             Self::merge_properties(&mut self.top_down_properties[from.0], from.1, into.1);
             Self::merge_properties(&mut self.bottom_up_properties[from.0], from.1, into.1);
             self[from].deactivate();
+            absorbed.insert(from, into);
         }
     }
 
@@ -944,6 +863,16 @@ impl Mdd {
 
     pub(crate) fn nodes_in_layer(&self, layer: usize) -> impl Iterator<Item = NodeIndex> + '_ {
         (0..self.nodes[layer].len()).map(move |index| NodeIndex(layer, index))
+    }
+
+    /// The top-down properties of `node`, one per compiled constraint.
+    pub(crate) fn top_down_properties(&self, node: NodeIndex) -> &[Box<dyn ConstraintProperty>] {
+        &self.top_down_properties[node.0][node.1]
+    }
+
+    /// The bottom-up properties of `node`, one per compiled constraint.
+    pub(crate) fn bottom_up_properties(&self, node: NodeIndex) -> &[Box<dyn ConstraintProperty>] {
+        &self.bottom_up_properties[node.0][node.1]
     }
 
     pub fn get_solution(&self) -> Option<Vec<isize>> {
@@ -1511,46 +1440,25 @@ pub mod test_mdd {
         }
     }
 
+    /// Regression test: a merge cascade can name a node that an earlier entry of the same cascade
+    /// already absorbed. Merging into that dead node lost its paths: with `StateSimilarity`, six
+    /// `AllDifferent` variables of six values and a width of 4 kept only 289 of the 720 solutions.
     #[test]
-    pub fn refine_reaches_fixed_point_under_width_cap() {
-        for n in 4..=6 {
-            for max_width in [2usize, 3, 4, 5, 6] {
-                let merge_h = MergeHeuristic::LessRelaxed;
-                let mut problem = Problem::default();
-                let vars: Vec<_> = (0..n)
-                    .map(|_| problem.add_variable((0..n as isize).collect(), None))
-                    .collect();
-                all_different(&mut problem, vars.clone());
-                if n >= 5 {
-                    sum(&mut problem, vars[0..3].to_vec(), (n as isize) - 1);
-                }
-                let problem = Arc::new(problem);
-                let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
-                let mut mdd = Mdd::new(
-                    problem,
-                    OrderingHeuristic::MinDomMaxLinked,
-                    merge_h,
-                    SelectHeuristic::Greedy,
-                    &constraints,
-                );
-                mdd.refine(max_width);
-                for layer in 1..mdd.number_layers() - 1 {
-                    let width = mdd.number_nodes_in_layer(layer);
-                    let has_relaxed_room = (0..width)
-                        .map(|i| NodeIndex(layer, i))
-                        .any(|node| mdd[node].is_active() && mdd[node].is_relaxed());
-                    assert!(
-                        width == max_width || !has_relaxed_room,
-                        "n={} max_width={} merge={:?} layer={} width={} still has a relaxed node left unsplit",
-                        n,
-                        max_width,
-                        merge_h,
-                        layer,
-                        width
-                    );
-                }
-            }
-        }
+    pub fn merging_follows_nodes_absorbed_earlier_in_the_same_cascade() {
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(6, (0..6).collect(), None);
+        all_different(&mut problem, vars);
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mut mdd = Mdd::new(
+            problem,
+            OrderingHeuristic::MinDomMaxLinked,
+            MergeHeuristic::StateSimilarity,
+            SelectHeuristic::Greedy,
+            &constraints,
+        );
+        mdd.refine(4);
+        assert!(mdd.count_solutions() >= BigUint::from(720u32));
     }
 
     fn permutations_of(n: usize) -> Vec<Vec<isize>> {
