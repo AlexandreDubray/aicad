@@ -9,7 +9,7 @@ use rayon::prelude::*;
 use crate::constraints::{AllDifferent, Constraint, NotEquals};
 use crate::learning::{BatchProblems, Loss};
 use crate::mdd::CompiledConstraint;
-use crate::mdd::wmc::wmc_and_gradient;
+use crate::mdd::wmc::log_wmc_and_gradient;
 use crate::modelling::Problem;
 
 use super::dataset::ConsFormerBatch;
@@ -249,6 +249,12 @@ impl<B: Backend> Loss<B, ConsFormerBatch<B>> for ConsFormerLoss {
 
 const WMC_EPS: f64 = 1e-6;
 
+/// `ln(exp(a) + exp(b))` without overflow or underflow; `a` may be `-inf`, `b` must be finite.
+fn log_add_exp(a: f64, b: f64) -> f64 {
+    let largest = a.max(b);
+    largest + ((a - largest).exp() + (b - largest).exp()).ln()
+}
+
 /// One constraint MDD's contribution to a sample's loss and to `∂loss/∂probs_for_sample`, computed
 /// by a plain sink-to-root chain-rule pass (`crate::mdd::wmc::wmc_and_gradient`) instead of
 /// automatic differentiation.
@@ -287,8 +293,11 @@ fn mdd_loss_and_gradient(
     grad: &mut [f32],
 ) -> f64 {
     let weights = layer_weights_from_probs(constraint, real_problem, probs_for_sample, domain_size);
-    let (wmc, gradient) = wmc_and_gradient(constraint, &weights);
-    let chain = -1.0 / (wmc + WMC_EPS);
+    let (log_wmc, gradient) = log_wmc_and_gradient(constraint, &weights);
+    // `ln(wmc + eps)` and `d(-ln(wmc + eps))/d(weight) = -wmc / (wmc + eps) * d(ln wmc)/d(weight)`,
+    // computed from `ln wmc` so that a count below the smallest `f64` does not flatten the loss.
+    let log_total = log_add_exp(log_wmc, WMC_EPS.ln());
+    let chain = -(log_wmc - log_total).exp();
 
     for (layer, layer_gradient) in gradient.iter().enumerate() {
         let variable = constraint.decision_at_layer(layer);
@@ -304,7 +313,7 @@ fn mdd_loss_and_gradient(
         }
     }
 
-    -(wmc + WMC_EPS).ln()
+    -log_total
 }
 
 /// A sample's plain average of `-log(wmc+eps)` over its constraint MDDs, plus
@@ -862,5 +871,12 @@ mod mdd_loss_tests {
             (wmc - brute).abs() < 1e-9,
             "wmc={wmc} brute={brute} -- masked wmc must match assignments honouring the given"
         );
+    }
+    #[test]
+    fn log_add_exp_matches_the_direct_sum_and_survives_extremes() {
+        assert!((log_add_exp(0.3f64.ln(), 0.2f64.ln()) - 0.5f64.ln()).abs() < 1e-12);
+        // A count of exp(-2000) next to the epsilon: the direct sum is just the epsilon.
+        assert!((log_add_exp(-2000.0, 1e-6f64.ln()) - 1e-6f64.ln()).abs() < 1e-12);
+        assert_eq!(log_add_exp(f64::NEG_INFINITY, 1e-6f64.ln()), 1e-6f64.ln());
     }
 }

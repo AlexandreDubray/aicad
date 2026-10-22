@@ -31,7 +31,7 @@
 #[cfg(test)]
 use crate::mdd::Mdd;
 use crate::mdd::MddViewWithOrder;
-use crate::mdd::wmc::gradient as mdd_gradient;
+use crate::mdd::wmc::log_wmc_and_gradient;
 use crate::modelling::ValueIndex;
 
 use super::{build_var_to_mdds, log_combine_and_normalize, normalize_or_uniform, safe_ln};
@@ -49,12 +49,14 @@ fn one_hot(value: ValueIndex, domain_size: usize) -> Vec<f64> {
 /// One MDD's local belief for every variable in its scope -- Eq. 2, with `x`'s own message
 /// excluded from the product (its own layer's edges carry only structural existence; everything
 /// else is already folded into the forward/backward pass via every *other* layer's weighting).
-/// `crate::mdd::wmc::gradient`'s `d(WMC)/d(messages[layer][value])` is exactly this quantity before
-/// normalization -- see that function's doc. Returned as one probability vector per layer, indexed
-/// the same way as `mdd.decision_at_layer` (and the same way `messages` itself is indexed -- by
-/// layer within this MDD, not by global variable id).
+/// `crate::mdd::wmc::log_wmc_and_gradient`'s `d(ln WMC)/d(messages[layer][value])` is exactly this
+/// quantity before normalization (it differs from `d(WMC)/d(messages[layer][value])` by a factor
+/// that is the same for every value of the layer) -- see that function's doc. Returned as one
+/// probability vector per layer, indexed the same way as `mdd.decision_at_layer` (and the same way
+/// `messages` itself is indexed -- by layer within this MDD, not by global variable id).
 fn mdd_local_beliefs<T: MddViewWithOrder>(mdd: &T, messages: &[Vec<f64>]) -> Vec<Vec<f64>> {
-    mdd_gradient(mdd, messages)
+    log_wmc_and_gradient(mdd, messages)
+        .1
         .into_iter()
         .zip(messages)
         .map(|(weights, m)| normalize_or_uniform(weights, m.len()))
