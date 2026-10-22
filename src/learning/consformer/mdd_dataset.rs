@@ -13,7 +13,7 @@ use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
 use crate::learning::BatchProblems;
-use crate::mdd::arena::compile_constraint;
+use crate::mdd::arena::{compile_constraint, nominal_domain};
 use crate::mdd::heuristics::{MergeHeuristic, OrderingHeuristic, SelectHeuristic};
 use crate::mdd::{CompiledConstraint, MddArena};
 use crate::modelling::Problem;
@@ -65,6 +65,7 @@ fn compile_constraint_mdds(
     compilation: &MddCompilationConfig,
     domain_size: usize,
 ) -> Vec<CompiledConstraint> {
+    let domain = nominal_domain(domain_size);
     problem
         .iter_constraints()
         .map(|c| {
@@ -91,7 +92,7 @@ fn compile_constraint_mdds(
                 problem,
                 c,
                 &compilation.ordering,
-                domain_size,
+                &domain,
                 usize::MAX,
             );
 

@@ -16,7 +16,7 @@ use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
 use crate::learning::consformer::MddCompilationConfig;
-use crate::mdd::arena::compile_constraint;
+use crate::mdd::arena::{compile_constraint, nominal_domain};
 use crate::mdd::{CompiledConstraint, MddArena};
 use crate::modelling::{Problem, ValueIndex, VariableIndex};
 use crate::sampling::belief_propagation;
@@ -92,6 +92,7 @@ fn compile_constraints_for(
     compilation: &MddCompilationConfig,
     domain_size: usize,
 ) -> Vec<CompiledConstraint> {
+    let domain = nominal_domain(domain_size);
     problem
         .iter_constraints()
         .map(|c| {
@@ -100,7 +101,7 @@ fn compile_constraints_for(
                 problem,
                 c,
                 &compilation.ordering,
-                domain_size,
+                &domain,
                 compilation.max_width,
             )
         })

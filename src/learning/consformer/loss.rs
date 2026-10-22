@@ -823,7 +823,7 @@ mod mdd_loss_tests {
             &problem,
             constraint,
             &crate::mdd::heuristics::OrderingHeuristic::MinDomMaxLinked,
-            domain_size,
+            &crate::mdd::arena::nominal_domain(domain_size),
             usize::MAX,
         );
 

@@ -1,68 +1,112 @@
-//! `MddArena`: a cache from a single constraint's *shape* to one shared, compiled `MddStructure`.
+//! A cache of compiled constraint structures, shared by every constraint of the same shape.
+//!
+//! # Purpose
+//!
+//! The learning and search code needs the MDD of every constraint of every instance it sees, and
+//! most of those constraints are copies of each other on different variables: the same
+//! `NotEquals` on every edge of a graph, the same `Gcc` for every nurse. Their diagrams are the
+//! same up to the names of the variables. `MddArena` compiles one diagram per *shape* and hands it
+//! out as an `Arc<MddStructure>`; [`CompiledConstraint`] pairs it with the constraint's own
+//! branching order, which says which real variable each layer stands for.
+//!
+//! # How it works
+//!
+//! A shape is a [`ConstraintCompileKey`]: the constraint's `ConstraintShapeKey`, the nominal
+//! domain of its variables and the width limit. To compile a shape, the arena builds a small
+//! synthetic problem with `arity` fresh variables that all take the key's domain, instantiates the
+//! constraint on them, compiles and refines its MDD, and keeps only the structure. The first
+//! caller of a shape pays for the compilation (outside the lock); concurrent callers of the
+//! same shape end up with the same `Arc`.
+//!
+//! The arena never decides what the domain is: the caller passes the nominal domain of its
+//! network (`nominal_domain(n)` is `0..n`, the one of the benchmarks), and the shape is compiled
+//! over that full domain even when a real variable's domain has been narrowed. Keeping the domain
+//! inside the key, and building the synthetic variables only from the key, is what lets the arena
+//! serve other domains without change.
+//!
+//! # Design notes
+//!
+//! - **A structure serves every ordering of the scope.** The template is always compiled with
+//!   `MinDomMaxLinked`, `StateSimilarity` and `Greedy` on its synthetic variables, and a real
+//!   constraint only computes its own order. This is correct because the constraints are
+//!   symmetric in their scope, so any assignment of variables to layers gives the same set of
+//!   accepted tuples; the exception, `Regular`, has its order forced by `precedence_edges`, which
+//!   both orders respect.
+//! - **Nothing is ever evicted.** The arena grows with the number of distinct shapes it sees,
+//!   which is small for the benchmarks (one `Sum` shape per target, one `Gcc` per set of bounds).
+//! - **The key holds the domain, not just its size.** Today every variable is assumed to take the
+//!   same domain, but this will be lifted some day. Then a `Sum([x, y], 4)` must not share its
+//!   structure with a `Sum([z, t], 4)` if the variables have different domains, so the domain
+//!   already belongs to the key.
 
+use rustc_hash::FxHashSet;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use crate::constraints::{Constraint, ConstraintShapeKey};
+use crate::constraints::{
+    AllDifferent, Among, AtLeast, Constraint, ConstraintShapeKey, Gcc, NotEquals, Regular, Sum,
+};
 use crate::mdd::heuristics::{MergeHeuristic, OrderingHeuristic, SelectHeuristic};
 use crate::mdd::mdd::enforce_precedence_order;
 use crate::mdd::{Mdd, MddStructure};
 use crate::modelling::{ConstraintIndex, Problem, VariableIndex};
 
-/// One constraint's compiled shape, together with the two extra parameters that also affect its
-/// compiled structure. Two real constraints with the same `ConstraintCompileKey` compile to
-/// byte-identical `MddStructure`s, regardless of which real `VariableIndex` or which real
-/// `Arc<Problem>` they come from.
+/// Everything the compiled structure of a constraint depends on: its shape, the domain of its
+/// variables and the width limit. Two constraints with the same key share one structure,
+/// whichever variables and problem they belong to.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct ConstraintCompileKey {
     /// The constraint's own shape
     shape: ConstraintShapeKey,
-    /// Domain size of all variable of the problem being solved (assumed to be identical)
-    domain_size: usize,
-    /// Maximum width for constraint compilation
+    /// The domain that every variable of the template takes (the network's nominal domain).
+    domain: Vec<isize>,
+    /// Width limit the template is refined to (`usize::MAX` for an exact structure).
     max_width: usize,
 }
 
-/// Computes `constraint`'s `ConstraintCompileKey` against `problem` (the *real* problem the
-/// constraint actually belongs to -- only used to read its own shape, never its variables' real,
-/// possibly-narrowed domains).
+/// The nominal domain `0..domain_size` of a network whose variables take the values
+/// `0..domain_size`, in the form [`compile_constraint`] takes.
+pub(crate) fn nominal_domain(domain_size: usize) -> Vec<isize> {
+    (0..domain_size as isize).collect()
+}
+
+/// The key of `constraint`, a constraint of the real `problem`, compiled over `domain`. Only the
+/// constraint's shape is read from the problem, never the (possibly narrowed) domains of its
+/// variables.
 fn constraint_shape_key(
     problem: &Problem,
     constraint: ConstraintIndex,
-    domain_size: usize,
+    domain: &[isize],
     max_width: usize,
 ) -> ConstraintCompileKey {
     ConstraintCompileKey {
         shape: problem[constraint].structural_key(problem),
-        domain_size,
+        domain: domain.to_vec(),
         max_width,
     }
 }
 
-/// Rebuilds a concrete `Box<dyn Constraint>` for one shape key, over `synthetic_variables` (fresh
-/// variables of `synthetic_problem`, one per `shape.arity()`).
+/// Rebuilds the constraint that `shape` describes over `synthetic_variables`, fresh variables of
+/// `synthetic_problem`, one per `shape.arity()`.
 fn instantiate_constraint(
     shape: &ConstraintShapeKey,
     synthetic_variables: Vec<VariableIndex>,
     synthetic_problem: &Problem,
 ) -> Box<dyn Constraint + Send + Sync> {
-    use crate::constraints::{AllDifferent, Among, AtLeast, Gcc, NotEquals, Regular, Sum};
-    use rustc_hash::FxHashSet;
-
-    // `arity` is destructured (as `_`) but not read here -- it's already fully accounted for by
-    // `synthetic_variables`' own length (`compile_template` builds exactly `shape.arity()` of
-    // them); it exists on `ConstraintShapeKey` so the key itself is self-describing (see that
-    // type's doc), not because this constructor needs it as a separate input.
+    // `arity` is destructured as `_` because it is already included in
+    // `synthetic_variables.len()`. It is in the key to differentiate constraints of different
+    // arity.
     match shape {
         ConstraintShapeKey::AllDifferent { arity: _ } => {
             Box::new(AllDifferent::new(synthetic_variables, synthetic_problem))
         }
         ConstraintShapeKey::NotEquals => {
-            assert_eq!(
-                synthetic_variables.len(),
-                2,
-                "NotEquals shape key must instantiate over exactly 2 variables"
-            );
+            if synthetic_variables.len() != 2 {
+                panic!(
+                    "NotEquals shape key must instantiate over exactly 2 variables, got {}",
+                    synthetic_variables.len()
+                );
+            }
             Box::new(NotEquals::new(
                 synthetic_variables[0],
                 synthetic_variables[1],
@@ -110,13 +154,14 @@ fn instantiate_constraint(
     }
 }
 
-/// Builds the small synthetic `Problem` `key` describes (see the module doc), compiles+refines an
-/// exact `Mdd` over its own (only) constraint, and extracts the resulting `MddStructure`.
+/// Compiles the structure of `key` on a synthetic problem with a single constraint (see the module
+/// documentation) and refines it to the key's width.
 fn compile_template(key: &ConstraintCompileKey) -> MddStructure {
+    // We create a small synthetic problem with one constraint over its variables because an MDD
+    // can only be compiled from a problem.
     let mut synthetic_problem = Problem::default();
-    let domain: Vec<isize> = (0..key.domain_size as isize).collect();
     let synthetic_vars: Vec<VariableIndex> = (0..key.shape.arity())
-        .map(|_| synthetic_problem.add_variable(domain.clone(), None))
+        .map(|_| synthetic_problem.add_variable(key.domain.clone(), None))
         .collect();
 
     let constraint = instantiate_constraint(&key.shape, synthetic_vars, &synthetic_problem);
@@ -127,7 +172,7 @@ fn compile_template(key: &ConstraintCompileKey) -> MddStructure {
     let mut mdd = Mdd::new(
         Arc::clone(&synthetic_problem),
         OrderingHeuristic::MinDomMaxLinked,
-        MergeHeuristic::LessRelaxed,
+        MergeHeuristic::StateSimilarity,
         SelectHeuristic::Greedy,
         &constraints,
     );
@@ -135,30 +180,33 @@ fn compile_template(key: &ConstraintCompileKey) -> MddStructure {
     mdd.into_structure()
 }
 
-/// Thread-safe cache from a constraint's shape to its shared, compiled `MddStructure`. Shared
-/// across an entire dataset build (`compile_constraint_mdds`) or an entire
-/// `MddSamplingDecode`/search run, so structurally-identical constraints -- whether from the same
-/// instance (e.g. two nurses under the same case file) or from different instances entirely --
-/// compile once.
+/// Thread-safe cache from a constraint's shape to its shared, compiled structure.
+///
+/// One arena is shared by a whole dataset build or search run, so that constraints of the same
+/// shape, in one instance or across instances, are compiled once. It can be used from several
+/// threads.
 #[derive(Default)]
 pub struct MddArena {
     cache: RwLock<HashMap<ConstraintCompileKey, Arc<MddStructure>>>,
 }
 
 impl MddArena {
+    /// Creates an empty arena.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Number of distinct shapes compiled so far -- exposed for tests/diagnostics.
+    /// Number of distinct shapes compiled so far.
     pub fn len(&self) -> usize {
         self.cache.read().expect("MddArena lock poisoned").len()
     }
 
+    /// `true` if no shape has been compiled yet.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    /// The shared structure of `key`, compiled on first use.
     fn structure_for(&self, key: &ConstraintCompileKey) -> Arc<MddStructure> {
         if let Some(structure) = self.cache.read().expect("MddArena lock poisoned").get(key) {
             return Arc::clone(structure);
@@ -172,15 +220,17 @@ impl MddArena {
     }
 }
 
-/// One real constraint's compiled structure (shared, via `MddArena`) plus its own real branching
-/// order (never shared -- cheap to recompute, and specific to this constraint's actual
-/// `VariableIndex`s).
+/// A constraint ready for algorithmic processing (e.g., `wmc` or `sampling`): the structure shared
+/// through the arena, and the constraint's own branching order.
 pub(crate) struct CompiledConstraint {
+    /// The structure, shared with every constraint of the same shape.
     pub structure: Arc<MddStructure>,
+    /// The variable of the constraint's scope that each layer stands for, first layer first.
     pub order: Vec<VariableIndex>,
 }
 
 impl CompiledConstraint {
+    /// The variable branched on at `layer`.
     pub(crate) fn decision_at_layer(&self, layer: usize) -> VariableIndex {
         self.order[layer]
     }
@@ -242,9 +292,8 @@ impl crate::mdd::MddViewWithOrder for CompiledConstraint {
     }
 }
 
-/// Computes `constraint`'s real branching order the cheap way -- `OrderingHeuristic::get_order`
-/// plus `enforce_precedence_order`, exactly the two steps `Mdd::new` itself runs before compiling
-/// -- without compiling a full `Mdd` for it. `problem`/`constraint` here are the *real* one.
+/// The branching order of a real `constraint`: the two steps `Mdd::new` runs before compiling,
+/// the heuristic's order and the repair of the precedences, without compiling anything.
 fn compute_constraint_order(
     problem: &Problem,
     constraint: ConstraintIndex,
@@ -256,24 +305,22 @@ fn compute_constraint_order(
     enforce_precedence_order(order, &owned)
 }
 
-/// Compiles `constraint` (a real constraint of `problem`) into a `CompiledConstraint`: its
-/// structure via `arena` (shared with every other constraint of the same shape and `max_width`),
-/// its own real branching order computed fresh. `domain_size` is the nominal domain size the
-/// synthetic template variable is compiled with -- see the module doc; it must match the
-/// network's configured domain size the same way `mdd_dataset::compile_constraint_mdds`'s
-/// `domain_size` parameter already did. `max_width` is the `Mdd::refine` width the shared
-/// template is compiled to -- `usize::MAX` for an always-exact caller like
-/// `mdd_dataset::compile_constraint_mdds`, or a caller's own configured search-time budget like
-/// `nls::decode::MddSamplingDecode`'s `MddCompilationConfig::max_width`.
+/// Compiles `constraint`, a constraint of the real `problem`, into a [`CompiledConstraint`]: its
+/// structure comes from `arena` (shared with the constraints of the same shape, `domain` and
+/// `max_width`) and its branching order is computed with `ordering`.
+///
+/// `domain` is the nominal domain of the network's variables (`nominal_domain(n)` for the values
+/// `0..n`). `max_width` is the width the structure is refined to, `usize::MAX` for an
+/// exact one.
 pub(crate) fn compile_constraint(
     arena: &MddArena,
     problem: &Problem,
     constraint: ConstraintIndex,
     ordering: &OrderingHeuristic,
-    domain_size: usize,
+    domain: &[isize],
     max_width: usize,
 ) -> CompiledConstraint {
-    let key = constraint_shape_key(problem, constraint, domain_size, max_width);
+    let key = constraint_shape_key(problem, constraint, domain, max_width);
     let structure = arena.structure_for(&key);
     let order = compute_constraint_order(problem, constraint, ordering);
     debug_assert_eq!(
@@ -290,7 +337,219 @@ pub(crate) fn compile_constraint(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constraints::{all_different, gcc, not_equals};
+    use crate::constraints::{all_different, among, at_least, gcc, not_equals, regular, sum};
+    use crate::mdd::{MddView, NodeIndex};
+    use crate::modelling::ValueIndex;
+
+    /// Whether the compiled structure has a path for `tuple`, a value for every variable of the
+    /// problem (the values are the indices, since the domains are `0..d`).
+    fn accepts(compiled: &CompiledConstraint, tuple: &[isize]) -> bool {
+        let mut node = compiled.root();
+        for layer in 0..compiled.order.len() {
+            let value = ValueIndex(tuple[compiled.order[layer].0] as usize);
+            let next = compiled[node]
+                .iter_children()
+                .map(|edge| &compiled[edge])
+                .find(|edge| edge.is_active() && edge.assignment() == value)
+                .map(|edge| edge.to());
+            match next {
+                Some(to) => node = to,
+                None => return false,
+            }
+        }
+        node == compiled.sink() && !compiled.is_unsat()
+    }
+
+    /// Every assignment of `variables` variables over `0..domain`.
+    fn all_tuples(variables: usize, domain: isize) -> Vec<Vec<isize>> {
+        let mut tuples = vec![vec![]];
+        for _ in 0..variables {
+            tuples = tuples
+                .into_iter()
+                .flat_map(|t| {
+                    (0..domain).map(move |v| {
+                        let mut t = t.clone();
+                        t.push(v);
+                        t
+                    })
+                })
+                .collect();
+        }
+        tuples
+    }
+
+    /// One instance of each kind of constraint, over variables `0..4` of domain `0..3`, in a
+    /// problem where the layers of the real constraints are not in the order of the template's.
+    fn one_of_each_constraint() -> (Problem, Vec<ConstraintIndex>) {
+        let mut problem = Problem::default();
+        let v = problem.add_variables(4, (0..3isize).collect(), None);
+        // The last variable is in the most constraints, so the heuristic branches on it first,
+        // while the synthetic template branches on its first variable first.
+        for other in 0..3 {
+            not_equals(&mut problem, v[3], v[other]);
+        }
+        let constraints = vec![
+            all_different(&mut problem, vec![v[0], v[1], v[2]]),
+            not_equals(&mut problem, v[1], v[3]),
+            among(&mut problem, v.clone(), vec![0, 1], 1, 2),
+            at_least(&mut problem, v.clone(), vec![2], 2),
+            gcc(&mut problem, v.clone(), vec![(0, 1, 2), (2, 0, 1)]),
+            sum(&mut problem, v.clone(), 5),
+            // Two consecutive equal values are forbidden.
+            regular(
+                &mut problem,
+                v.clone(),
+                vec![
+                    vec![Some(1), Some(2), Some(3)],
+                    vec![None, Some(2), Some(3)],
+                    vec![Some(1), None, Some(3)],
+                    vec![Some(1), Some(2), None],
+                ],
+                0,
+                vec![1, 2, 3],
+            ),
+        ];
+        (problem, constraints)
+    }
+
+    #[test]
+    fn an_exact_structure_accepts_exactly_the_satisfying_tuples() {
+        let (problem, constraints) = one_of_each_constraint();
+        let arena = MddArena::new();
+        for constraint in constraints {
+            let compiled = compile_constraint(
+                &arena,
+                &problem,
+                constraint,
+                &OrderingHeuristic::MinDomMaxLinked,
+                &nominal_domain(3),
+                usize::MAX,
+            );
+            for tuple in all_tuples(4, 3) {
+                assert_eq!(
+                    accepts(&compiled, &tuple),
+                    problem[constraint].is_satisfied(&tuple),
+                    "{} on {tuple:?}",
+                    problem[constraint].name()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_width_limited_structure_accepts_every_satisfying_tuple() {
+        let (problem, constraints) = one_of_each_constraint();
+        let arena = MddArena::new();
+        for constraint in constraints {
+            for width in [1, 2, 3] {
+                let compiled = compile_constraint(
+                    &arena,
+                    &problem,
+                    constraint,
+                    &OrderingHeuristic::MinDomMaxLinked,
+                    &nominal_domain(3),
+                    width,
+                );
+                for tuple in all_tuples(4, 3) {
+                    if problem[constraint].is_satisfied(&tuple) {
+                        assert!(
+                            accepts(&compiled, &tuple),
+                            "{} at width {width} lost {tuple:?}",
+                            problem[constraint].name()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_order_lists_the_scope_of_the_constraint_once() {
+        let (problem, constraints) = one_of_each_constraint();
+        let arena = MddArena::new();
+        let mut reordered = 0;
+        for constraint in constraints {
+            let compiled = compile_constraint(
+                &arena,
+                &problem,
+                constraint,
+                &OrderingHeuristic::MinDomMaxLinked,
+                &nominal_domain(3),
+                usize::MAX,
+            );
+            let declared: Vec<_> = problem[constraint].iter_scope().collect();
+            reordered += usize::from(compiled.order != declared);
+            let mut order = compiled.order.clone();
+            order.sort();
+            let mut scope: Vec<_> = problem[constraint].iter_scope().collect();
+            scope.sort();
+            assert_eq!(order, scope, "{}", problem[constraint].name());
+            assert_eq!(compiled.number_layers(), scope.len() + 1);
+            assert_eq!(compiled.root(), NodeIndex(0, 0));
+        }
+        // The other tests are only meaningful if some layers are not in the declared order.
+        assert!(reordered > 0);
+    }
+
+    #[test]
+    fn the_width_and_the_domain_are_part_of_the_key() {
+        let mut problem = Problem::default();
+        let v = problem.add_variables(3, (0..3isize).collect(), None);
+        let c = all_different(&mut problem, v);
+        let arena = MddArena::new();
+        let compile = |domain_size: usize, max_width| {
+            compile_constraint(
+                &arena,
+                &problem,
+                c,
+                &OrderingHeuristic::MinDomMaxLinked,
+                &nominal_domain(domain_size),
+                max_width,
+            )
+        };
+        let exact = compile(3, usize::MAX);
+        let again = compile(3, usize::MAX);
+        let narrow = compile(3, 2);
+        let wider_domain = compile(4, usize::MAX);
+        assert!(Arc::ptr_eq(&exact.structure, &again.structure));
+        assert!(!Arc::ptr_eq(&exact.structure, &narrow.structure));
+        assert!(!Arc::ptr_eq(&exact.structure, &wider_domain.structure));
+        assert_eq!(arena.len(), 3);
+        assert!(!arena.is_empty());
+        assert!(MddArena::new().is_empty());
+    }
+
+    #[test]
+    fn threads_asking_for_the_same_shape_share_one_structure() {
+        let mut problem = Problem::default();
+        let v = problem.add_variables(5, (0..5isize).collect(), None);
+        let c = all_different(&mut problem, v);
+        let arena = MddArena::new();
+        let structures: Vec<_> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        compile_constraint(
+                            &arena,
+                            &problem,
+                            c,
+                            &OrderingHeuristic::MinDomMaxLinked,
+                            &nominal_domain(5),
+                            usize::MAX,
+                        )
+                        .structure
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        assert_eq!(arena.len(), 1);
+        assert!(
+            structures
+                .windows(2)
+                .all(|pair| Arc::ptr_eq(&pair[0], &pair[1]))
+        );
+    }
 
     #[test]
     fn structurally_identical_constraints_from_different_scopes_share_one_arena_entry() {
@@ -316,7 +575,7 @@ mod tests {
             &problem,
             g1,
             &OrderingHeuristic::MinDomMaxLinked,
-            3,
+            &nominal_domain(3),
             usize::MAX,
         );
         let b = compile_constraint(
@@ -324,7 +583,7 @@ mod tests {
             &problem,
             g2,
             &OrderingHeuristic::MinDomMaxLinked,
-            3,
+            &nominal_domain(3),
             usize::MAX,
         );
         assert!(Arc::ptr_eq(&a.structure, &b.structure));
@@ -349,7 +608,7 @@ mod tests {
             &problem,
             g1,
             &OrderingHeuristic::MinDomMaxLinked,
-            3,
+            &nominal_domain(3),
             usize::MAX,
         );
         let b = compile_constraint(
@@ -357,16 +616,15 @@ mod tests {
             &problem,
             g2,
             &OrderingHeuristic::MinDomMaxLinked,
-            3,
+            &nominal_domain(3),
             usize::MAX,
         );
         assert!(!Arc::ptr_eq(&a.structure, &b.structure));
         assert_eq!(arena.len(), 2);
     }
 
-    /// `AllDifferent`'s shape-key variant carries its own `arity` (see `ConstraintShapeKey`'s
-    /// doc) -- confirms e.g. `AllDifferent(x, y, z)` and `AllDifferent(x, y, z, t)` still don't
-    /// collide now that grouping is gone and the key is just the constraint's own shape.
+    /// The key of `AllDifferent` carries its arity, so `AllDifferent(x, y, z)` and
+    /// `AllDifferent(x, y, z, t)` do not collide.
     #[test]
     fn all_different_constraints_of_different_arity_do_not_share() {
         let mut problem = Problem::default();
@@ -381,7 +639,7 @@ mod tests {
             &problem,
             g3,
             &OrderingHeuristic::MinDomMaxLinked,
-            4,
+            &nominal_domain(4),
             usize::MAX,
         );
         let b = compile_constraint(
@@ -389,7 +647,7 @@ mod tests {
             &problem,
             g4,
             &OrderingHeuristic::MinDomMaxLinked,
-            4,
+            &nominal_domain(4),
             usize::MAX,
         );
         assert!(!Arc::ptr_eq(&a.structure, &b.structure));
@@ -425,7 +683,7 @@ mod tests {
             &problem,
             e1,
             &OrderingHeuristic::MinDomMaxLinked,
-            3,
+            &nominal_domain(3),
             usize::MAX,
         );
         let b = compile_constraint(
@@ -433,7 +691,7 @@ mod tests {
             &problem,
             e2,
             &OrderingHeuristic::MinDomMaxLinked,
-            3,
+            &nominal_domain(3),
             usize::MAX,
         );
         assert!(
