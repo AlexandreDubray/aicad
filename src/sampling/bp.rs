@@ -28,10 +28,8 @@
 //! full backward pass per MDD per iteration, with every layer's local belief read off the same pair
 //! of arrays in a single combined pass (`mdd_local_beliefs`).
 
-#[cfg(test)]
-use crate::mdd::Mdd;
-use crate::mdd::MddViewWithOrder;
 use crate::mdd::wmc::log_wmc_and_gradient;
+use crate::mdd::{CompiledConstraint, Mdd};
 use crate::modelling::ValueIndex;
 
 use super::{build_var_to_mdds, log_combine_and_normalize, normalize_or_uniform, safe_ln};
@@ -54,7 +52,7 @@ fn one_hot(value: ValueIndex, domain_size: usize) -> Vec<f64> {
 /// that is the same for every value of the layer) -- see that function's doc. Returned as one
 /// probability vector per layer, indexed the same way as `mdd.decision_at_layer` (and the same way
 /// `messages` itself is indexed -- by layer within this MDD, not by global variable id).
-fn mdd_local_beliefs<T: MddViewWithOrder>(mdd: &T, messages: &[Vec<f64>]) -> Vec<Vec<f64>> {
+fn mdd_local_beliefs(mdd: &Mdd, messages: &[Vec<f64>]) -> Vec<Vec<f64>> {
     log_wmc_and_gradient(mdd, messages)
         .1
         .into_iter()
@@ -99,8 +97,8 @@ fn cavity_message(marginal: &[f64], local_belief: &[f64]) -> Vec<f64> {
 /// Returns one combined marginal per variable (`probs[var]`'s one-hot at `assignment[var]` for a
 /// `decided` variable; `probs[var]` itself, unchanged, for an undecided one that belongs to no MDD
 /// or when `iterations == 0`).
-pub fn belief_propagation<T: MddViewWithOrder>(
-    mdds: &[T],
+pub(crate) fn belief_propagation(
+    mdds: &[CompiledConstraint],
     probs: &[Vec<f64>],
     assignment: &[ValueIndex],
     decided: &[bool],
@@ -127,7 +125,7 @@ pub fn belief_propagation<T: MddViewWithOrder>(
     let mut messages: Vec<Vec<Vec<f64>>> = mdds
         .iter()
         .map(|mdd| {
-            (0..mdd.number_layers() - 1)
+            (0..mdd.number_decisions())
                 .map(|layer| priors[mdd.decision_at_layer(layer).0].clone())
                 .collect()
         })
@@ -138,7 +136,7 @@ pub fn belief_propagation<T: MddViewWithOrder>(
     let mut local_beliefs: Vec<Vec<Vec<f64>>> = mdds
         .iter()
         .map(|mdd| {
-            (0..mdd.number_layers() - 1)
+            (0..mdd.number_decisions())
                 .map(|layer| vec![1.0; probs[mdd.decision_at_layer(layer).0].len()])
                 .collect()
         })
@@ -204,22 +202,27 @@ pub fn belief_propagation<T: MddViewWithOrder>(
 mod tests {
     use super::*;
     use crate::constraints::{gcc, not_equals};
-    use crate::mdd::heuristics::{MergeHeuristic, OrderingHeuristic, SelectHeuristic};
+    use crate::mdd::Compiler;
+    use crate::mdd::heuristics::{
+        CompilationHeuristic, MergeHeuristic, OrderingHeuristic, SelectHeuristic,
+    };
     use crate::modelling::{ConstraintIndex, Problem};
     use std::sync::Arc;
 
     /// Same helper as `super::tests::build_mdd` -- duplicated locally rather than exposed across
     /// the two test modules, to keep each self-contained.
-    fn build_mdd(problem: Arc<Problem>, constraints: &[ConstraintIndex]) -> Mdd {
-        let mut mdd = Mdd::new(
+    fn build_mdd(problem: Arc<Problem>, constraints: &[ConstraintIndex]) -> CompiledConstraint {
+        let mut compiler = Compiler::new(
             problem,
-            OrderingHeuristic::MinDomMaxLinked,
-            MergeHeuristic::LessRelaxed,
-            SelectHeuristic::Greedy,
+            CompilationHeuristic {
+                ordering: OrderingHeuristic::MinDomMaxLinked,
+                merge: MergeHeuristic::LessRelaxed,
+                selection: SelectHeuristic::Greedy,
+            },
             constraints,
         );
-        mdd.refine(usize::MAX);
-        mdd
+        compiler.refine(usize::MAX);
+        CompiledConstraint::from_mdd(compiler.into_mdd())
     }
 
     #[test]
@@ -351,7 +354,7 @@ mod tests {
         let probs = vec![vec![0.7, 0.2, 0.1]];
 
         for count in [1, 5] {
-            let mdds: Vec<Mdd> = (0..count)
+            let mdds: Vec<CompiledConstraint> = (0..count)
                 .map(|_| {
                     let mut problem = Problem::default();
                     let x = problem.add_variable(vec![0, 1, 2], None);

@@ -17,7 +17,14 @@
 //! ranking finds alike end up in the same node, and the relaxation is spread over the layer
 //! instead of piled into a single node.
 
-use crate::mdd::{Mdd, NodeIndex};
+use crate::mdd::{Compiler, EdgeIndex, NodeIndex};
+
+/// The probability, in `compiler`, of the value that `edge` assigns to the variable of its layer.
+fn edge_probability(compiler: &Compiler, edge: EdgeIndex) -> f64 {
+    let mdd = compiler.mdd();
+    let variable = mdd.decision_at_layer(edge.0);
+    compiler.probability(variable, mdd[edge].assignment())
+}
 
 /// The strategy used to rank and merge the nodes of a layer that is too wide.
 #[derive(Clone, Copy, Debug)]
@@ -26,8 +33,8 @@ pub enum MergeHeuristic {
     /// parents that are not relaxed, lowest first.
     LessRelaxed,
     /// Merges nodes that are alike in how likely they are. Nodes are ranked by the mean
-    /// probability of their incoming edges, taken from the variables' probabilities, lowest
-    /// first.
+    /// probability of their incoming edges, taken from the probabilities of the diagram (those
+    /// of the variables unless `Compiler::set_probabilities` replaced them), lowest first.
     MostLikely,
     /// Merges nodes whose constraint properties are close. Nodes are sorted by the keys of their
     /// properties, constraint by constraint, so that similar states are neighbours.
@@ -36,7 +43,8 @@ pub enum MergeHeuristic {
 
 impl MergeHeuristic {
     /// The active nodes of `layer`, ordered as described on each variant.
-    fn rank_nodes(&self, mdd: &Mdd, layer: usize) -> Vec<NodeIndex> {
+    fn rank_nodes(&self, compiler: &Compiler, layer: usize) -> Vec<NodeIndex> {
+        let mdd = compiler.mdd();
         let active_nodes = || {
             (0..mdd.number_nodes_in_layer(layer))
                 .map(move |position| NodeIndex(layer, position))
@@ -56,7 +64,7 @@ impl MergeHeuristic {
                 let parents = mdd[node].number_parents() as f64;
                 let probability_mass: f64 = mdd[node]
                     .iter_parents()
-                    .map(|edge| mdd.get_edge_probability(edge))
+                    .map(|edge| edge_probability(compiler, edge))
                     .sum();
                 (probability_mass / parents, node)
             })),
@@ -69,10 +77,10 @@ impl MergeHeuristic {
                 // constraints end up adjacent.
                 let mut keyed: Vec<(Vec<f64>, NodeIndex)> = active_nodes()
                     .map(|node| {
-                        let key = mdd
+                        let key = compiler
                             .top_down_properties(node)
                             .iter()
-                            .zip(mdd.bottom_up_properties(node))
+                            .zip(compiler.bottom_up_properties(node))
                             .flat_map(|(top_down, bottom_up)| {
                                 top_down
                                     .order_key()
@@ -108,10 +116,11 @@ impl MergeHeuristic {
     /// has no more than `max_width` active nodes.
     pub(crate) fn group_nodes(
         &self,
-        mdd: &Mdd,
+        compiler: &Compiler,
         layer: usize,
         max_width: usize,
     ) -> Vec<Vec<NodeIndex>> {
+        let mdd = compiler.mdd();
         assert!(
             max_width >= 1,
             "a layer cannot be merged down to a width of 0 nodes"
@@ -125,7 +134,7 @@ impl MergeHeuristic {
             "layer {layer} has {active_nodes} active nodes, which fits the width of {max_width}: \
              there is nothing to merge"
         );
-        consecutive_runs(&self.rank_nodes(mdd, layer), max_width)
+        consecutive_runs(&self.rank_nodes(compiler, layer), max_width)
     }
 }
 
@@ -157,7 +166,8 @@ fn rank_by_score(scored: impl Iterator<Item = (f64, NodeIndex)>) -> Vec<NodeInde
 mod tests {
     use super::*;
     use crate::constraints::{all_different, gcc};
-    use crate::mdd::heuristics::{OrderingHeuristic, SelectHeuristic};
+    use crate::mdd::Compiler;
+    use crate::mdd::heuristics::{CompilationHeuristic, OrderingHeuristic, SelectHeuristic};
     use crate::modelling::Problem;
     use std::sync::Arc;
 
@@ -174,12 +184,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "there is nothing to merge")]
     fn a_layer_that_fits_is_not_ranked() {
-        let mdd = exact_mdd(MergeHeuristic::LessRelaxed);
+        let compiler = exact_mdd(MergeHeuristic::LessRelaxed);
+        let mdd = compiler.mdd();
         let active = mdd
             .nodes_in_layer(2)
             .filter(|&n| mdd[n].is_active())
             .count();
-        MergeHeuristic::LessRelaxed.group_nodes(&mdd, 2, active);
+        MergeHeuristic::LessRelaxed.group_nodes(&compiler, 2, active);
     }
 
     #[test]
@@ -221,37 +232,41 @@ mod tests {
     #[test]
     #[should_panic(expected = "width of 0 nodes")]
     fn merging_down_to_no_node_is_refused() {
-        let mdd = exact_mdd(MergeHeuristic::LessRelaxed);
-        MergeHeuristic::LessRelaxed.group_nodes(&mdd, 1, 0);
+        let compiler = exact_mdd(MergeHeuristic::LessRelaxed);
+        MergeHeuristic::LessRelaxed.group_nodes(&compiler, 1, 0);
     }
 
     /// A diagram that has not been refined yet.
-    fn exact_mdd_unrefined(heuristic: MergeHeuristic) -> Mdd {
+    fn exact_mdd_unrefined(heuristic: MergeHeuristic) -> Compiler {
         let mut problem = Problem::default();
         let vars = problem.add_variables(5, vec![0, 1, 2, 3, 4], None);
         let all_different = all_different(&mut problem, vars.clone());
         let counted = gcc(&mut problem, vars, vec![(0, 0, 2), (1, 0, 2)]);
-        Mdd::new(
+        Compiler::new(
             Arc::new(problem),
-            OrderingHeuristic::MinDomMaxLinked,
-            heuristic,
-            SelectHeuristic::Greedy,
+            CompilationHeuristic {
+                ordering: OrderingHeuristic::MinDomMaxLinked,
+                merge: heuristic,
+                selection: SelectHeuristic::Greedy,
+            },
             &[all_different, counted],
         )
     }
 
     /// An exact diagram: layers with several nodes to rank.
-    fn exact_mdd(heuristic: MergeHeuristic) -> Mdd {
-        let mut mdd = exact_mdd_unrefined(heuristic);
-        mdd.refine(usize::MAX);
+    fn exact_mdd(heuristic: MergeHeuristic) -> Compiler {
+        let mut compiler = exact_mdd_unrefined(heuristic);
+        compiler.refine(usize::MAX);
+        let mdd = compiler.mdd();
         assert!(!mdd.is_unsat() && mdd.count_solutions() > 0u32.into());
-        mdd
+        compiler
     }
 
     #[test]
     fn the_groups_partition_the_active_nodes_of_the_layer() {
         for heuristic in ALL {
-            let mdd = exact_mdd(heuristic);
+            let compiler = exact_mdd(heuristic);
+            let mdd = compiler.mdd();
             for layer in 1..mdd.number_layers() - 1 {
                 let active: Vec<_> = mdd
                     .nodes_in_layer(layer)
@@ -261,7 +276,7 @@ mod tests {
                     if active.len() <= width {
                         continue;
                     }
-                    let groups = heuristic.group_nodes(&mdd, layer, width);
+                    let groups = heuristic.group_nodes(&compiler, layer, width);
                     assert_eq!(groups.len(), width, "{heuristic:?} layer {layer}");
                     let mut merged = groups.concat();
                     merged.sort();
@@ -274,13 +289,15 @@ mod tests {
     #[test]
     fn a_relaxation_keeps_the_width_and_every_solution_whatever_the_heuristic() {
         let exact: u64 = exact_mdd(MergeHeuristic::LessRelaxed)
+            .mdd()
             .count_solutions()
             .try_into()
             .unwrap();
         for heuristic in ALL {
             for width in [1, 2, 3, 6] {
-                let mut mdd = exact_mdd_unrefined(heuristic);
-                mdd.refine(width);
+                let mut compiler = exact_mdd_unrefined(heuristic);
+                compiler.refine(width);
+                let mdd = compiler.mdd();
                 assert!(
                     (0..mdd.number_layers()).all(|l| mdd.number_nodes_in_layer(l) <= width),
                     "{heuristic:?} width {width}"
@@ -294,9 +311,10 @@ mod tests {
     #[test]
     fn a_ranking_lists_each_active_node_of_the_layer_once() {
         for heuristic in ALL {
-            let mdd = exact_mdd(heuristic);
+            let compiler = exact_mdd(heuristic);
+            let mdd = compiler.mdd();
             for layer in 0..mdd.number_layers() {
-                let mut ranking = heuristic.rank_nodes(&mdd, layer);
+                let mut ranking = heuristic.rank_nodes(&compiler, layer);
                 ranking.sort();
                 let active: Vec<_> = mdd
                     .nodes_in_layer(layer)

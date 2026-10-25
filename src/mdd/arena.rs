@@ -6,7 +6,7 @@
 //! most of those constraints are copies of each other on different variables: the same
 //! `NotEquals` on every edge of a graph, the same `Gcc` for every nurse. Their diagrams are the
 //! same up to the names of the variables. `MddArena` compiles one diagram per *shape* and hands it
-//! out as an `Arc<MddStructure>`; [`CompiledConstraint`] pairs it with the constraint's own
+//! out as an `Arc<Mdd>`; [`CompiledConstraint`] pairs it with the constraint's own
 //! branching order, which says which real variable each layer stands for.
 //!
 //! # How it works
@@ -14,7 +14,7 @@
 //! A shape is a [`ConstraintCompileKey`]: the constraint's `ConstraintShapeKey`, the nominal
 //! domain of its variables and the width limit. To compile a shape, the arena builds a small
 //! synthetic problem with `arity` fresh variables that all take the key's domain, instantiates the
-//! constraint on them, compiles and refines its MDD, and keeps only the structure. The first
+//! constraint on them, compiles and refines its MDD, and keeps the `Mdd` once the compiler is dropped. The first
 //! caller of a shape pays for the compilation (outside the lock); concurrent callers of the
 //! same shape end up with the same `Arc`.
 //!
@@ -32,6 +32,10 @@
 //!   symmetric in their scope, so any assignment of variables to layers gives the same set of
 //!   accepted tuples; the exception, `Regular`, has its order forced by `precedence_edges`, which
 //!   both orders respect.
+//! - **The kept diagram refers to the synthetic problem.** An `Mdd` holds the problem it was
+//!   compiled from, here the template's few variables, and its own order, which names those
+//!   variables. Neither is read through the arena: a [`CompiledConstraint`] brings the order of
+//!   the real constraint. The cost is one small problem per shape.
 //! - **Nothing is ever evicted.** The arena grows with the number of distinct shapes it sees,
 //!   which is small for the benchmarks (one `Sum` shape per target, one `Gcc` per set of bounds).
 //! - **The key holds the domain, not just its size.** Today every variable is assumed to take the
@@ -46,9 +50,11 @@ use std::sync::{Arc, RwLock};
 use crate::constraints::{
     AllDifferent, Among, AtLeast, Constraint, ConstraintShapeKey, Gcc, NotEquals, Regular, Sum,
 };
-use crate::mdd::heuristics::{MergeHeuristic, OrderingHeuristic, SelectHeuristic};
-use crate::mdd::mdd::enforce_precedence_order;
-use crate::mdd::{Mdd, MddStructure};
+use crate::mdd::compiler::enforce_precedence_order;
+use crate::mdd::heuristics::{
+    CompilationHeuristic, MergeHeuristic, OrderingHeuristic, SelectHeuristic,
+};
+use crate::mdd::{Compiler, Mdd};
 use crate::modelling::{ConstraintIndex, Problem, VariableIndex};
 
 /// Everything the compiled structure of a constraint depends on: its shape, the domain of its
@@ -156,7 +162,7 @@ fn instantiate_constraint(
 
 /// Compiles the structure of `key` on a synthetic problem with a single constraint (see the module
 /// documentation) and refines it to the key's width.
-fn compile_template(key: &ConstraintCompileKey) -> MddStructure {
+fn compile_template(key: &ConstraintCompileKey) -> Mdd {
     // We create a small synthetic problem with one constraint over its variables because an MDD
     // can only be compiled from a problem.
     let mut synthetic_problem = Problem::default();
@@ -169,15 +175,17 @@ fn compile_template(key: &ConstraintCompileKey) -> MddStructure {
 
     let synthetic_problem = Arc::new(synthetic_problem);
     let constraints: Vec<ConstraintIndex> = synthetic_problem.iter_constraints().collect();
-    let mut mdd = Mdd::new(
+    let mut compiler = Compiler::new(
         Arc::clone(&synthetic_problem),
-        OrderingHeuristic::MinDomMaxLinked,
-        MergeHeuristic::StateSimilarity,
-        SelectHeuristic::Greedy,
+        CompilationHeuristic {
+            ordering: OrderingHeuristic::MinDomMaxLinked,
+            merge: MergeHeuristic::StateSimilarity,
+            selection: SelectHeuristic::Greedy,
+        },
         &constraints,
     );
-    mdd.refine(key.max_width);
-    mdd.into_structure()
+    compiler.refine(key.max_width);
+    compiler.into_mdd()
 }
 
 /// Thread-safe cache from a constraint's shape to its shared, compiled structure.
@@ -187,7 +195,8 @@ fn compile_template(key: &ConstraintCompileKey) -> MddStructure {
 /// threads.
 #[derive(Default)]
 pub struct MddArena {
-    cache: RwLock<HashMap<ConstraintCompileKey, Arc<MddStructure>>>,
+    /// The compiled structure of each shape seen so far.
+    cache: RwLock<HashMap<ConstraintCompileKey, Arc<Mdd>>>,
 }
 
 impl MddArena {
@@ -207,7 +216,7 @@ impl MddArena {
     }
 
     /// The shared structure of `key`, compiled on first use.
-    fn structure_for(&self, key: &ConstraintCompileKey) -> Arc<MddStructure> {
+    fn structure_for(&self, key: &ConstraintCompileKey) -> Arc<Mdd> {
         if let Some(structure) = self.cache.read().expect("MddArena lock poisoned").get(key) {
             return Arc::clone(structure);
         }
@@ -224,7 +233,7 @@ impl MddArena {
 /// through the arena, and the constraint's own branching order.
 pub(crate) struct CompiledConstraint {
     /// The structure, shared with every constraint of the same shape.
-    pub structure: Arc<MddStructure>,
+    pub structure: Arc<Mdd>,
     /// The variable of the constraint's scope that each layer stands for, first layer first.
     pub order: Vec<VariableIndex>,
 }
@@ -236,59 +245,32 @@ impl CompiledConstraint {
     }
 }
 
+impl CompiledConstraint {
+    /// A constraint that branches on the variables of its own diagram, `mdd` having been compiled
+    /// from the problem it is read with. For tests, which compile a diagram directly.
+    #[cfg(test)]
+    pub(crate) fn from_mdd(mdd: Mdd) -> Self {
+        let order = (0..mdd.number_decisions())
+            .map(|layer| mdd.decision_at_layer(layer))
+            .collect();
+        Self {
+            structure: Arc::new(mdd),
+            order,
+        }
+    }
+
+    /// Number of variables branched on, which is the size of the scope. Unlike the number of
+    /// layers of the diagram it is not 0 when the diagram is unsatisfiable.
+    pub(crate) fn number_decisions(&self) -> usize {
+        self.order.len()
+    }
+}
+
 impl std::ops::Deref for CompiledConstraint {
-    type Target = MddStructure;
+    type Target = Mdd;
 
-    fn deref(&self) -> &MddStructure {
+    fn deref(&self) -> &Mdd {
         &self.structure
-    }
-}
-
-impl std::ops::Index<crate::mdd::NodeIndex> for CompiledConstraint {
-    type Output = crate::mdd::Node;
-
-    fn index(&self, index: crate::mdd::NodeIndex) -> &Self::Output {
-        &self.structure[index]
-    }
-}
-
-impl std::ops::Index<crate::mdd::EdgeIndex> for CompiledConstraint {
-    type Output = crate::mdd::Edge;
-
-    fn index(&self, index: crate::mdd::EdgeIndex) -> &Self::Output {
-        &self.structure[index]
-    }
-}
-
-impl crate::mdd::MddView for CompiledConstraint {
-    fn root(&self) -> crate::mdd::NodeIndex {
-        self.structure.root()
-    }
-
-    fn sink(&self) -> crate::mdd::NodeIndex {
-        self.structure.sink()
-    }
-
-    fn number_layers(&self) -> usize {
-        self.structure.number_layers()
-    }
-
-    fn number_nodes_in_layer(&self, layer: usize) -> usize {
-        self.structure.number_nodes_in_layer(layer)
-    }
-
-    fn nodes_in_layer(&self, layer: usize) -> impl Iterator<Item = crate::mdd::NodeIndex> + '_ {
-        self.structure.nodes_in_layer(layer)
-    }
-
-    fn is_unsat(&self) -> bool {
-        self.structure.is_unsat()
-    }
-}
-
-impl crate::mdd::MddViewWithOrder for CompiledConstraint {
-    fn decision_at_layer(&self, layer: usize) -> VariableIndex {
-        self.order[layer]
     }
 }
 
@@ -323,9 +305,9 @@ pub(crate) fn compile_constraint(
     let key = constraint_shape_key(problem, constraint, domain, max_width);
     let structure = arena.structure_for(&key);
     let order = compute_constraint_order(problem, constraint, ordering);
-    debug_assert_eq!(
-        order.len() + 1,
-        structure.number_layers(),
+    // An unsatisfiable structure has no layer at all, whatever the scope.
+    debug_assert!(
+        structure.is_unsat() || order.len() + 1 == structure.number_layers(),
         "a real constraint's branching order must have exactly one fewer entry than its \
          arena-shared structure's layer count (the structure has one extra, sink, layer) -- a \
          mismatch here means the constraint's real scope doesn't actually match the shape key it \
@@ -338,12 +320,15 @@ pub(crate) fn compile_constraint(
 mod tests {
     use super::*;
     use crate::constraints::{all_different, among, at_least, gcc, not_equals, regular, sum};
-    use crate::mdd::{MddView, NodeIndex};
+    use crate::mdd::NodeIndex;
     use crate::modelling::ValueIndex;
 
     /// Whether the compiled structure has a path for `tuple`, a value for every variable of the
     /// problem (the values are the indices, since the domains are `0..d`).
     fn accepts(compiled: &CompiledConstraint, tuple: &[isize]) -> bool {
+        if compiled.is_unsat() {
+            return false;
+        }
         let mut node = compiled.root();
         for layer in 0..compiled.order.len() {
             let value = ValueIndex(tuple[compiled.order[layer].0] as usize);

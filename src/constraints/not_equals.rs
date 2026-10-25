@@ -296,8 +296,8 @@ mod test_not_equals {
     use crate::constraints::{
         AllDifferent, Constraint, ConstraintProperty, ConstraintShapeKey, NotEquals,
     };
+    use crate::mdd::compiler::test_mdd::*;
     use crate::mdd::heuristics::*;
-    use crate::mdd::mdd::test_mdd::*;
     use crate::mdd::*;
     use crate::modelling::*;
     use rustc_hash::FxHasher;
@@ -320,19 +320,26 @@ mod test_not_equals {
     /// Compiles every constraint of `problem` with the given variable order. `width` is the
     /// refinement budget: `usize::MAX` refines to an exact MDD, `1` keeps the initial relaxation.
     fn compile(problem: Problem, order: OrderingHeuristic, width: usize) -> Mdd {
+        compile_to_compiler(problem, order, width).into_mdd()
+    }
+
+    /// The compilation itself, before the diagram is taken out of the compiler.
+    fn compile_to_compiler(problem: Problem, order: OrderingHeuristic, width: usize) -> Compiler {
         let problem = Arc::new(problem);
         let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
-        let mut mdd = Mdd::new(
+        let mut compiler = Compiler::new(
             problem,
-            order,
-            MergeHeuristic::LessRelaxed,
-            SelectHeuristic::Greedy,
+            CompilationHeuristic {
+                ordering: order,
+                merge: MergeHeuristic::LessRelaxed,
+                selection: SelectHeuristic::Greedy,
+            },
             &constraints,
         );
         if width > 1 {
-            mdd.refine(width);
+            compiler.refine(width);
         }
-        mdd
+        compiler
     }
 
     /// All assignments accepted by the MDD, sorted so they can be compared as sets.

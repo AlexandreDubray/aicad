@@ -112,10 +112,11 @@
 //!   = -\infty$ and a zero gradient.
 //! - **Weights are indexed by layer** of the diagram (`weights[layer][value]`, one row per layer
 //!   but the sink's), so the functions do not need to know which variable a layer stands for.
-//! - **Generic over the representation.** Every function takes an [`MddView`], so it runs on a
-//!   compiled [`Mdd`](crate::mdd::Mdd) as well as on a structure shared through the arena.
-//! - **The diagram must be well formed.** The passes assume what `Mdd::new`, `Mdd::refine` and the
-//!   structures made from them guarantee: a single root and a single sink, which are node `0` of
+//! - **Shape only.** Every function takes an [`Mdd`] and reads its layers, nodes and edges, so it
+//!   runs on a freshly compiled diagram as well as on one shared through the arena, whose
+//!   variables are not those of the constraint using it.
+//! - **The diagram must be well formed.** The passes assume what `Compiler::new`, `Compiler::refine` and the
+//!   diagrams made from them guarantee: a single root and a single sink, which are node `0` of
 //!   their layer, and only active edges, each going from a layer to the next. Debug builds check
 //!   it on every call.
 //! - **Weights are plain numbers.** They need not be normalised or even positive.
@@ -127,9 +128,11 @@
 //!
 //! ```
 //! use aicad::constraints::not_equals;
-//! use aicad::mdd::heuristics::{MergeHeuristic, OrderingHeuristic, SelectHeuristic};
+//! use aicad::mdd::heuristics::{
+//!     CompilationHeuristic, MergeHeuristic, OrderingHeuristic, SelectHeuristic,
+//! };
 //! use aicad::mdd::wmc::{log_wmc_and_gradient, wmc};
-//! use aicad::mdd::Mdd;
+//! use aicad::mdd::Compiler;
 //! use aicad::modelling::Problem;
 //! use std::sync::Arc;
 //!
@@ -138,14 +141,17 @@
 //! let y = problem.add_variable(vec![0, 1, 2], None);
 //! let constraint = not_equals(&mut problem, x, y);
 //!
-//! let mut mdd = Mdd::new(
+//! let mut compiler = Compiler::new(
 //!     Arc::new(problem),
-//!     OrderingHeuristic::MinDomMaxLinked,
-//!     MergeHeuristic::LessRelaxed,
-//!     SelectHeuristic::Greedy,
+//!     CompilationHeuristic {
+//!         ordering: OrderingHeuristic::MinDomMaxLinked,
+//!         merge: MergeHeuristic::LessRelaxed,
+//!         selection: SelectHeuristic::Greedy,
+//!     },
 //!     &[constraint],
 //! );
-//! mdd.refine(usize::MAX);
+//! compiler.refine(usize::MAX);
+//! let mdd = compiler.into_mdd();
 //!
 //! // One row of weights per layer: here the first layer is `x`, the second `y`.
 //! let uniform = vec![vec![1.0 / 3.0; 3]; 2];
@@ -157,8 +163,7 @@
 //! assert!((gradient[0][1] - 1.0).abs() < 1e-12);
 //! ```
 
-use super::NodeIndex;
-use super::view::MddView;
+use super::{Mdd, NodeIndex};
 
 /// What the passes of this module compute: the rescaled `alpha` and `beta` of the module
 /// documentation and the constants that rescaled them.
@@ -183,7 +188,7 @@ impl Scaled {
 /// Panics, with a message naming the problem, if the diagram does not have the shape that the
 /// passes rely on (see the module documentation). Walks the whole diagram, so it only runs in
 /// debug builds.
-fn assert_well_formed<T: MddView>(mdd: &T) {
+fn assert_well_formed(mdd: &Mdd) {
     let last_layer = mdd.sink().0;
     assert_eq!(
         last_layer + 1,
@@ -231,7 +236,7 @@ fn assert_well_formed<T: MddView>(mdd: &T) {
 }
 
 /// Runs both passes. Panics if `weights` does not have one row per layer but the sink's.
-fn scaled_forward_backward<T: MddView>(mdd: &T, weights: &[Vec<f64>]) -> Scaled {
+fn scaled_forward_backward(mdd: &Mdd, weights: &[Vec<f64>]) -> Scaled {
     if cfg!(debug_assertions) {
         assert_well_formed(mdd);
     }
@@ -296,7 +301,7 @@ fn scaled_forward_backward<T: MddView>(mdd: &T, weights: &[Vec<f64>]) -> Scaled 
 
 /// The logarithm of the weighted model count of `mdd`: the total weight of its root-to-sink
 /// paths, where an edge of value `v` in `layer` weighs `weights[layer][v]`. It is `-inf` if
-/// no path has a positive weight.
+/// no path has a positive weight, in particular if `mdd` is unsatisfiable.
 ///
 /// `weights` is indexed by layer of `mdd`, one row per layer but the sink's (see the
 /// [module documentation](self)). The row of a layer needs an entry for every value of the
@@ -307,13 +312,16 @@ fn scaled_forward_backward<T: MddView>(mdd: &T, weights: &[Vec<f64>]) -> Scaled 
 /// Panics if `weights` does not have one row per layer but the sink's, and, when running, if a
 /// row is shorter than the largest value of its layer. Debug builds also panic if the diagram is
 /// not well formed.
-pub fn log_wmc<T: MddView>(mdd: &T, weights: &[Vec<f64>]) -> f64 {
+pub fn log_wmc(mdd: &Mdd, weights: &[Vec<f64>]) -> f64 {
+    if mdd.is_unsat() {
+        return f64::NEG_INFINITY;
+    }
     scaled_forward_backward(mdd, weights).log_wmc()
 }
 
 /// The weighted model count of `mdd`, see [`log_wmc`]. It underflows to zero when the count is
 /// below the smallest `f64`: prefer [`log_wmc`] for long diagrams.
-pub fn wmc<T: MddView>(mdd: &T, weights: &[Vec<f64>]) -> f64 {
+pub fn wmc(mdd: &Mdd, weights: &[Vec<f64>]) -> f64 {
     log_wmc(mdd, weights).exp()
 }
 
@@ -326,17 +334,20 @@ pub fn wmc<T: MddView>(mdd: &T, weights: &[Vec<f64>]) -> f64 {
 /// given that the constraint holds. Divided by its sum over the values of the layer it is the
 /// belief of the constraint, which does not depend on the weights of the layer itself.
 ///
-/// The gradient has the shape of `weights`. If no path has a positive weight the count is
-/// `-inf` and the gradient is zero.
+/// The gradient has the shape of `weights`. If no path has a positive weight (in particular if
+/// `mdd` is unsatisfiable) the count is `-inf` and the gradient is zero.
 ///
 /// # Panics
 ///
 /// Under the same conditions as [`log_wmc`].
-pub fn log_wmc_and_gradient<T: MddView>(mdd: &T, weights: &[Vec<f64>]) -> (f64, Vec<Vec<f64>>) {
+pub fn log_wmc_and_gradient(mdd: &Mdd, weights: &[Vec<f64>]) -> (f64, Vec<Vec<f64>>) {
+    let mut gradient: Vec<Vec<f64>> = weights.iter().map(|row| vec![0.0; row.len()]).collect();
+    if mdd.is_unsat() {
+        return (f64::NEG_INFINITY, gradient);
+    }
     let scaled = scaled_forward_backward(mdd, weights);
     let log_count = scaled.log_wmc();
     let last_layer = mdd.sink().0;
-    let mut gradient: Vec<Vec<f64>> = weights.iter().map(|row| vec![0.0; row.len()]).collect();
     if log_count == f64::NEG_INFINITY {
         return (log_count, gradient);
     }
@@ -361,24 +372,28 @@ pub fn log_wmc_and_gradient<T: MddView>(mdd: &T, weights: &[Vec<f64>]) -> (f64, 
 mod tests {
     use super::*;
     use crate::constraints::{all_different, not_equals, sum};
-    use crate::mdd::Mdd;
     use crate::mdd::arena::{MddArena, compile_constraint, nominal_domain};
-    use crate::mdd::heuristics::{MergeHeuristic, OrderingHeuristic, SelectHeuristic};
+    use crate::mdd::heuristics::{
+        CompilationHeuristic, MergeHeuristic, OrderingHeuristic, SelectHeuristic,
+    };
+    use crate::mdd::{Compiler, Mdd};
     use crate::mdd::{Edge, EdgeIndex, Node};
     use crate::modelling::{ConstraintIndex, Problem, ValueIndex};
     use std::sync::Arc;
 
     /// The exact diagram of `constraints`.
     fn build_mdd(problem: Arc<Problem>, constraints: &[ConstraintIndex]) -> Mdd {
-        let mut mdd = Mdd::new(
+        let mut compiler = Compiler::new(
             problem,
-            OrderingHeuristic::MinDomMaxLinked,
-            MergeHeuristic::LessRelaxed,
-            SelectHeuristic::Greedy,
+            CompilationHeuristic {
+                ordering: OrderingHeuristic::MinDomMaxLinked,
+                merge: MergeHeuristic::LessRelaxed,
+                selection: SelectHeuristic::Greedy,
+            },
             constraints,
         );
-        mdd.refine(usize::MAX);
-        mdd
+        compiler.refine(usize::MAX);
+        compiler.into_mdd()
     }
 
     /// The weighted count by enumeration: the sum, over the assignments of the problem (whose
@@ -447,77 +462,39 @@ mod tests {
         brute
     }
 
-    /// A diagram built by hand, to feed the passes diagrams that the compiler never produces.
-    struct RawDiagram {
-        nodes: Vec<Vec<Node>>,
-        edges: Vec<Vec<Edge>>,
-    }
-
-    impl RawDiagram {
-        /// `layers` layers of one node each, plus the sink's, with an edge for every value of
-        /// `0..values` between two consecutive nodes.
-        fn chain(layers: usize, values: usize) -> Self {
-            let mut diagram = RawDiagram {
-                nodes: (0..=layers)
-                    .map(|layer| vec![Node::new(layer, 0, false)])
-                    .collect(),
-                edges: vec![Vec::new(); layers],
-            };
-            for layer in 0..layers {
-                for value in 0..values {
-                    diagram.add_edge(layer, NodeIndex(layer, 0), NodeIndex(layer + 1, 0), value);
-                }
+    /// `layers` layers of one node each, plus the sink's, with an edge for every value of
+    /// `0..values` between two consecutive nodes: a diagram built by hand, to feed the passes
+    /// diagrams that the compiler never produces.
+    fn chain(layers: usize, values: usize) -> Mdd {
+        let nodes = (0..=layers)
+            .map(|layer| vec![Node::new(layer, 0, false)])
+            .collect();
+        let mut diagram = Mdd::from_parts(nodes, vec![Vec::new(); layers]);
+        for layer in 0..layers {
+            for value in 0..values {
+                add_edge(
+                    &mut diagram,
+                    layer,
+                    NodeIndex(layer, 0),
+                    NodeIndex(layer + 1, 0),
+                    value,
+                );
             }
-            diagram
         }
-
-        /// Adds an edge leaving `layer` and lists it among the children of `from`.
-        fn add_edge(&mut self, layer: usize, from: NodeIndex, to: NodeIndex, value: usize) {
-            let index = EdgeIndex(layer, self.edges[layer].len());
-            self.edges[layer].push(Edge::new(from, to, ValueIndex(value)));
-            self.nodes[from.0][from.1].add_child_edge(index);
-        }
-
-        /// A second node in `layer`.
-        fn add_node(&mut self, layer: usize) {
-            let index = self.nodes[layer].len();
-            self.nodes[layer].push(Node::new(layer, index, false));
-        }
+        diagram
     }
 
-    impl std::ops::Index<NodeIndex> for RawDiagram {
-        type Output = Node;
-        fn index(&self, index: NodeIndex) -> &Node {
-            &self.nodes[index.0][index.1]
-        }
+    /// Adds an edge leaving `layer` and lists it among the children of `from`.
+    fn add_edge(diagram: &mut Mdd, layer: usize, from: NodeIndex, to: NodeIndex, value: usize) {
+        let index = EdgeIndex(layer, diagram.edges[layer].len());
+        diagram.edges[layer].push(Edge::new(from, to, ValueIndex(value)));
+        diagram.nodes[from.0][from.1].add_child_edge(index);
     }
 
-    impl std::ops::Index<EdgeIndex> for RawDiagram {
-        type Output = Edge;
-        fn index(&self, index: EdgeIndex) -> &Edge {
-            &self.edges[index.0][index.1]
-        }
-    }
-
-    impl MddView for RawDiagram {
-        fn root(&self) -> NodeIndex {
-            NodeIndex(0, 0)
-        }
-        fn sink(&self) -> NodeIndex {
-            NodeIndex(self.nodes.len() - 1, 0)
-        }
-        fn number_layers(&self) -> usize {
-            self.nodes.len()
-        }
-        fn number_nodes_in_layer(&self, layer: usize) -> usize {
-            self.nodes[layer].len()
-        }
-        fn nodes_in_layer(&self, layer: usize) -> impl Iterator<Item = NodeIndex> + '_ {
-            (0..self.nodes[layer].len()).map(move |index| NodeIndex(layer, index))
-        }
-        fn is_unsat(&self) -> bool {
-            false
-        }
+    /// A second node in `layer`.
+    fn add_node(diagram: &mut Mdd, layer: usize) {
+        let index = diagram.nodes[layer].len();
+        diagram.nodes[layer].push(Node::new(layer, index, false));
     }
 
     #[test]
@@ -718,7 +695,7 @@ mod tests {
     #[test]
     fn a_count_below_the_smallest_float_is_still_known_through_its_logarithm() {
         // 400 layers whose two values weigh 0.001 each: WMC = 0.002^400 = 10^-1079.
-        let diagram = RawDiagram::chain(400, 2);
+        let diagram = chain(400, 2);
         let weights = vec![vec![1e-3, 1e-3]; 400];
 
         let (log_count, gradient) = log_wmc_and_gradient(&diagram, &weights);
@@ -746,7 +723,7 @@ mod tests {
 
     #[test]
     fn a_hand_built_chain_is_well_formed() {
-        let diagram = RawDiagram::chain(3, 2);
+        let diagram = chain(3, 2);
         assert_well_formed(&diagram);
         assert!((wmc(&diagram, &vec![vec![1.0, 1.0]; 3]) - 8.0).abs() < 1e-9);
     }
@@ -755,8 +732,8 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "root layer must have exactly one node")]
     fn a_second_root_is_reported() {
-        let mut diagram = RawDiagram::chain(2, 2);
-        diagram.add_node(0);
+        let mut diagram = chain(2, 2);
+        add_node(&mut diagram, 0);
         assert_well_formed(&diagram);
     }
 
@@ -764,8 +741,8 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "sink layer must have exactly one node")]
     fn a_second_sink_is_reported() {
-        let mut diagram = RawDiagram::chain(2, 2);
-        diagram.add_node(2);
+        let mut diagram = chain(2, 2);
+        add_node(&mut diagram, 2);
         assert_well_formed(&diagram);
     }
 
@@ -773,7 +750,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "deactivated edge")]
     fn a_listed_deactivated_edge_is_reported() {
-        let mut diagram = RawDiagram::chain(2, 2);
+        let mut diagram = chain(2, 2);
         diagram.edges[0][1].deactivate();
         assert_well_formed(&diagram);
     }
@@ -782,8 +759,8 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "does not enter layer")]
     fn an_edge_that_skips_a_layer_is_reported() {
-        let mut diagram = RawDiagram::chain(3, 1);
-        diagram.add_edge(0, NodeIndex(0, 0), NodeIndex(2, 0), 1);
+        let mut diagram = chain(3, 1);
+        add_edge(&mut diagram, 0, NodeIndex(0, 0), NodeIndex(2, 0), 1);
         assert_well_formed(&diagram);
     }
 
@@ -791,8 +768,8 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "root layer must have exactly one node")]
     fn the_passes_check_the_diagram_in_debug_builds() {
-        let mut diagram = RawDiagram::chain(2, 2);
-        diagram.add_node(0);
+        let mut diagram = chain(2, 2);
+        add_node(&mut diagram, 0);
         wmc(&diagram, &vec![vec![1.0, 1.0]; 2]);
     }
 }

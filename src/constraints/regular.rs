@@ -504,8 +504,8 @@ mod test_regular {
     use crate::constraints::{
         AllDifferent, Constraint, ConstraintProperty, ConstraintShapeKey, Regular,
     };
+    use crate::mdd::compiler::test_mdd::*;
     use crate::mdd::heuristics::*;
-    use crate::mdd::mdd::test_mdd::*;
     use crate::mdd::*;
     use crate::modelling::*;
     use rustc_hash::{FxHashSet, FxHasher};
@@ -579,36 +579,43 @@ mod test_regular {
     /// Adds the constraint to the problem, and compiles with the given variable order. `width`
     /// is the refinement budget: `1` keeps the initial relaxation.
     fn compile(problem: Problem, order: Vec<usize>, width: usize) -> Mdd {
+        compile_to_compiler(problem, order, width).into_mdd()
+    }
+
+    /// The compilation itself, before the diagram is taken out of the compiler.
+    fn compile_to_compiler(problem: Problem, order: Vec<usize>, width: usize) -> Compiler {
         let problem = Arc::new(problem);
         let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
-        let mut mdd = Mdd::new(
+        let mut compiler = Compiler::new(
             problem,
-            OrderingHeuristic::Custom(order),
-            MergeHeuristic::LessRelaxed,
-            SelectHeuristic::Greedy,
+            CompilationHeuristic {
+                ordering: OrderingHeuristic::Custom(order),
+                merge: MergeHeuristic::LessRelaxed,
+                selection: SelectHeuristic::Greedy,
+            },
             &constraints,
         );
         if width > 1 {
-            mdd.refine(width);
+            compiler.refine(width);
         }
-        mdd
+        compiler
     }
 
     /// Like `compile` with `usize::MAX`, then runs the propagation again until nothing changes.
     ///
-    /// `Mdd::refine` propagates only one pass after its last split, so an MDD can keep paths that
+    /// `Compiler::refine` propagates only one pass after its last split, so an MDD can keep paths that
     /// a second pass would remove (see the task "MDD propagation is not iterated to a
     /// fixpoint"). The exactness tests need the fixpoint, because they check what the constraint
     /// rules out, not how many passes the engine runs.
     fn settled(problem: Problem, order: Vec<usize>) -> Mdd {
-        let mut mdd = compile(problem, order, usize::MAX);
+        let mut compiler = compile_to_compiler(problem, order, usize::MAX);
         for _ in 0..10 {
-            if mdd.is_unsat() {
+            if compiler.mdd().is_unsat() {
                 break;
             }
-            mdd.propagate_constraints();
+            compiler.propagate_constraints();
         }
-        mdd
+        compiler.into_mdd()
     }
 
     fn accepted(mdd: &Mdd) -> Vec<Vec<isize>> {
@@ -1578,15 +1585,17 @@ mod test_regular {
         );
         let problem = Arc::new(problem);
         let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
-        let mut mdd = Mdd::new(
+        let mut compiler = Compiler::new(
             problem,
-            OrderingHeuristic::MinDomMaxLinked,
-            MergeHeuristic::LessRelaxed,
-            SelectHeuristic::Greedy,
+            CompilationHeuristic {
+                ordering: OrderingHeuristic::MinDomMaxLinked,
+                merge: MergeHeuristic::LessRelaxed,
+                selection: SelectHeuristic::Greedy,
+            },
             &constraints,
         );
-        mdd.refine(usize::MAX);
-        assert_eq!(accepted(&mdd), vec![vec![0, 0, 1]]);
+        compiler.refine(usize::MAX);
+        assert_eq!(accepted(compiler.mdd()), vec![vec![0, 0, 1]]);
     }
 
     #[test]

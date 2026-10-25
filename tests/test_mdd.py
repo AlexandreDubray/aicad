@@ -134,20 +134,7 @@ def test_structure_is_consistent_with_count():
     mdd = ac.compile(m)
     widths = mdd.widths
     assert len(widths) == mdd.num_layers and widths[0] == 1 and widths[-1] == 1
-    edges = mdd.edges()
-    sink = sum(widths) - 1
-    out = {}
-    for src, dst, var, value in edges:
-        assert 0 <= var < m.num_vars
-        out.setdefault(src, []).append(dst)
-    paths = {sink: 1}
-
-    def count(node):
-        if node not in paths:
-            paths[node] = sum(count(d) for d in out.get(node, []))
-        return paths[node]
-
-    assert count(0) == mdd.count() == 12
+    assert mdd.count() == 12
     assert mdd.to_dot().lstrip().startswith(("digraph", "strict digraph"))
 
 

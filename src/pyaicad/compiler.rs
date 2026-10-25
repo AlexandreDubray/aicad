@@ -10,16 +10,16 @@ use crate::modelling::*;
 use super::heuristics::{PyMergeHeuristic, PyOrderingHeuristic, PySelectHeuristic};
 use super::problem::PyProblem;
 
-#[pyclass]
-pub struct Compiler {
+#[pyclass(name = "Compiler")]
+pub struct PyCompiler {
     problem: Arc<Problem>,
 }
 
 #[pymethods]
-impl Compiler {
+impl PyCompiler {
     #[new]
     fn new(problem: &PyProblem) -> Self {
-        Compiler {
+        PyCompiler {
             problem: problem.arc(),
         }
     }
@@ -48,18 +48,20 @@ impl Compiler {
             None => self.problem.iter_constraints().collect(),
         };
 
-        let mut mdd = Mdd::new(
+        let mut compiler = Compiler::new(
             Arc::clone(&self.problem),
-            ordering,
-            merge,
-            select,
+            CompilationHeuristic {
+                ordering,
+                merge,
+                selection: select,
+            },
             &constraints,
         );
         if let Some(width) = max_width {
-            mdd.refine(width);
+            compiler.refine(width);
         }
         PyMdd {
-            inner: mdd,
+            inner: compiler,
             is_solution_sat: false,
         }
     }
@@ -92,12 +94,12 @@ impl Compiler {
     }
 }
 
-/// A compiled `Mdd`, returned by `Compiler::compile`. It owns its `Mdd` outright, so it can be
+/// A compiled `Mdd`, returned by `Compiler::compile`. It owns its compilation outright, so it can be
 /// refined further, sampled, or queried independently of the `Compiler` it came from and of any
 /// other `Mdd` compiled from the same `Problem`.
 #[pyclass]
 pub struct PyMdd {
-    inner: Mdd,
+    inner: Compiler,
     is_solution_sat: bool,
 }
 
@@ -115,7 +117,7 @@ impl PyMdd {
     // --- SOLUTION INFO --- //
 
     fn is_unsat(&self) -> bool {
-        self.inner.is_unsat()
+        self.inner.mdd().is_unsat()
     }
 
     fn is_solution_sat(&self) -> bool {
@@ -124,22 +126,25 @@ impl PyMdd {
 
     #[pyo3(signature = (sample=false))]
     fn get_solution(&mut self, sample: bool) -> Option<Vec<isize>> {
-        if self.inner.is_unsat() {
+        let mdd = self.inner.mdd();
+        if mdd.is_unsat() {
             return None;
         }
         let solution = if sample {
-            Some(self.inner.sample())
+            let weights = self.inner.layer_probabilities();
+            let path = crate::sampling::sample_solution(mdd, &weights);
+            Some(mdd.solution_from_path(&path))
         } else {
-            self.inner.get_solution()
+            mdd.get_solution()
         };
         if let Some(sol) = solution.as_ref() {
-            self.is_solution_sat = self.inner.problem().is_solution(sol);
+            self.is_solution_sat = mdd.problem().is_solution(sol);
         }
         solution
     }
 
     fn is_solution(&self, solution: Vec<isize>) -> bool {
-        self.inner.problem().is_solution(&solution)
+        self.inner.mdd().problem().is_solution(&solution)
     }
 
     fn proportion_satisfied_constraints(&self, solution: Vec<isize>) -> f64 {
@@ -156,12 +161,12 @@ impl PyMdd {
     /// precision Python int -- a relaxed diagram can encode far more than any fixed-width
     /// integer holds. 0 for an unsat Mdd.
     fn count_solutions(&self) -> BigUint {
-        self.inner.count_solutions()
+        self.inner.mdd().count_solutions()
     }
 
     /// Number of layers in the compiled Mdd (one per variable in its scope, plus the sink).
     fn number_layers(&self) -> usize {
-        self.inner.number_layers()
+        self.inner.mdd().number_layers()
     }
 
     /// Number of (active) nodes at a given layer -- the Mdd's width at that layer. Useful for
@@ -169,47 +174,43 @@ impl PyMdd {
     /// below whatever cap was passed to `Compiler.compile`'s `max_width`) versus having been
     /// capped before converging.
     fn number_nodes_in_layer(&self, layer: usize) -> usize {
-        self.inner.number_nodes_in_layer(layer)
+        self.inner.mdd().number_nodes_in_layer(layer)
     }
 
     // --- MODEL INFO --- //
 
     fn number_variables(&self) -> usize {
-        self.inner.problem().number_variables()
+        self.inner.mdd().problem().number_variables()
     }
 
     fn number_constraints(&self) -> usize {
-        self.inner.problem().number_constraints()
+        self.inner.mdd().problem().number_constraints()
     }
 
     fn constraint_scope(&self, constraint: usize) -> Vec<usize> {
-        self.inner.problem()[ConstraintIndex(constraint)]
+        self.inner.mdd().problem()[ConstraintIndex(constraint)]
             .iter_scope()
             .map(|v| v.0)
             .collect()
     }
 
     fn variable_domain_size(&self, variable: usize) -> usize {
-        self.inner.problem()[VariableIndex(variable)].domain_size()
+        self.inner.mdd().problem()[VariableIndex(variable)].domain_size()
     }
 
     fn variable_domain(&self, variable: usize) -> Vec<isize> {
-        self.inner.problem()[VariableIndex(variable)]
+        self.inner.mdd().problem()[VariableIndex(variable)]
             .iter_domain()
             .collect()
     }
 
     // --- Visualisation and structure handling --- //
 
-    fn topological_order(&self) -> Vec<(usize, usize, usize, isize)> {
-        self.inner.topological_order()
-    }
-
     fn as_graphviz(&self) -> String {
-        self.inner.as_graphviz()
+        self.inner.mdd().as_graphviz()
     }
 
     fn show_memory_info(&self) {
-        self.inner.show_memory_footprint();
+        self.inner.mdd().show_memory_footprint();
     }
 }

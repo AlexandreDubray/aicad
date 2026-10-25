@@ -360,7 +360,7 @@ mod tests {
         probs: &[f64],
         domain_size: usize,
     ) -> f64 {
-        let num_layers = constraint.number_layers() - 1;
+        let num_layers = constraint.order.len();
         let mut weights = Vec::with_capacity(num_layers);
         for layer in 0..num_layers {
             let variable = constraint.decision_at_layer(layer);

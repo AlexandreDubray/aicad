@@ -8,7 +8,7 @@ mod nls;
 mod problem;
 mod threads;
 
-pub(crate) use compiler::{Compiler, PyMdd};
+pub(crate) use compiler::{PyCompiler, PyMdd};
 pub(crate) use heuristics::{PyMergeHeuristic, PyOrderingHeuristic, PySelectHeuristic};
 pub(crate) use learn::{
     PyConsFormerConfig, PyModelSelection, PyTrainingConfig, set_seed, train_consformer,
@@ -49,7 +49,7 @@ fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     logging::disable_by_default(py)?;
 
     m.add_class::<PyProblem>()?;
-    m.add_class::<Compiler>()?;
+    m.add_class::<PyCompiler>()?;
     m.add_class::<PyMdd>()?;
     m.add_class::<PyOrderingHeuristic>()?;
     m.add_class::<PyMergeHeuristic>()?;

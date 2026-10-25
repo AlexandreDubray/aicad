@@ -270,7 +270,7 @@ fn layer_weights_from_probs(
     probs_for_sample: &[f32],
     domain_size: usize,
 ) -> Vec<Vec<f64>> {
-    let num_layers = constraint.number_layers() - 1;
+    let num_layers = constraint.order.len();
     let mut weights: Vec<Vec<f64>> = Vec::with_capacity(num_layers);
     for layer in 0..num_layers {
         let variable = constraint.decision_at_layer(layer);
@@ -842,7 +842,7 @@ mod mdd_loss_tests {
         let weights =
             layer_weights_from_probs(&constraint, &problem, &probs_for_sample, domain_size);
 
-        let given_layer = (0..constraint.number_layers() - 1)
+        let given_layer = (0..constraint.order.len())
             .find(|&l| constraint.decision_at_layer(l) == vars[0])
             .expect("vars[0] must be in the compiled constraint's scope");
         assert_eq!(

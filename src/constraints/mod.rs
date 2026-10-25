@@ -25,7 +25,7 @@
 //!
 //! ## Setup
 //!
-//! [`Mdd::new`](crate::mdd::Mdd::new) receives the constraints to compile.
+//! [`Compiler::new`](crate::mdd::Compiler::new) receives the constraints to compile.
 //!
 //! 1. The variables of the MDD are the union of the scopes. A variable that is in no scope has no
 //!    layer, and a constraint with an empty scope is never seen by the compilation.

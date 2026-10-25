@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import operator
-from typing import Any, List, Optional, Sequence, Tuple, Union
+from typing import Any, List, Optional, Sequence, Union
 
 from . import _core
 from .errors import ModelError
@@ -158,14 +158,6 @@ class MDD:
     def num_layers(self) -> int:
         """The number of layers, the sink's included."""
         return int(self._native.number_layers())
-
-    def edges(self) -> List[Tuple[int, int, int, int]]:
-        """The edges as ``(source, target, variable, value)``.
-
-        Nodes are numbered layer by layer, from the root, and ``variable`` is the index of a
-        variable of the model. Every edge goes from a layer to the next.
-        """
-        return [tuple(e) for e in self._native.topological_order()]  # type: ignore[misc]
 
     def to_dot(self) -> str:
         """The diagram in Graphviz's DOT format."""
