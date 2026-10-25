@@ -91,6 +91,10 @@
 //!    number of paths. It may be false on an edge that no solution uses: that is incompleteness,
 //!    and the price of a relaxation.
 //! 5. **Order keys have a fixed length** and hold finite numbers.
+//! 6. **A single path is a single state.** The property of one path, and the empty property of
+//!    the root, answer true to [`is_single_state`](ConstraintProperty::is_single_state). Merging
+//!    two paths in different states gives a property that answers false, unless the constraint
+//!    has nothing left to decide (see each module).
 //!
 //! A merged node can remove an edge that one of the nodes it replaces keeps, when that node holds
 //! no solution at all: soundness is about solutions, not about every path. The tests also check
@@ -99,15 +103,15 @@
 //!
 //! # The constraints
 //!
-//! | Constraint | State of a node | Merge | Edge removed when |
-//! |---|---|---|---|
-//! | [`AllDifferent`] | two bitsets of values: taken on all paths, taken on some path | intersection, union | the value is taken on all paths; a Hall set is full |
-//! | [`NotEquals`] | bitset of the values of `x` and `y` seen on the paths | union | the other side holds only that value |
-//! | [`Sum`] | interval of the sums | smallest min, largest max | the target is out of the interval (bounds only) |
-//! | [`Among`] | interval of the counts of values of a set | smallest min, largest max | the bounds are out of the interval (bounds only) |
-//! | [`AtLeast`] | the same, capped at the lower bound | smallest min, largest max | the largest count cannot reach the lower bound |
-//! | [`Gcc`] | one interval per bounded value, capped at its lower bound when its upper bound cannot bind | per value | a bound is out of its interval (bounds only) |
-//! | [`Regular`] | bitset of automaton states | union | no state of the parent leads into the child |
+//! | Constraint | State of a node | Merge | Edge removed when | Single state when |
+//! |---|---|---|---|---|
+//! | [`AllDifferent`] | two bitsets of values: taken on all paths, taken on some path | intersection, union | the value is taken on all paths; a Hall set is full | the two sets are equal |
+//! | [`NotEquals`] | bitset of the values of `x` and `y` seen on the paths | union | the other side holds only that value | `x` has one value, or `y` is assigned |
+//! | [`Sum`] | interval of the sums | smallest min, largest max | the target is out of the interval (bounds only) | the interval is a point |
+//! | [`Among`] | interval of the counts of values of a set | smallest min, largest max | the bounds are out of the interval (bounds only) | the interval is a point |
+//! | [`AtLeast`] | the same, capped at the lower bound | smallest min, largest max | the largest count cannot reach the lower bound | the interval is a point |
+//! | [`Gcc`] | one interval per bounded value, capped at its lower bound when its upper bound cannot bind | per value | a bound is out of its interval (bounds only) | every interval is a point |
+//! | [`Regular`] | bitset of automaton states | union | no state of the parent leads into the child | at most one state |
 //!
 //! "Bounds only" means that a count that is inside the interval but not reachable is not
 //! detected: a compiled MDD can keep violating paths until nodes are split enough for the
@@ -994,6 +998,9 @@ mod test_contract {
         fn order_key(&self) -> Vec<f64> {
             vec![self.0 as f64]
         }
+        fn is_single_state(&self) -> bool {
+            true
+        }
         fn as_any(&self) -> &dyn Any {
             self
         }
@@ -1137,5 +1144,23 @@ mod test_contract {
         };
         assert_ne!(a, b);
         assert_ne!(a, ConstraintShapeKey::NotEquals);
+    }
+
+    #[test]
+    fn the_property_of_a_single_path_is_a_single_state() {
+        for instance in instances() {
+            let c = instance.constraint.as_ref();
+            assert!(c.empty_property().is_single_state(), "{}", instance.name);
+            for tuple in assignments(&instance) {
+                for layer in 0..=instance.layers() {
+                    assert!(
+                        top_down(c, &tuple[..layer]).is_single_state(),
+                        "{}: prefix {:?}",
+                        instance.name,
+                        &tuple[..layer]
+                    );
+                }
+            }
+        }
     }
 }

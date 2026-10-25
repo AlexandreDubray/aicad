@@ -195,6 +195,10 @@ pub trait ConstraintProperty: DeepSizeOf + DynClone + Send + Sync {
     /// always the same count for a given constraint. Properties that are close must be similar;
     /// equal ones do not reach the heuristic, since `collapse` merges them first.
     fn order_key(&self) -> Vec<f64>;
+    /// True if the property describes a single state of the constraint: all the paths it
+    /// summarises lead to the same state. A property in a node resulting from non-interchangeable
+    /// paths must return false.
+    fn is_single_state(&self) -> bool;
     /// The property as [`Any`], to downcast to its concrete type.
     fn as_any(&self) -> &dyn Any;
     /// Name of the kind of property, used in panic messages.

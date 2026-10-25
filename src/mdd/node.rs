@@ -10,9 +10,10 @@
 //! # How it works
 //!
 //! - **Active.** A removed node is only deactivated; `Mdd::clean` drops it later.
-//! - **Relaxed.** A node is relaxed once it is the result of merging nodes that the constraints did
-//!   not consider equivalent, so it may accept paths that no constraint-consistent node would.
-//!   A diagram without relaxed nodes is exact.
+//! - **Relaxed.** A node is relaxed if the paths that reach it do not all lead to the same state
+//!   of the constraints, or if one of its parents is relaxed: it may accept paths that no
+//!   constraint-consistent node would. The compiler derives it (see `Compiler::update_exactness`)
+//!   and never sets it by hand. A diagram without relaxed nodes is exact.
 //! - **Property flag.** Set when the top-down or bottom-up properties of the node are out of date
 //!   and must be recomputed by the next propagation.
 //!

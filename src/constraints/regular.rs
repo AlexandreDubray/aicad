@@ -66,6 +66,12 @@
 //! are computed before the edges are filtered, so one pass can leave sets slightly larger than
 //! the fixpoint; the next pass removes what is left.
 //!
+//! ## Single state
+//!
+//! A node is a single state when its set holds at most one automaton state: every path leads to
+//! the same state, or none leads anywhere and the node is dead. With two states or more, the paths
+//! disagree on where the automaton is.
+//!
 //! # Design notes
 //!
 //! - **The automaton is shared**: the transition table and the value to symbol map are in
@@ -486,6 +492,12 @@ impl ConstraintProperty for RegularProperty {
                 );
             });
         self.states == other.states
+    }
+
+    /// One automaton state, or none: a path that no transition accepts is dead, and dead paths
+    /// are interchangeable since nothing can follow them.
+    fn is_single_state(&self) -> bool {
+        self.states.size() <= 1
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -1739,5 +1751,15 @@ mod test_regular {
         regular(&mut problem, vars, table, 0, vec![n]);
         let mdd = settled(problem, (0..n).collect());
         assert_eq!(accepted(&mdd), vec![vec![1; n]]);
+    }
+
+    #[test]
+    fn a_property_is_a_single_state_when_the_paths_end_in_one_automaton_state() {
+        let constraint = over(3, &no_two_ones(), 0, &[0, 1]);
+        assert!(constraint.empty_property().is_single_state());
+        assert!(with_states(&constraint, &[1]).is_single_state());
+        assert!(!with_states(&constraint, &[0, 1]).is_single_state());
+        // No state at all: a dead path, which nothing can follow.
+        assert!(with_states(&constraint, &[]).is_single_state());
     }
 }

@@ -60,6 +60,12 @@
 //! [`Sum`] there is no hole in an interval to be fooled by. The capped values keep the test
 //! valid: a capped side already brings the sum to $lb$ or more.
 //!
+//! ## Single state
+//!
+//! A node is a single state when the interval of the capped counts is a point, `min == max`. The
+//! cap makes every count from the lower bound on the same state, as it is for the future. A
+//! property that summarises no path is not.
+//!
 //! # Design notes
 //!
 //! - **The lower bound $m$ is carried but never read by the filtering.** It is part of the state
@@ -335,6 +341,10 @@ impl ConstraintProperty for AtLeastProperty {
                 );
             });
         self.min == other.min && self.max == other.max
+    }
+
+    fn is_single_state(&self) -> bool {
+        !self.has_no_path() && self.min == self.max
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -1332,5 +1342,18 @@ mod test_at_least {
         problem[vars[0]].set_domain(vec![0, 9]);
         let mdd = settled(problem, vec![0, 1]);
         assert_eq!(accepted(&mdd), vec![vec![9, 0], vec![9, 1]]);
+    }
+
+    #[test]
+    fn a_property_is_a_single_state_when_every_path_has_the_same_capped_count() {
+        let constraint = at_least_of(3, &[1], 2);
+        assert!(constraint.empty_property().is_single_state());
+        assert!(path_property(&constraint, &[1, 0]).is_single_state());
+        // Beyond the bound the counts are the same state.
+        let mut capped = path_property(&constraint, &[1, 1]);
+        capped.merge(&*path_property(&constraint, &[1, 1, 1]));
+        assert!(capped.is_single_state());
+        assert!(!interval(&constraint, 0, 1).is_single_state());
+        assert!(!constraint.identity_property().is_single_state());
     }
 }

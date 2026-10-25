@@ -37,6 +37,15 @@
 //! 2. An edge can be filtered for a node in the layer of `x` if each path leaving it has a single
 //!    value for `y` with value $\{v\}$. Then, the edge associated with $v$ can be removed.
 //!
+//! ## Single state
+//!
+//! The set alone does not say whether `{a, b}` comes from one path that gave `a` to `x` and `b`
+//! to `y`, or from two paths that gave `x` different values; the property therefore also counts
+//! the variables of the constraint that the paths have assigned. Before `x` nothing is known, and
+//! the node is a single state. Between `x` and `y` the state is the value of `x`: the node is a
+//! single state if the set holds one value. After `y` the constraint is settled, since the edge of
+//! `y` was filtered against the value of `x`, and every path is interchangeable.
+//!
 //! # Design notes
 //!
 //! - **One bit per value of the union of both domains**, shared by every property of a constraint
@@ -79,6 +88,10 @@ struct NotEqualsProperty {
     set: Bitset,
     /// The bit of each value, shared with the constraint.
     map: Arc<FxHashMap<isize, usize>>,
+    /// How many of `x` and `y` the paths summarised have assigned (0, 1 or 2). It is the same on
+    /// every path of a layer, so it is not part of what `eq` compares; it only tells
+    /// `is_single_state` in which phase the node is.
+    assigned: usize,
 }
 
 impl NotEqualsProperty {
@@ -87,6 +100,7 @@ impl NotEqualsProperty {
         Self {
             set: Bitset::new(map.len()),
             map,
+            assigned: 0,
         }
     }
 }
@@ -239,6 +253,7 @@ impl ConstraintProperty for NotEqualsProperty {
             self.set.insert(bit);
         }
         self.set.union(&other.set);
+        self.assigned = self.assigned.max(other.assigned + usize::from(in_scope));
     }
 
     fn merge(&mut self, other: &dyn ConstraintProperty) {
@@ -254,6 +269,7 @@ impl ConstraintProperty for NotEqualsProperty {
             });
 
         self.set.union(&other.set);
+        self.assigned = self.assigned.max(other.assigned);
     }
 
     fn order_key(&self) -> Vec<f64> {
@@ -278,6 +294,17 @@ impl ConstraintProperty for NotEqualsProperty {
                 );
             });
         self.set == other.set
+    }
+
+    /// Before `x` is assigned nothing is known, and between `x` and `y` the state is the value of
+    /// `x`, so the node is a single state if the set holds one value. Once both are assigned the
+    /// constraint is settled (the edge into the node was filtered against the value of `x`) and
+    /// every path is interchangeable, whatever the set.
+    fn is_single_state(&self) -> bool {
+        match self.assigned {
+            1 => self.set.size() == 1,
+            _ => true,
+        }
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -825,5 +852,27 @@ mod test_not_equals {
         expected.sort();
         assert_eq!(expected.len(), 6);
         assert_eq!(accepted(&mdd), expected);
+    }
+
+    #[test]
+    fn a_property_is_a_single_state_by_phase() {
+        let (problem, x, y) = pair(vec![0, 1, 2], vec![0, 1, 2]);
+        let ne = NotEquals::new(x, y, &problem);
+        let nothing = ne.identity_property();
+        // Before `x` is assigned nothing is known.
+        assert!(nothing.is_single_state());
+        // After `x`: the state is its value, so the paths must agree on it.
+        assert!(property_with(&ne, &[1]).is_single_state());
+        assert!(!property_with(&ne, &[0, 1]).is_single_state());
+        // After `y`: the constraint is settled and the values do not matter any more.
+        let mut after_x = ne.identity_property();
+        after_x.update(&*nothing, 0, true);
+        let mut settled = ne.identity_property();
+        settled.update(&*after_x, 1, true);
+        assert!(settled.is_single_state());
+        let mut other = ne.identity_property();
+        other.update(&*after_x, 2, true);
+        settled.merge(&*other);
+        assert!(settled.is_single_state());
     }
 }

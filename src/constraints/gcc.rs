@@ -64,6 +64,13 @@
 //! compiled MDD may keep paths that violate the constraint until nodes are split enough for the
 //! intervals to become single values.
 //!
+//! ## Single state
+//!
+//! A node is a single state when the interval of every bounded value is a point,
+//! `min == max` for each slot: every path has counted each value the same number of times. The
+//! counts that the upper bound cannot bind are capped, so they are the same state from the lower
+//! bound on. A property that summarises no path is not.
+//!
 //! # Design notes
 //!
 //! - **The state grows with the number of bounded values.** A node holds one interval per bounded
@@ -437,6 +444,10 @@ impl ConstraintProperty for GccProperty {
                 );
             });
         self.min == other.min && self.max == other.max
+    }
+
+    fn is_single_state(&self) -> bool {
+        !self.has_no_path() && self.min == self.max
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -1594,5 +1605,22 @@ mod test_gcc {
         problem[vars[0]].set_domain(vec![0, 9]);
         let mdd = settled(problem, vec![0, 1]);
         assert_eq!(accepted(&mdd), vec![vec![9, 0], vec![9, 1]]);
+    }
+
+    #[test]
+    fn a_property_is_a_single_state_when_every_path_has_the_same_counts() {
+        let constraint = gcc_of(3, &[(1, 0, 2), (2, 0, 2)]);
+        assert!(constraint.empty_property().is_single_state());
+        assert!(path_property(&constraint, &[1, 2]).is_single_state());
+        // The same counts in another order.
+        let mut same_counts = path_property(&constraint, &[1, 2]);
+        same_counts.merge(&*path_property(&constraint, &[2, 1]));
+        assert!(same_counts.is_single_state());
+        // One value counted differently: a slot is no longer a single count.
+        assert!(!interval(&constraint, 1, 0, 2).is_single_state());
+        let mut other_counts = path_property(&constraint, &[1, 2]);
+        other_counts.merge(&*path_property(&constraint, &[1, 1]));
+        assert!(!other_counts.is_single_state());
+        assert!(!constraint.identity_property().is_single_state());
     }
 }

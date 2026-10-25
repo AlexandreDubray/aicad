@@ -46,6 +46,11 @@
 //! inside the interval but not reachable is not detected, so a compiled MDD may keep paths that
 //! violate the constraint until nodes are split enough for the intervals to become single values.
 //!
+//! ## Single state
+//!
+//! A node is a single state when the interval is a point, `min == max`: every path has counted the
+//! same number of values of the set. A property that summarises no path is not.
+//!
 //! # Design notes
 //!
 //! - **Only the set $V$ is stored**, in an [`Arc`] shared by the constraint and all its
@@ -308,6 +313,10 @@ impl ConstraintProperty for AmongProperty {
                 );
             });
         self.min == other.min && self.max == other.max
+    }
+
+    fn is_single_state(&self) -> bool {
+        !self.has_no_path() && self.min == self.max
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -1227,5 +1236,19 @@ mod test_among {
         problem[vars[0]].set_domain(vec![0, 9]);
         let mdd = settled(problem, vec![0, 1]);
         assert_eq!(accepted(&mdd), vec![vec![9, 0], vec![9, 1]]);
+    }
+
+    #[test]
+    fn a_property_is_a_single_state_when_every_path_has_the_same_count() {
+        let among = among_of(3, &[1], 0, 3);
+        assert!(among.empty_property().is_single_state());
+        assert!(path_property(&among, &[1, 0]).is_single_state());
+        // Different values, same count.
+        let mut same_count = path_property(&among, &[1, 0]);
+        same_count.merge(&*path_property(&among, &[0, 1]));
+        assert!(same_count.is_single_state());
+        assert!(!interval(&among, 0, 1).is_single_state());
+        // The identity summarises no path.
+        assert!(!among.identity_property().is_single_state());
     }
 }

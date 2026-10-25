@@ -206,13 +206,9 @@ impl Mdd {
         let mut path = Vec::with_capacity(sink_layer);
         let mut node = self.root();
         while node.0 < sink_layer {
-            match way_on[node.0][node.1] {
-                Some(edge) => {
-                    path.push(self[edge].assignment());
-                    node = self[edge].to();
-                }
-                None => return None,
-            };
+            let edge = way_on[node.0][node.1]?;
+            path.push(self[edge].assignment());
+            node = self[edge].to();
         }
         Some(path)
     }

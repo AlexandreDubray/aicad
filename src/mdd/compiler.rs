@@ -43,29 +43,46 @@
 //!
 //! ## Refinement
 //!
-//! [`Compiler::refine`] splits relaxed nodes until none is left or the layers are full. For a fixed
-//! `max_width` it is a fix-point loop:
+//! [`Compiler::refine`] splits nodes whose parents bring different properties (see "Exact and
+//! relaxed nodes" below) until none is left or the layers are full. For a fixed `max_width` it is
+//! a fix-point loop:
 //!
 //! ```text
 //! repeat
 //!     for each layer 1 .. last - 1 that has fewer than max_width nodes
-//!         pick a relaxed node of the layer with the select heuristic; skip the layer if none
+//!         pick a splittable node of the layer with the select heuristic; skip the layer if none
 //!         split it                          (one exact node per incoming edge)
 //!         propagate the change              (update_top_down, then update_bottom_up)
 //!         collapse                          (exact merge of identical nodes)
 //!         merge_layer                       (lossy merge down to max_width nodes)
 //!         collapse; clean
+//!         update the relaxed flags of the layer
 //! until a whole sweep splits nothing, or the diagram repeats an earlier one
 //! ```
 //!
 //! With `max_width = usize::MAX` nothing is ever merged lossily and the loop runs until no
-//! relaxed node is left: the diagram is as exact as the properties allow. With a smaller width the
+//! splittable node is left: the diagram is as exact as the properties allow. With a smaller width the
 //! loop stops when every layer is as full as allowed and the nodes left cannot be split without
 //! going over it. Splitting then merging can rebuild a diagram that was seen before, which would
-//! loop forever; `fingerprint` is a hash of the nodes of each layer (their states, whether they
-//! are relaxed, and where their edges lead), and the loop stops when one comes back. Refining
+//! loop forever; `fingerprint` is a hash of the nodes of each layer (their states and where their
+//! edges lead), and the loop stops when one comes back. Refining
 //! again with a larger width continues from the diagram left by the previous call, so
 //! refining with growing widths and ending with `usize::MAX` gives an exact diagram.
+//!
+//! ## Exact and relaxed nodes
+//!
+//! A node is *exact* if every path that reaches it leads to the same state of the constraints
+//! and its parents are exact : a node below a relaxed one is reached by paths that the
+//! relaxed node mixes. A node that is not exact is *relaxed*, and the diagram is exact if no node
+//! is. The state of a node is the top-down property of each constraint, and "the paths lead to the
+//! same state" is `ConstraintProperty::is_single_state` for each of them.
+//! `update_exactness` computes the flag of a layer from the flags of the layer above and from the
+//! properties, once the propagation of the layer is done; the root is exact.
+//!
+//! The node to split is not chosen by this flag. Splitting a node gives each parent edge its own
+//! copy, which helps only if the properties that the parents bring differ; a node with a relaxed
+//! parent and a single parent edge stays relaxed whatever is done to it. `is_splittable` is true
+//! for the nodes whose parents do not all bring the same property.
 //!
 //! ## Incremental propagation
 //!
@@ -87,9 +104,9 @@
 //!
 //! `collapse` merges, in each layer, the nodes whose top-down and bottom-up properties are all
 //! equal (their `MergeKey`). They are interchangeable for every constraint, so the merge loses
-//! nothing and the nodes are not marked relaxed. `merge_layer` is the lossy merge: if the layer
-//! has more than `max_width` nodes it asks the merge heuristic for `max_width` groups of nodes
-//! and merges each group into its first node, marking it relaxed.
+//! nothing. `merge_layer` is the lossy merge: if the layer has more than `max_width` nodes it
+//! asks the merge heuristic for `max_width` groups of nodes and merges each group into its first
+//! node. Whether the result is relaxed depends on the states it joins, see below.
 //!
 //! ## Cleaning
 //!
@@ -134,9 +151,9 @@ use crate::modelling::*;
 
 use rustc_hash::FxHashMap;
 use std::cmp::Reverse;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::BinaryHeap;
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -279,7 +296,7 @@ impl Compiler {
         // First, we create each layer. There is n + 1 layers, with n the number of variables. The
         // last layer is the sink node. Each layer has one node at creation.
         for layer in 0..compiler.mdd.number_layers() {
-            compiler.add_node(layer, layer != 0);
+            compiler.add_node(layer);
         }
 
         // Set the variable order in the MDD given the heuristics
@@ -311,16 +328,8 @@ impl Compiler {
             return compiler;
         }
         compiler.clean();
-        // The nodes at the top of the diagram that have a single parent represent a single
-        // path: they are exact. The first layer with several parents stops the walk, since the
-        // nodes below it can be reached by paths of different prefixes.
-        for layer in 1..compiler.mdd.number_layers() {
-            let node = NodeIndex(layer, 0);
-            if compiler.mdd[node].number_parents() == 1 {
-                compiler.mdd[node].set_relaxed(false);
-            } else {
-                break;
-            }
+        for layer in 0..compiler.mdd.number_layers() {
+            compiler.update_exactness(layer);
         }
         compiler.mdd.debug_assert_root_and_sink();
         compiler
@@ -351,9 +360,9 @@ impl Compiler {
     /// Adds a node to `layer` and returns its index. Its properties start at the identity of the
     /// constraints, except those of the root (top-down) and of the sink (bottom-up), which start
     /// at the empty property: the empty path.
-    fn add_node(&mut self, layer: usize, relaxed: bool) -> NodeIndex {
+    fn add_node(&mut self, layer: usize) -> NodeIndex {
         let index_in_layer = self.mdd.nodes[layer].len();
-        let node = Node::new(layer, index_in_layer, relaxed);
+        let node = Node::new(layer, index_in_layer, false);
         let index = NodeIndex(layer, index_in_layer);
         self.mdd.nodes[layer].push(node);
 
@@ -451,7 +460,9 @@ impl Compiler {
 
     // --- split and refine strategy ---- //
 
-    /// Tightens the diagram by splitting relaxed nodes, with at most `max_width` nodes per layer.
+    /// Tightens the diagram by splitting the nodes that mix paths of different states, with at
+    /// most `max_width` nodes per layer. The relaxed flags of the diagram are up to date when it
+    /// returns.
     pub fn refine(&mut self, max_width: usize) {
         if self.mdd.is_unsat() {
             return;
@@ -462,10 +473,12 @@ impl Compiler {
         loop {
             let mut any_split = false;
             for layer in 1..self.mdd.nodes.len() - 1 {
-                if self.mdd.number_nodes_in_layer(layer) == max_width {
-                    continue;
-                }
-                if let Some(node) = select_heuristic.select_node(self, layer) {
+                let selected = if self.mdd.number_nodes_in_layer(layer) == max_width {
+                    None
+                } else {
+                    select_heuristic.select_node(self, layer)
+                };
+                if let Some(node) = selected {
                     any_split = true;
                     let new_nodes = self.split_node(node);
                     for &new_node in &new_nodes {
@@ -489,7 +502,10 @@ impl Compiler {
                     // Reclame space used by inactive data
                     self.clean();
                 }
+                // The next layers read the flags of this one (and so does the merge heuristic).
+                self.update_exactness(layer);
             }
+            self.update_exactness(self.mdd.nodes.len() - 1);
             if !any_split {
                 break;
             }
@@ -500,10 +516,9 @@ impl Compiler {
     }
 
     /// A hash of the diagram: for each layer, the hashes of the `MergeKey` of its active nodes,
-    /// with whether each is relaxed and where its active child edges lead, combined without regard
-    /// to their order; the layers are then combined in order. `refine` uses it to notice that it
-    /// is going in circles, so a sweep that only clears a relaxed flag or moves an edge must
-    /// change it: that is progress.
+    /// with where its active child edges lead, combined without regard to their order; the layers
+    /// are then combined in order. `refine` uses it to notice that it is going in circles, so a
+    /// sweep that only moves an edge must change it: that is progress.
     fn fingerprint(&self) -> u64 {
         let mut total: u64 = 0;
         for layer in 0..self.mdd.nodes.len() {
@@ -518,7 +533,6 @@ impl Compiler {
                 };
                 let mut hasher = DefaultHasher::new();
                 key.hash(&mut hasher);
-                self.mdd.nodes[layer][index].is_relaxed().hash(&mut hasher);
                 index.hash(&mut hasher);
                 for edge in self.mdd.nodes[layer][index].iter_children() {
                     if self.mdd[edge].is_active() {
@@ -535,13 +549,72 @@ impl Compiler {
         total
     }
 
-    /// Splits `node`, which has `n` parents, into `n` exact nodes, one per parent edge, and
+    /// Sets the relaxed flag of the nodes of `layer` from their top-down properties and the flags
+    /// of their parents, which must be up to date.
+    fn update_exactness(&mut self, layer: usize) {
+        for index in 0..self.mdd.nodes[layer].len() {
+            let node = NodeIndex(layer, index);
+            if !self.mdd[node].is_active() {
+                continue;
+            }
+            let relaxed = layer != 0
+                && (self.mdd[node]
+                    .iter_parents()
+                    .any(|edge| self.mdd[self.mdd[edge].from()].is_relaxed())
+                    || !self.top_down_properties[layer][index]
+                        .iter()
+                        .all(|property| property.is_single_state()));
+            self.mdd[node].set_relaxed(relaxed);
+        }
+    }
+
+    /// True if splitting `node` would separate paths that its properties mix: it has at least two
+    /// parent edges and, for some constraint, they do not all bring the same top-down property.
+    /// The heuristic that selects the node to split only chooses among these. A node whose
+    /// parents agree, or that has a single parent, gains nothing from a split: its copies would
+    /// have the same properties, and `collapse` would merge them back.
+    pub(crate) fn is_splittable(&self, node: NodeIndex) -> bool {
+        if self.mdd[node].number_parents() < 2 {
+            return false;
+        }
+        (0..self.constraints.len()).any(|constraint_index| {
+            let mut contributions = self.mdd[node]
+                .iter_parents()
+                .map(|edge| self.property_through_edge(edge, constraint_index));
+            let first = contributions
+                .next()
+                .expect("a node with two parents has a first one");
+            contributions.any(|other| !ConstraintProperty::eq(first.as_ref(), other.as_ref()))
+        })
+    }
+
+    /// The top-down property that the parent edge `edge` brings to its child for the constraint
+    /// `constraint_index`: the identity property updated with the parent's property and the
+    /// edge's value. Folding the properties of all the parent edges of a node gives its property.
+    fn property_through_edge(
+        &self,
+        edge: EdgeIndex,
+        constraint_index: usize,
+    ) -> Box<dyn ConstraintProperty> {
+        let NodeIndex(source_layer, source_index) = self.mdd[edge].from();
+        let variable = self.mdd.order[source_layer];
+        let assignment = self.mdd.problem[variable].value(self.mdd[edge].assignment());
+        let in_scope = self.constraints[constraint_index].is_layer_in_scope(source_layer);
+        let mut property = self.constraints[constraint_index].identity_property();
+        property.update(
+            self.top_down_properties[source_layer][source_index][constraint_index].as_ref(),
+            assignment,
+            in_scope,
+        );
+        property
+    }
+
+    /// Splits `node`, which has `n` parents, into `n` nodes, one per parent edge, and
     /// returns them (the original first). The original keeps its first parent edge, and each other
     /// parent edge is deactivated and replaced by a new edge, with the same value, into a new node
     /// that has a copy of every active child edge of the original. The properties of the new nodes
     /// are not computed here: they start at the identity, and the caller must flag them and
-    /// propagate. The children of `node` now have a parent per copy, which do not share a state,
-    /// so they are marked relaxed (`refine` splits them in turn if the width allows it).
+    /// propagate.
     fn split_node(&mut self, node: NodeIndex) -> Vec<NodeIndex> {
         let mut nodes = vec![node];
         let NodeIndex(layer, _) = node;
@@ -551,9 +624,8 @@ impl Compiler {
             .filter(|edge| self.mdd[*edge].is_active())
             .map(|edge| (self.mdd[edge].to(), self.mdd[edge].assignment()))
             .collect::<Vec<(NodeIndex, ValueIndex)>>();
-        self.mdd[node].set_relaxed(false);
         for i in (1..n).rev() {
-            let new_node = self.add_node(layer, false);
+            let new_node = self.add_node(layer);
             nodes.push(new_node);
             let edge = self.mdd[node].parent_edge_at(i);
             let from = self.mdd[edge].from();
@@ -564,13 +636,6 @@ impl Compiler {
             }
             self.mdd[edge].deactivate();
             self.mdd[node].swap_remove_parent_edge(i);
-        }
-        // The children now have a parent per copy, and the copies carry different states: a child
-        // that was exact with `node` as its only parent is no longer exact.
-        if n > 1 {
-            for (child, _) in outgoing_assignments {
-                self.mdd[child].set_relaxed(true);
-            }
         }
         nodes
     }
@@ -861,9 +926,8 @@ impl Compiler {
         }
     }
 
-    /// Merges, in each layer between the root and the sink, the nodes whose top-down and
-    /// bottom-up properties are all equal. The merge loses nothing, so the result is not marked
-    /// relaxed.
+    /// Merges, in `layer`, the nodes whose top-down and bottom-up properties are all equal. The
+    /// merge loses nothing: the nodes are interchangeable for every constraint.
     fn collapse(&mut self, layer: usize) {
         let mut map: FxHashMap<MergeKey, NodeIndex> = FxHashMap::default();
         let mut merges: Vec<(NodeIndex, NodeIndex)> = vec![];
@@ -883,7 +947,7 @@ impl Compiler {
             }
         }
         for (node, primary_node) in merges {
-            self.merge_nodes_with_flag(node, primary_node, false);
+            self.merge_nodes(node, primary_node);
         }
     }
 
@@ -908,23 +972,18 @@ impl Compiler {
         }
     }
 
-    /// Merges `from` into `into` and marks the result relaxed.
-    fn merge_nodes(&mut self, from: NodeIndex, into: NodeIndex) {
-        self.merge_nodes_with_flag(from, into, true);
-    }
-
     /// Merges `from` into `into`: the parent edges of `from` now enter `into`, its child edges are
     /// moved, dropped or, where `into` has an edge of the same value towards another child, cause
-    /// those two children to be merged in turn (always marked relaxed). The properties are joined
-    /// and `from` is deactivated. `mark_relaxed` says whether `into` becomes relaxed. See the
-    /// module documentation.
-    fn merge_nodes_with_flag(&mut self, from: NodeIndex, into: NodeIndex, mark_relaxed: bool) {
-        let mut worklist = vec![(from, into, mark_relaxed)];
+    /// those two children to be merged in turn. The properties are joined and `from` is
+    /// deactivated. Whether the result is relaxed is not decided here: see
+    /// [`Compiler::update_exactness`]. See the module documentation.
+    fn merge_nodes(&mut self, from: NodeIndex, into: NodeIndex) {
+        let mut worklist = vec![(from, into)];
         // Nodes merged away so far, with the node that took them over. An entry of the worklist
         // can name a node that an earlier entry has already absorbed: it is followed to the node
         // that holds its paths now, since merging into a deactivated node would lose them.
         let mut absorbed = FxHashMap::<NodeIndex, NodeIndex>::default();
-        while let Some((from, into, mark_relaxed)) = worklist.pop() {
+        while let Some((from, into)) = worklist.pop() {
             let resolve = |mut node: NodeIndex| {
                 while let Some(&next) = absorbed.get(&node) {
                     node = next;
@@ -934,9 +993,6 @@ impl Compiler {
             let (from, into) = (resolve(from), resolve(into));
             if from == into {
                 continue;
-            }
-            if mark_relaxed {
-                self.mdd[into].set_relaxed(true);
             }
             for i in 0..self.mdd[from].number_parents() {
                 let edge = self.mdd[from].parent_edge_at(i);
@@ -973,7 +1029,7 @@ impl Compiler {
                     Some(existing_child) => {
                         self.mdd[child].remove_parent_edge(edge);
                         self.mdd[edge].deactivate();
-                        worklist.push((child, existing_child, true));
+                        worklist.push((child, existing_child));
                     }
                 }
             }
@@ -1291,12 +1347,12 @@ pub mod test_mdd {
 
         let into = NodeIndex(1, 0);
         let c1 = NodeIndex(2, 0);
-        let from = compiler.add_node(1, true);
-        let c2 = compiler.add_node(2, true);
+        let from = compiler.add_node(1);
+        let c2 = compiler.add_node(2);
         let shared_assignment = ValueIndex(0);
         compiler.add_edge(1, from, c2, shared_assignment);
 
-        compiler.merge_nodes_with_flag(from, into, true);
+        compiler.merge_nodes(from, into);
 
         assert!(!compiler.mdd()[from].is_active());
         assert!(compiler.mdd()[into].is_active());
@@ -1610,7 +1666,7 @@ pub mod test_mdd {
     #[test]
     fn merging_does_not_read_removed_edges() {
         // Three variables with the domain {0, 1, 2}, and at least two of them take a value in
-        // {0, 1}. With the order [2, 1, 0] and no width limit, `merge_nodes_with_flag` used to
+        // {0, 1}. With the order [2, 1, 0] and no width limit, `merge_nodes` used to
         // take the edges that a split had removed for live ones of the node it merged into,
         // and the solutions [2, 0, 0] and [2, 0, 1] disappeared from the MDD.
         let mut problem = Problem::default();
@@ -1782,18 +1838,18 @@ pub mod test_mdd {
                 120u32.into(),
                 "schedule {schedule:?}"
             );
-            // Only the sink, which refinement never looks at, may still be flagged relaxed.
-            let layers = mdd.number_layers();
             assert!(
-                (0..layers - 1)
+                (0..mdd.number_layers())
                     .flat_map(|layer| mdd.nodes_in_layer(layer))
                     .all(|node| !mdd[node].is_relaxed()),
                 "schedule {schedule:?}"
             );
-            assert!(widths(&mdd)
-                .iter()
-                .zip(widths(&exact))
-                .all(|(w, e)| *w >= e));
+            assert!(
+                widths(&mdd)
+                    .iter()
+                    .zip(widths(&exact))
+                    .all(|(w, e)| *w >= e)
+            );
         }
     }
 
@@ -1935,5 +1991,75 @@ pub mod test_mdd {
                 );
             }
         }
+    }
+
+    /// For each node, the distinct sets of values on the paths from the root to it.
+    fn value_sets_of_paths(mdd: &Mdd) -> Vec<Vec<std::collections::BTreeSet<Vec<usize>>>> {
+        let mut sets: Vec<Vec<std::collections::BTreeSet<Vec<usize>>>> = (0..mdd.number_layers())
+            .map(|layer| vec![Default::default(); mdd.number_nodes_in_layer(layer)])
+            .collect();
+        sets[0][0].insert(vec![]);
+        for layer in 0..mdd.number_layers() - 1 {
+            for node in mdd.nodes_in_layer(layer) {
+                let here = sets[layer][node.1].clone();
+                for edge in mdd[node].iter_children() {
+                    let NodeIndex(to_layer, to_position) = mdd[edge].to();
+                    for set in &here {
+                        let mut set = set.clone();
+                        set.push(mdd[edge].assignment().0);
+                        set.sort();
+                        sets[to_layer][to_position].insert(set);
+                    }
+                }
+            }
+        }
+        sets
+    }
+
+    #[test]
+    fn a_node_is_relaxed_exactly_when_its_paths_differ_or_a_parent_is_relaxed() {
+        // The definition of an exact node: every path to it leads to the same state (for
+        // `AllDifferent`, takes the same set of values) and its parents are exact.
+        for width in [1, 2, 3, 4, 5, 6, 8, 12, 16, usize::MAX] {
+            let mut compiler = five_different_variables();
+            compiler.refine(width);
+            let mdd = compiler.mdd();
+            let sets = value_sets_of_paths(mdd);
+            let mut expected: Vec<Vec<bool>> = vec![];
+            for layer in 0..mdd.number_layers() {
+                let relaxed = mdd
+                    .nodes_in_layer(layer)
+                    .map(|node| {
+                        layer != 0
+                            && (sets[layer][node.1].len() > 1
+                                || mdd[node]
+                                    .iter_parents()
+                                    .any(|edge| expected[layer - 1][mdd[edge].from().1]))
+                    })
+                    .collect();
+                expected.push(relaxed);
+            }
+            for (layer, expected_in_layer) in expected.iter().enumerate() {
+                for node in mdd.nodes_in_layer(layer) {
+                    assert_eq!(
+                        mdd[node].is_relaxed(),
+                        expected_in_layer[node.1],
+                        "width {width}, node {node:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_exact_diagram_has_no_relaxed_node() {
+        let mut compiler = five_different_variables();
+        compiler.refine(usize::MAX);
+        let mdd = compiler.mdd();
+        assert!(
+            (0..mdd.number_layers())
+                .flat_map(|layer| mdd.nodes_in_layer(layer))
+                .all(|node| !mdd[node].is_relaxed())
+        );
     }
 }

@@ -50,6 +50,13 @@
 //!    layer. If $|S_p \cup S_c| = u + d$ and $v \in S_p \cup S_c$, the other $u + d$ variables use
 //!    at least all of these $u + d$ values together, so $v$ is not available.
 //!
+//! ## Single state
+//!
+//! A node is a single state, in the sense of [`ConstraintProperty::is_single_state`], when
+//! $A = S$. Every path $P_i$ to the node has $A \subseteq P_i \subseteq S$, so if the two sets are
+//! equal all the paths take the same set of values, and the future of the node does not depend on
+//! which path was followed. If two paths differ, a value is in $S$ and not in $A$.
+//!
 //! # Design notes
 //!
 //! - **One bit per value of the union of the domains of the scope**, shared by every property of
@@ -373,6 +380,11 @@ impl ConstraintProperty for AllDifferentProperty {
                 );
             });
         self.value_all_path == other.value_all_path && self.value_some_path == other.value_some_path
+    }
+
+    /// `A == S`: every path takes the same set of values (see the module documentation).
+    fn is_single_state(&self) -> bool {
+        self.value_all_path == self.value_some_path
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -1233,5 +1245,18 @@ mod test_all_diff {
         problem[vars[0]].set_domain(vec![0, 1, 9]);
         let mdd = compile(problem, vec![0, 1], usize::MAX);
         drop(mdd);
+    }
+
+    #[test]
+    fn a_property_is_a_single_state_when_every_path_takes_the_same_values() {
+        let ad = ad(&[dom(4), dom(4), dom(4)]);
+        assert!(ad.empty_property().is_single_state());
+        assert!(path_property(&ad, &[1, 2]).is_single_state());
+        // The same values in another order are the same state.
+        let same_values = merged(&[path_property(&ad, &[1, 2]), path_property(&ad, &[2, 1])]);
+        assert!(same_values.is_single_state());
+        // A value taken on some paths only: $A \neq S$.
+        let mixed = merged(&[path_property(&ad, &[1, 2]), path_property(&ad, &[1, 3])]);
+        assert!(!mixed.is_single_state());
     }
 }

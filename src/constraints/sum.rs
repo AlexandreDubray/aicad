@@ -40,6 +40,11 @@
 //! but not reachable (a hole) is not detected, so a compiled MDD may keep paths that do not sum
 //! to $t$ until nodes are split enough for the intervals to become single values.
 //!
+//! ## Single state
+//!
+//! A node is a single state when the interval is a point, `min == max`: every path has the same
+//! sum, whatever the values that make it.
+//!
 //! # Design notes
 //!
 //! - **No domain is read.** The property only adds the assigned values, so domains may change
@@ -281,6 +286,10 @@ impl ConstraintProperty for SumProperty {
                 );
             });
         self.min == other.min && self.max == other.max
+    }
+
+    fn is_single_state(&self) -> bool {
+        self.min == self.max
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -1090,5 +1099,17 @@ mod test_sum {
         problem[vars[0]].set_domain(vec![0, 1, 9]);
         let mdd = settled(problem, vec![0, 1]);
         assert_eq!(accepted(&mdd), vec![vec![9, 1]]);
+    }
+
+    #[test]
+    fn a_property_is_a_single_state_when_every_path_has_the_same_sum() {
+        let sum = sum_of(&[dom(3), dom(3)], 2);
+        assert!(sum.empty_property().is_single_state());
+        assert!(path_property(&sum, &[1, 1]).is_single_state());
+        // Different values, same sum.
+        let mut same_sum = path_property(&sum, &[0, 2]);
+        same_sum.merge(&*path_property(&sum, &[2, 0]));
+        assert!(same_sum.is_single_state());
+        assert!(!interval(&sum, 1, 3).is_single_state());
     }
 }
