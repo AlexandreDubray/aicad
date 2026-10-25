@@ -23,6 +23,7 @@ use crate::learning::consformer::{
 };
 use crate::learning::train::{ModelSelection, TrainingConfig, train_model};
 use crate::mdd::MddArena;
+use crate::mdd::heuristics::MergeHeuristic;
 use crate::modelling::Problem;
 use crate::utils::with_rng;
 
@@ -470,9 +471,17 @@ pub(crate) fn train_consformer_mdd(
         ));
     }
     let checkpoint_dir = PathBuf::from(checkpoint_dir);
+    // The merge heuristic is not read while the MDDs are compiled with unbounded width, and the
+    // problems of a training set do not share their probabilities: `MostLikely` takes those of
+    // the first problem so that the setting has a value.
+    let merge = problems
+        .first()
+        .map_or(MergeHeuristic::LessRelaxed, |problem| {
+            pymerge.into_heuristic(problem)
+        });
     let compilation = MddCompilationConfig {
         ordering: pyordering.into(),
-        merge: pymerge.into(),
+        merge,
         select: pyselect.into(),
         max_width: usize::MAX,
     };

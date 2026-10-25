@@ -41,7 +41,7 @@ impl PyCompiler {
         pyselect: PySelectHeuristic,
     ) -> PyMdd {
         let ordering: OrderingHeuristic = pyordering.into();
-        let merge: MergeHeuristic = pymerge.into();
+        let merge = pymerge.into_heuristic(&self.problem);
         let select: SelectHeuristic = pyselect.into();
         let constraints: Vec<ConstraintIndex> = match constraints {
             Some(cs) => cs.into_iter().map(ConstraintIndex).collect(),
@@ -110,10 +110,6 @@ impl PyMdd {
         self.inner.refine(max_width);
     }
 
-    fn set_probabilities(&mut self, probabilities: Vec<Vec<f64>>) {
-        self.inner.set_probabilities(&probabilities);
-    }
-
     // --- SOLUTION INFO --- //
 
     fn is_unsat(&self) -> bool {
@@ -131,7 +127,7 @@ impl PyMdd {
             return None;
         }
         let solution = if sample {
-            let weights = self.inner.layer_probabilities();
+            let weights = crate::sampling::problem_weights(mdd);
             let path = crate::sampling::sample_solution(mdd, &weights);
             Some(mdd.solution_from_path(&path))
         } else {

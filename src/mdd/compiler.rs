@@ -166,10 +166,6 @@ pub struct Compiler {
     /// copies of the problem's constraints: each one keeps the state that depends on this
     /// diagram's variable order (which layers it is in the scope of).
     constraints: Vec<Box<dyn Constraint>>,
-    /// Probability of each value of each variable of the problem (`probabilities[variable][value]`),
-    /// initially those of the problem. Read by [`MergeHeuristic::MostLikely`] and replaced by
-    /// [`Compiler::set_probabilities`].
-    probabilities: Vec<Vec<f64>>,
     /// Heuristic used to score nodes during merging operation
     merge_heuristic: MergeHeuristic,
     /// Heuristic to select nodes to split
@@ -259,6 +255,7 @@ impl Compiler {
             merge: merge_heuristic,
             selection: select_heuristic,
         } = heuristic;
+        merge_heuristic.check(&problem);
         let mut in_scope = vec![false; problem.number_variables()];
         // Scope is the union of the constraints' scope.
         let mut scope = vec![];
@@ -275,18 +272,9 @@ impl Compiler {
             .iter()
             .map(|&constraint| problem[constraint].clone() as Box<dyn Constraint>)
             .collect::<Vec<Box<dyn Constraint>>>();
-        let probabilities = problem
-            .iter_variables()
-            .map(|variable| {
-                (0..problem[variable].domain_size())
-                    .map(|value| problem[variable].probability(ValueIndex(value)))
-                    .collect()
-            })
-            .collect();
         let mut compiler = Self {
             mdd: Mdd::with_layers(problem, number_layers),
             constraints,
-            probabilities,
             merge_heuristic,
             select_heuristic,
             top_down_properties: vec![vec![]; number_layers + 1],
@@ -402,50 +390,6 @@ impl Compiler {
         self.mdd[to].add_parent_edge(edge_index);
         let edge = Edge::new(from, to, assignment);
         self.mdd.edges[layer].push(edge);
-    }
-
-    /// Probability of the value at index `value` of `variable`, as set by
-    /// [`Compiler::set_probabilities`] (those of the problem until then).
-    pub fn probability(&self, variable: VariableIndex, value: ValueIndex) -> f64 {
-        self.probabilities[variable.0][value.0]
-    }
-
-    /// The probabilities (see [`Compiler::probability`]) arranged as the algorithms that take
-    /// weights expect them: `result[layer][value]` for the variable branched on at `layer`.
-    pub fn layer_probabilities(&self) -> Vec<Vec<f64>> {
-        self.mdd
-            .order
-            .iter()
-            .map(|variable| self.probabilities[variable.0].clone())
-            .collect()
-    }
-
-    /// Replaces the probability of every value of every variable of the problem:
-    /// `probabilities[variable][value]`, with the same rules as
-    /// [`Variable::set_probabilities`](crate::modelling::Variable::set_probabilities). Only
-    /// this diagram changes, not the problem; the structure of the diagram does not depend on
-    /// them, but the merge heuristic [`MergeHeuristic::MostLikely`] does when refining, and
-    /// sampling does.
-    ///
-    /// Panics unless there is one row per variable of the problem, with one probability per value
-    /// of its domain, each finite and non-negative, and summing to 1.
-    pub fn set_probabilities(&mut self, probabilities: &[Vec<f64>]) {
-        assert_eq!(
-            probabilities.len(),
-            self.mdd.problem.number_variables(),
-            "set_probabilities needs one row of probabilities per variable of the problem"
-        );
-        for (variable, row) in probabilities.iter().enumerate() {
-            // `Variable` owns the rules of a valid distribution: ask a copy of it.
-            let mut check = Variable::new(
-                self.mdd.problem[VariableIndex(variable)]
-                    .iter_domain()
-                    .collect(),
-                None,
-            );
-            check.set_probabilities(row);
-        }
-        self.probabilities = probabilities.to_vec();
     }
 
     /// Number of constraints compiled in this diagram.
@@ -962,8 +906,8 @@ impl Compiler {
         if active_nodes <= max_width {
             return;
         }
-        let merge_heuristic = self.merge_heuristic;
-        for group in merge_heuristic.group_nodes(self, layer, max_width) {
+        let groups = self.merge_heuristic.group_nodes(self, layer, max_width);
+        for group in groups {
             if let Some((&into, froms)) = group.split_first() {
                 for &from in froms {
                     self.merge_nodes(from, into);
@@ -1867,11 +1811,11 @@ pub mod test_mdd {
         assert_eq!(solution, vec![0, 1, 2, 3, 4]);
     }
 
-    /// Two variables of two values that must differ, with the probabilities of the problem.
-    fn two_different_variables() -> Compiler {
+    /// A compiler of two different variables, the merge heuristic being `merge`.
+    fn two_variables_with(merge: MergeHeuristic) -> Compiler {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1], Some(vec![0.25, 0.75]));
-        let y = problem.add_variable(vec![0, 1], None);
+        let x = problem.add_variable(vec![0, 1, 2], None);
+        let y = problem.add_variable(vec![0, 1, 2], None);
         not_equals(&mut problem, x, y);
         let problem = Arc::new(problem);
         let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
@@ -1879,7 +1823,7 @@ pub mod test_mdd {
             problem,
             CompilationHeuristic {
                 ordering: OrderingHeuristic::MinDomMaxLinked,
-                merge: MergeHeuristic::LessRelaxed,
+                merge,
                 selection: SelectHeuristic::Greedy,
             },
             &constraints,
@@ -1887,56 +1831,35 @@ pub mod test_mdd {
     }
 
     #[test]
-    fn the_probabilities_start_as_those_of_the_problem_and_can_be_replaced() {
-        let mut compiler = two_different_variables();
-        let (x, y) = (VariableIndex(0), VariableIndex(1));
-        assert_eq!(compiler.probability(x, ValueIndex(1)), 0.75);
-        assert_eq!(compiler.probability(y, ValueIndex(0)), 0.5);
-        compiler.set_probabilities(&[vec![0.5, 0.5], vec![0.1, 0.9]]);
-        assert_eq!(compiler.probability(x, ValueIndex(1)), 0.5);
-        assert_eq!(compiler.probability(y, ValueIndex(1)), 0.9);
-        assert_eq!(
-            compiler.layer_probabilities(),
-            vec![
-                compiler.probabilities[compiler.mdd().decision_at_layer(0).0].clone(),
-                compiler.probabilities[compiler.mdd().decision_at_layer(1).0].clone(),
-            ]
-        );
-        // The problem itself is untouched.
-        assert_eq!(compiler.mdd().problem()[x].probability(ValueIndex(1)), 0.75);
+    fn most_likely_takes_the_probabilities_it_is_given() {
+        let probabilities = vec![vec![0.2, 0.3, 0.5], vec![1.0, 0.0, 0.0]];
+        let mut compiler = two_variables_with(MergeHeuristic::MostLikely(probabilities));
+        compiler.refine(1);
+        assert!(!compiler.mdd().is_unsat());
     }
 
     #[test]
     #[should_panic(expected = "one row of probabilities per variable")]
-    fn replacing_the_probabilities_needs_a_row_per_variable() {
-        two_different_variables().set_probabilities(&[vec![0.5, 0.5]]);
+    fn most_likely_needs_a_row_per_variable() {
+        two_variables_with(MergeHeuristic::MostLikely(vec![vec![0.2, 0.3, 0.5]]));
     }
 
     #[test]
     #[should_panic(expected = "they sum to")]
-    fn replacing_the_probabilities_needs_distributions() {
-        two_different_variables().set_probabilities(&[vec![0.5, 0.5], vec![0.5, 0.9]]);
+    fn most_likely_needs_distributions() {
+        two_variables_with(MergeHeuristic::MostLikely(vec![
+            vec![0.2, 0.3, 0.5],
+            vec![0.5, 0.5, 0.5],
+        ]));
     }
 
     #[test]
     #[should_panic(expected = "2 probabilities were given for a domain of 3 values")]
-    fn replacing_the_probabilities_needs_a_probability_per_value() {
-        let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1, 2], None);
-        let y = problem.add_variable(vec![0, 1, 2], None);
-        not_equals(&mut problem, x, y);
-        let problem = Arc::new(problem);
-        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
-        let mut compiler = Compiler::new(
-            problem,
-            CompilationHeuristic {
-                ordering: OrderingHeuristic::MinDomMaxLinked,
-                merge: MergeHeuristic::LessRelaxed,
-                selection: SelectHeuristic::Greedy,
-            },
-            &constraints,
-        );
-        compiler.set_probabilities(&[vec![0.5, 0.5], vec![0.2, 0.3, 0.5]]);
+    fn most_likely_needs_a_probability_per_value() {
+        two_variables_with(MergeHeuristic::MostLikely(vec![
+            vec![0.5, 0.5],
+            vec![0.2, 0.3, 0.5],
+        ]));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use pyo3::prelude::*;
 
 use crate::mdd::heuristics::*;
+use crate::modelling::Problem;
 
 #[pyclass(from_py_object)]
 #[derive(Clone)]
@@ -11,7 +12,7 @@ pub enum PyOrderingHeuristic {
 
 #[pyclass(from_py_object)]
 #[derive(Clone)]
-pub enum PyMergeHeuristic {
+pub(crate) enum PyMergeHeuristic {
     LessRelaxed,
     MostLikely,
     StateSimilarity,
@@ -32,11 +33,13 @@ impl From<PyOrderingHeuristic> for OrderingHeuristic {
     }
 }
 
-impl From<PyMergeHeuristic> for MergeHeuristic {
-    fn from(value: PyMergeHeuristic) -> Self {
-        match value {
+impl PyMergeHeuristic {
+    /// The heuristic to compile `problem` with; `MostLikely` reads the probabilities of its
+    /// variables.
+    pub(crate) fn into_heuristic(self, problem: &Problem) -> MergeHeuristic {
+        match self {
             PyMergeHeuristic::LessRelaxed => MergeHeuristic::LessRelaxed,
-            PyMergeHeuristic::MostLikely => MergeHeuristic::MostLikely,
+            PyMergeHeuristic::MostLikely => MergeHeuristic::most_likely(problem),
             PyMergeHeuristic::StateSimilarity => MergeHeuristic::StateSimilarity,
         }
     }

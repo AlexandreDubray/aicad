@@ -89,6 +89,19 @@ pub(crate) fn sample_categorical(weights: &[f64]) -> usize {
     })
 }
 
+/// The probabilities of the variables of the problem of `mdd`, as weights for [`sample_solution`]:
+/// `result[layer][value]` for the variable branched on at `layer`.
+pub fn problem_weights(mdd: &Mdd) -> Vec<Vec<f64>> {
+    (0..mdd.number_layers() - 1)
+        .map(|layer| {
+            let variable = mdd.decision_at_layer(layer);
+            (0..mdd.problem()[variable].domain_size())
+                .map(|value| mdd.problem()[variable].probability(ValueIndex(value)))
+                .collect()
+        })
+        .collect()
+}
+
 /// Sample a root-to-sink path in the MDD according to the given weights. Returns the path of
 /// labels followed.
 ///
@@ -195,14 +208,8 @@ mod tests {
     #[test]
     fn values_are_drawn_in_proportion_to_their_weight() {
         let mdd = skewed();
-        let weights: Vec<Vec<f64>> = (0..2)
-            .map(|layer| {
-                let variable = mdd.decision_at_layer(layer);
-                (0..2)
-                    .map(|value| mdd.problem()[variable].probability(ValueIndex(value)))
-                    .collect()
-            })
-            .collect();
+        let weights = problem_weights(&mdd);
+        assert_eq!(weights.len(), 2);
         let draws = 4000;
         let zeros = (0..draws)
             .filter(|_| mdd.solution_from_path(&sample_solution(&mdd, &weights))[0] == 0)
