@@ -24,9 +24,9 @@ impl Mdd {
     /// unsatisfiable). A relaxed diagram can hold solutions that this does not find: see
     /// [`Mdd::exact_path`], which finds a path whenever there is one.
     ///
-    /// Panics if a variable of the diagram has an index beyond the number of layers: the solution
-    /// is indexed by variable and sized by the number of layers, which only agree if the diagram
-    /// branches on variables `0..n`.
+    /// Panics unless the diagram branches on every variable of its problem: an assignment of
+    /// the whole problem is read off it, which a diagram of some of the constraints does not
+    /// hold.
     pub fn get_solution(&self) -> Option<Vec<isize>> {
         Some(self.solution_from_path(&self.exact_path()?))
     }
@@ -34,9 +34,17 @@ impl Mdd {
     /// The assignment that a path of the diagram stands for, given as the value index taken at
     /// each layer (as returned by [`Mdd::exact_path`] or `sampling::sample_solution`): the
     /// value taken by each variable, indexed by variable. Panics if `path` is not as long as
-    /// the number of variables branched on, with the same restriction on variable indices as
-    /// [`Mdd::get_solution`].
+    /// the number of variables branched on, or if the diagram does not branch on every variable
+    /// of its problem (see [`Mdd::get_solution`]).
     pub fn solution_from_path(&self, path: &[ValueIndex]) -> Vec<isize> {
+        assert_eq!(
+            self.order.len(),
+            self.problem.number_variables(),
+            "a solution needs the diagram to branch on all {} variables of the problem, but it \
+             branches on {}: it was compiled from constraints that do not cover them all",
+            self.problem.number_variables(),
+            self.order.len()
+        );
         assert_eq!(
             path.len(),
             self.order.len(),
@@ -46,12 +54,6 @@ impl Mdd {
         let mut assignment = vec![0; path.len()];
         for (layer, &value) in path.iter().enumerate() {
             let variable = self.order[layer];
-            assert!(
-                *variable < assignment.len(),
-                "variable {} is out of range for a diagram of {} layers",
-                variable.0,
-                assignment.len()
-            );
             assignment[*variable] = self.problem[variable].value(value);
         }
         assignment

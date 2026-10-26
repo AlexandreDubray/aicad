@@ -55,9 +55,11 @@
 //!         propagate the change              (update_top_down, then update_bottom_up)
 //!         collapse                          (exact merge of identical nodes)
 //!         merge_layer                       (lossy merge down to max_width nodes)
-//!         collapse; clean
+//!         repair_after_merges               (the nodes around a merge)
+//!         clean
 //!         update the relaxed flags of the layer
 //! until a whole sweep splits nothing, or the diagram repeats an earlier one
+//! settle                                    (recompute all properties, tighten)
 //! ```
 //!
 //! With `max_width = usize::MAX` nothing is ever merged lossily and the loop runs until no
@@ -65,7 +67,10 @@
 //! loop stops when every layer is as full as allowed and the nodes left cannot be split without
 //! going over it. Splitting then merging can rebuild a diagram that was seen before, which would
 //! loop forever; `fingerprint` is a hash of the nodes of each layer (their states and where their
-//! edges lead), and the loop stops when one comes back. Refining
+//! edges lead), and the loop stops when one comes back. Then `settle` recomputes every property
+//! from scratch, removes the edges they invalidate and collapses the nodes that became alike; if
+//! that changed the diagram and no lossy merge was made in this call, the loop starts again, since
+//! finer properties can allow more splits. Refining
 //! again with a larger width continues from the diagram left by the previous call, so
 //! refining with growing widths and ending with `usize::MAX` gives an exact diagram.
 //!
@@ -97,8 +102,10 @@
 //! `update_bottom_up` then sweeps upwards from that layer in the same way: it recomputes the
 //! bottom-up property of the flagged nodes from their children, filters their outgoing edges, and
 //! flags the parents of a node that changed or was removed. It also stops at the first layer where
-//! nothing changed, which can leave shallower nodes flagged; they are handled the next time the
-//! sweep reaches them, or not at all, which again costs tightness and not soundness.
+//! nothing changed and no node of the next layer is flagged. A property left out of date by this
+//! is coarser than the paths it stands for (an edge removed above a node, for instance, is not
+//! followed by a recomputation below it).`settle` recomputes everything at the end of `refine`
+//! because property finer than its paths would lose solutions: see `repair_after_merges`.
 //!
 //! ## Merging
 //!
@@ -106,7 +113,10 @@
 //! equal (their `MergeKey`). They are interchangeable for every constraint, so the merge loses
 //! nothing. `merge_layer` is the lossy merge: if the layer has more than `max_width` nodes it
 //! asks the merge heuristic for `max_width` groups of nodes and merges each group into its first
-//! node. Whether the result is relaxed depends on the states it joins, see below.
+//! node. Whether the result is relaxed depends on the states it joins, see below. A merge joins
+//! the properties of the nodes it merges, but the nodes below them now hold more paths than their
+//! properties say, and the nodes above have a child that holds more: `repair_after_merges`
+//! recomputes them, downwards then upwards, before anything is filtered against them.
 //!
 //! ## Cleaning
 //!
@@ -151,9 +161,9 @@ use crate::modelling::*;
 
 use rustc_hash::FxHashMap;
 use std::cmp::Reverse;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::BinaryHeap;
 use std::collections::HashSet;
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -412,6 +422,7 @@ impl Compiler {
             return;
         }
         let select_heuristic = self.select_heuristic;
+        let mut merged_lossily = false;
         let mut seen_fingerprints: HashSet<u64> = HashSet::default();
         seen_fingerprints.insert(self.fingerprint());
         loop {
@@ -440,9 +451,18 @@ impl Compiler {
                         return;
                     }
                     // Merge equivalent nodes
-                    self.collapse(layer);
+                    let merged = self.collapse(layer);
+                    self.repair_after_merges(&merged);
                     // Reduce the size to the max_width, if needed
-                    self.merge_layer(layer, max_width);
+                    let merged = self.merge_layer(layer, max_width);
+                    merged_lossily |= !merged.is_empty();
+                    self.repair_after_merges(&merged);
+                    if !self.mdd[self.mdd.root()].is_active()
+                        || !self.mdd[self.mdd.sink()].is_active()
+                    {
+                        self.unsat();
+                        return;
+                    }
                     // Reclame space used by inactive data
                     self.clean();
                 }
@@ -450,13 +470,80 @@ impl Compiler {
                 self.update_exactness(layer);
             }
             self.update_exactness(self.mdd.nodes.len() - 1);
-            if !any_split {
-                break;
+            let cycled = any_split && !seen_fingerprints.insert(self.fingerprint());
+            if !any_split || cycled {
+                // Nothing more to split, or going in circles: tighten what the updates left
+                // coarse. Finer properties can allow more splits, so go on if that changed the
+                // diagram. Not after a lossy merge, which keeps the diagram moving without
+                // settling, nor if it was going in circles or the result was seen before.
+                let changed = self.settle();
+                if self.mdd.nodes.is_empty() {
+                    return;
+                }
+                if cycled
+                    || !changed
+                    || merged_lossily
+                    || !seen_fingerprints.insert(self.fingerprint())
+                {
+                    break;
+                }
             }
-            if !seen_fingerprints.insert(self.fingerprint()) {
+        }
+    }
+
+    /// Recompute every properties based on the actual paths encoded in the MDD and tightens it.
+    /// Much of the updates are doing the refine, but some operations don't lead to incremental
+    /// property update (e.g., edge removal) because then it would be too costly and the fix-point
+    /// handle many of these cases by iterating over the diagram anyway.
+    /// Hence, some properties may be more relaxed than possible, leading to sub-optimal
+    /// propagation and the MDD could still be tighten.
+    /// Returns whethe the diagram changed. If the MDD becomes UNSAT, clears it.
+    fn settle(&mut self) -> bool {
+        // Computes the number of nodes and edges in the MDD.
+        let size = |compiler: &Self| -> (usize, usize) {
+            (
+                compiler
+                    .mdd
+                    .nodes
+                    .iter()
+                    .flatten()
+                    .filter(|node| node.is_active())
+                    .count(),
+                compiler
+                    .mdd
+                    .edges
+                    .iter()
+                    .flatten()
+                    .filter(|edge| edge.is_active())
+                    .count(),
+            )
+        };
+        let before = size(self);
+        loop {
+            let edges = size(self).1;
+            self.propagate_constraints();
+            if !self.mdd[self.mdd.root()].is_active() || !self.mdd[self.mdd.sink()].is_active() {
+                self.unsat();
+                return true;
+            }
+            if size(self).1 == edges {
                 break;
             }
         }
+        self.clean();
+        for layer in 1..self.mdd.nodes.len() - 1 {
+            let merged = self.collapse(layer);
+            self.repair_after_merges(&merged);
+        }
+        if !self.mdd[self.mdd.root()].is_active() || !self.mdd[self.mdd.sink()].is_active() {
+            self.unsat();
+            return true;
+        }
+        self.clean();
+        for layer in 0..self.mdd.nodes.len() {
+            self.update_exactness(layer);
+        }
+        size(self) != before
     }
 
     /// A hash of the diagram: for each layer, the hashes of the `MergeKey` of its active nodes,
@@ -501,13 +588,16 @@ impl Compiler {
             if !self.mdd[node].is_active() {
                 continue;
             }
+            // Nothing is decided after the sink, so the states of its paths do not matter.
+            let is_sink = layer == self.mdd.nodes.len() - 1;
             let relaxed = layer != 0
                 && (self.mdd[node]
                     .iter_parents()
                     .any(|edge| self.mdd[self.mdd[edge].from()].is_relaxed())
-                    || !self.top_down_properties[layer][index]
-                        .iter()
-                        .all(|property| property.is_single_state()));
+                    || (!is_sink
+                        && !self.top_down_properties[layer][index]
+                            .iter()
+                            .all(|property| property.is_single_state())));
             self.mdd[node].set_relaxed(relaxed);
         }
     }
@@ -599,7 +689,7 @@ impl Compiler {
     /// Recomputes the top-down properties of the flagged nodes, layer by layer from `start_layer`
     /// (but at least the first layer after the root), and filters the edges that leave the nodes
     /// whose property changed. Flags the children of a changed node for the next layer, and the
-    /// node itself for [`Mdd::update_bottom_up`]. Stops at the first layer where no node changed.
+    /// node itself for [`Mdd::update_bottom_up`]. Stops at the first layer where no node changed and none is flagged in the next one.
     /// Returns the deepest layer where one did. See the module documentation.
     fn update_top_down(&mut self, start_layer: usize) -> usize {
         let mut deepest_changed_layer = start_layer.max(1) - 1;
@@ -651,7 +741,7 @@ impl Compiler {
                 }
                 self.mdd[target].set_property_flag();
             }
-            if !any_changed {
+            if !any_changed && !self.has_flagged_node(layer + 1) {
                 break;
             }
         }
@@ -661,7 +751,8 @@ impl Compiler {
     /// Recomputes the bottom-up properties of the flagged nodes, layer by layer upwards from
     /// `start_layer` (at most the layer before the sink), and filters the edges that leave them.
     /// Flags the parents of a node whose property changed, or that was removed. Stops at the first
-    /// layer where no node changed. See the module documentation.
+    /// layer where no node changed and none is flagged in the next one. See the module
+    /// documentation.
     fn update_bottom_up(&mut self, start_layer: usize) {
         for layer in (0..=start_layer.min(self.mdd.nodes.len() - 2)).rev() {
             let variable = self.mdd.order[layer];
@@ -713,10 +804,18 @@ impl Compiler {
                     }
                 }
             }
-            if !any_changed {
+            if !any_changed && (layer == 0 || !self.has_flagged_node(layer - 1)) {
                 break;
             }
         }
+    }
+
+    /// Whether a node of `layer` is flagged for a property update. False beyond the last layer.
+    fn has_flagged_node(&self, layer: usize) -> bool {
+        self.mdd
+            .nodes
+            .get(layer)
+            .is_some_and(|nodes| nodes.iter().any(|node| node.is_property_flag()))
     }
 
     /// Recomputes `top_down_properties` for every layer but the root (layer 0), whose top-down
@@ -871,8 +970,9 @@ impl Compiler {
     }
 
     /// Merges, in `layer`, the nodes whose top-down and bottom-up properties are all equal. The
-    /// merge loses nothing: the nodes are interchangeable for every constraint.
-    fn collapse(&mut self, layer: usize) {
+    /// merge loses nothing: the nodes are interchangeable for every constraint. Returns the nodes
+    /// that took over others, see [`Compiler::merge_nodes`].
+    fn collapse(&mut self, layer: usize) -> Vec<NodeIndex> {
         let mut map: FxHashMap<MergeKey, NodeIndex> = FxHashMap::default();
         let mut merges: Vec<(NodeIndex, NodeIndex)> = vec![];
         for index in 0..self.mdd.nodes[layer].len() {
@@ -890,30 +990,35 @@ impl Compiler {
                 map.insert(key, node);
             }
         }
+        let mut merged = vec![];
         for (node, primary_node) in merges {
-            self.merge_nodes(node, primary_node);
+            merged.extend(self.merge_nodes(node, primary_node));
         }
+        merged
     }
 
     /// Merges the nodes of `layer` that the merge heuristic picks until at most `max_width` remain.
-    /// The heuristic is only consulted when the layer has more active nodes than that.
-    fn merge_layer(&mut self, layer: usize, max_width: usize) {
+    /// The heuristic is only consulted when the layer has more active nodes than that. Returns the
+    /// nodes that took over others, see [`Compiler::merge_nodes`].
+    fn merge_layer(&mut self, layer: usize, max_width: usize) -> Vec<NodeIndex> {
         let active_nodes = self
             .mdd
             .nodes_in_layer(layer)
             .filter(|&node| self.mdd[node].is_active())
             .count();
         if active_nodes <= max_width {
-            return;
+            return vec![];
         }
         let groups = self.merge_heuristic.group_nodes(self, layer, max_width);
+        let mut merged = vec![];
         for group in groups {
             if let Some((&into, froms)) = group.split_first() {
                 for &from in froms {
-                    self.merge_nodes(from, into);
+                    merged.extend(self.merge_nodes(from, into));
                 }
             }
         }
+        merged
     }
 
     /// Merges `from` into `into`: the parent edges of `from` now enter `into`, its child edges are
@@ -921,8 +1026,13 @@ impl Compiler {
     /// those two children to be merged in turn. The properties are joined and `from` is
     /// deactivated. Whether the result is relaxed is not decided here: see
     /// [`Compiler::update_exactness`]. See the module documentation.
-    fn merge_nodes(&mut self, from: NodeIndex, into: NodeIndex) {
+    ///
+    /// Returns the nodes that took over others (`into`, and the children merged in turn), which
+    /// may have been merged away since: the properties of what lies above and below them are
+    /// to be repaired by [`Compiler::repair_after_merges`].
+    fn merge_nodes(&mut self, from: NodeIndex, into: NodeIndex) -> Vec<NodeIndex> {
         let mut worklist = vec![(from, into)];
+        let mut took_over = vec![];
         // Nodes merged away so far, with the node that took them over. An entry of the worklist
         // can name a node that an earlier entry has already absorbed: it is followed to the node
         // that holds its paths now, since merging into a deactivated node would lose them.
@@ -938,6 +1048,7 @@ impl Compiler {
             if from == into {
                 continue;
             }
+            took_over.push(into);
             for i in 0..self.mdd[from].number_parents() {
                 let edge = self.mdd[from].parent_edge_at(i);
                 self.mdd[edge].set_to(into);
@@ -982,6 +1093,48 @@ impl Compiler {
             self.mdd[from].deactivate();
             absorbed.insert(from, into);
         }
+        took_over
+    }
+
+    /// Recomputes properties of nodes impacted by a merge operation. When merging nodes, their
+    /// properties are merge using the relaxation operators (when they are not equivalent);
+    /// however, this changes the properties of the nodes above and below them in the diagram.
+    /// Propagating constraint on these tighter properties may lead to unwanted edge removal and
+    /// lead to loss of solutions.
+    fn repair_after_merges(&mut self, took_over: &[NodeIndex]) {
+        let took_over: Vec<NodeIndex> = took_over
+            .iter()
+            .copied()
+            .filter(|&node| self.mdd[node].is_active())
+            .collect();
+        let (Some(first), Some(last)) = (
+            took_over.iter().map(|node| node.0).min(),
+            took_over.iter().map(|node| node.0).max(),
+        ) else {
+            return;
+        };
+        for &node in &took_over {
+            for edge in self.mdd[node].iter_children().collect::<Vec<_>>() {
+                let child = self.mdd[edge].to();
+                if self.mdd[edge].is_active() && self.mdd[child].is_active() {
+                    self.mdd[child].set_property_flag();
+                }
+            }
+        }
+        let deepest_changed = self.update_top_down(first + 1).max(last);
+        for &node in &took_over {
+            if !self.mdd[node].is_active() {
+                continue;
+            }
+            self.mdd[node].set_property_flag();
+            for edge in self.mdd[node].iter_parents().collect::<Vec<_>>() {
+                let parent = self.mdd[edge].from();
+                if self.mdd[edge].is_active() && self.mdd[parent].is_active() {
+                    self.mdd[parent].set_property_flag();
+                }
+            }
+        }
+        self.update_bottom_up(deepest_changed);
     }
 
     /// Joins, in the layer `properties`, the properties of the node at `from_index` into those of
@@ -1751,6 +1904,134 @@ pub mod test_mdd {
         }
     }
 
+    /// Whether `assignment` (one value per variable) is a path of `mdd`.
+    fn is_a_path(mdd: &Mdd, assignment: &[isize]) -> bool {
+        let mut node = mdd.root();
+        for layer in 0..mdd.number_layers() - 1 {
+            let variable = mdd.decision_at_layer(layer);
+            let next = mdd[node].iter_children().find(|&edge| {
+                mdd[edge].is_active()
+                    && mdd.problem()[variable].value(mdd[edge].assignment())
+                        == assignment[variable.0]
+            });
+            match next {
+                Some(edge) => node = mdd[edge].to(),
+                None => return false,
+            }
+        }
+        true
+    }
+
+    #[test]
+    #[should_panic(expected = "branch on all 4 variables of the problem, but it branches on 2")]
+    fn a_solution_is_refused_when_the_constraints_leave_variables_out() {
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(4, vec![0, 1, 2], None);
+        let constraint = not_equals(&mut problem, vars[0], vars[1]);
+        let mut compiler = Compiler::new(
+            Arc::new(problem),
+            CompilationHeuristic {
+                ordering: OrderingHeuristic::MinDomMaxLinked,
+                merge: MergeHeuristic::LessRelaxed,
+                selection: SelectHeuristic::Greedy,
+            },
+            &[constraint],
+        );
+        compiler.refine(usize::MAX);
+        compiler.mdd().get_solution();
+    }
+
+    #[test]
+    fn no_schedule_of_refinements_loses_a_solution() {
+        use crate::constraints::{all_different, among, at_least, gcc, not_equals, sum};
+        let variables = 5;
+        let domain: Vec<isize> = (0..5).collect();
+        for case in 0..5 {
+            let mut problem = Problem::default();
+            let vars = problem.add_variables(variables, domain.clone(), None);
+            let constraints = match case {
+                0 => vec![gcc(
+                    &mut problem,
+                    vars,
+                    vec![(0, 1, 2), (1, 0, 2), (2, 1, 3)],
+                )],
+                1 => vec![sum(&mut problem, vars, 9)],
+                2 => vec![all_different(&mut problem, vars)],
+                3 => vec![
+                    all_different(&mut problem, vars[..3].to_vec()),
+                    not_equals(&mut problem, vars[3], vars[4]),
+                ],
+                _ => vec![
+                    at_least(&mut problem, vars.clone(), vec![2], 2),
+                    among(&mut problem, vars, vec![0, 1], 2, 4),
+                ],
+            };
+            let problem = Arc::new(problem);
+            // The solutions, by brute force.
+            let mut solutions: Vec<Vec<isize>> = vec![];
+            let mut assignment = vec![0isize; variables];
+            loop {
+                if constraints
+                    .iter()
+                    .all(|&constraint| problem[constraint].is_satisfied(&assignment))
+                {
+                    solutions.push(assignment.clone());
+                }
+                let mut position = 0;
+                while position < variables {
+                    assignment[position] += 1;
+                    if assignment[position] < 5 {
+                        break;
+                    }
+                    assignment[position] = 0;
+                    position += 1;
+                }
+                if position == variables {
+                    break;
+                }
+            }
+            let mut seed = 7u64;
+            let mut next = |bound: u64| {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (seed >> 33) % bound
+            };
+            let mut schedules: Vec<Vec<usize>> =
+                vec![vec![1, 10], vec![5, 9], vec![6, 9], vec![3, 3, 7, 7]];
+            for _ in 0..25 {
+                let calls = 2 + next(3) as usize;
+                schedules.push((0..calls).map(|_| 1 + next(12) as usize).collect());
+            }
+            for merge in [MergeHeuristic::LessRelaxed, MergeHeuristic::StateSimilarity] {
+                for schedule in &schedules {
+                    let mut compiler = Compiler::new(
+                        Arc::clone(&problem),
+                        CompilationHeuristic {
+                            ordering: OrderingHeuristic::MinDomMaxLinked,
+                            merge: merge.clone(),
+                            selection: SelectHeuristic::Greedy,
+                        },
+                        &constraints,
+                    );
+                    for &width in schedule.iter().chain(&[usize::MAX]) {
+                        compiler.refine(width);
+                        let mdd = compiler.mdd();
+                        assert!(
+                            solutions.iter().all(|solution| is_a_path(mdd, solution)),
+                            "case {case}, {merge:?}, widths {schedule:?} then {width}: a solution was lost"
+                        );
+                    }
+                    assert_eq!(
+                        compiler.mdd().count_solutions(),
+                        solutions.len().into(),
+                        "case {case}, {merge:?}, widths {schedule:?} then MAX: not exact"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn refining_in_several_calls_ends_as_exact_as_refining_once() {
         let exact = {
@@ -1788,12 +2069,10 @@ pub mod test_mdd {
                     .all(|node| !mdd[node].is_relaxed()),
                 "schedule {schedule:?}"
             );
-            assert!(
-                widths(&mdd)
-                    .iter()
-                    .zip(widths(&exact))
-                    .all(|(w, e)| *w >= e)
-            );
+            assert!(widths(&mdd)
+                .iter()
+                .zip(widths(&exact))
+                .all(|(w, e)| *w >= e));
         }
     }
 
@@ -1979,10 +2258,8 @@ pub mod test_mdd {
         let mut compiler = five_different_variables();
         compiler.refine(usize::MAX);
         let mdd = compiler.mdd();
-        assert!(
-            (0..mdd.number_layers())
-                .flat_map(|layer| mdd.nodes_in_layer(layer))
-                .all(|node| !mdd[node].is_relaxed())
-        );
+        assert!((0..mdd.number_layers())
+            .flat_map(|layer| mdd.nodes_in_layer(layer))
+            .all(|node| !mdd[node].is_relaxed()));
     }
 }
