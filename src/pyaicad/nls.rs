@@ -206,7 +206,7 @@ impl PyDecodeKind {
 /// Builds the decode operator for neural local search. `decode_kind == "logits"` picks greedy
 /// (`Argmax`) vs. stochastic (`Sampling`) decoding of the network's raw logits, per
 /// `stochastic_decode`; `decode_kind == "mdd_sampling"` instead refines those same logits through
-/// one round of `sampling::belief_propagation` over the problem's compiled MDDs before
+/// one round of `bp::belief_propagation` over the problem's compiled MDDs before
 /// decoding -- see `MddSamplingDecode`'s doc.
 fn build_decode_op<B: Backend>(
     decode_kind: &PyDecodeKind,

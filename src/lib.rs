@@ -13,7 +13,7 @@
 //!   constraint implements.
 //! - [`constraints`]: the constraints, with the contract that the compiler relies on.
 //! - [`mdd`]: the compiler and the compiled diagram.
-//! - [`sampling`]: belief propagation on a compiled diagram.
+//! - [`sampling`]: sampling solutions from a compiled diagram.
 //!
 //! One setting is public next to the core: the number of threads of the worker pool that runs
 //! the parallel parts of the library ([`set_num_threads`], [`num_threads`]), a quarter of the
@@ -30,6 +30,7 @@ pub mod mdd;
 pub mod modelling;
 pub mod sampling;
 
+mod bp;
 mod diagnostics;
 mod learning;
 mod nls;

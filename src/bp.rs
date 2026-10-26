@@ -21,18 +21,64 @@
 //! labelled `v` gives `mu_{c -> x}(v)` directly -- *without* multiplying in `x`'s own message,
 //! since layer `layer(x)` is exactly the one being read off, not one folded into alpha or beta.
 //!
-//! `partial_alpha_at`/`partial_beta_at` (see `super`) already compute a clamped version of this,
-//! one target layer at a time, which costs O(scope_size * edges) across a full variable-by-variable
-//! decode. Belief propagation instead needs *every* variable's local belief from the *same* MDD,
-//! every round, which is naturally an O(edges) computation instead: one full forward pass and one
-//! full backward pass per MDD per iteration, with every layer's local belief read off the same pair
-//! of arrays in a single combined pass (`mdd_local_beliefs`).
+//! Belief propagation needs *every* variable's local belief from the *same* MDD, every round,
+//! which is an O(edges) computation: one full forward pass and one full backward pass per MDD per
+//! iteration, with every layer's local belief read off the same pair of arrays in a single combined
+//! pass (`mdd_local_beliefs`; the passes themselves live in `crate::mdd::wmc`).
 
 use crate::mdd::wmc::log_wmc_and_gradient;
 use crate::mdd::{CompiledConstraint, Mdd};
 use crate::modelling::ValueIndex;
 
-use super::{build_var_to_mdds, log_combine_and_normalize, normalize_or_uniform, safe_ln};
+const LOG_ZERO: f64 = -745.0;
+
+fn safe_ln(p: f64) -> f64 {
+    if p > 0.0 { p.ln() } else { LOG_ZERO }
+}
+
+/// Normalises a categorical probability distribution if at least one element has non-zero weight,
+/// otherwise returns a uniform distribution
+fn normalize_or_uniform(mut weights: Vec<f64>, domain_size: usize) -> Vec<f64> {
+    let total: f64 = weights.iter().sum();
+    if total <= 0.0 {
+        return vec![1.0 / domain_size as f64; domain_size];
+    }
+    for w in &mut weights {
+        *w /= total;
+    }
+    weights
+}
+
+/// For each global variable, every `(mdd_index, layer)` pair where that MDD has this variable in
+/// its scope, at that layer. Used by `belief_propagation` (multi-round marginal aggregation)
+/// to know "which MDDs does this variable belong to, and at what layer in each".
+///
+/// `num_vars` is passed explicitly rather than read off a problem since a `CompiledConstraint`
+/// shares its diagram with other constraints, and the diagram's problem is the template's (see the
+/// arena module doc).
+fn build_var_to_mdds(mdds: &[CompiledConstraint], num_vars: usize) -> Vec<Vec<(usize, usize)>> {
+    let mut var_to_mdds: Vec<Vec<(usize, usize)>> = vec![Vec::new(); num_vars];
+    for (mdd_index, mdd) in mdds.iter().enumerate() {
+        for layer in 0..mdd.number_decisions() {
+            let variable = mdd.decision_at_layer(layer);
+            var_to_mdds[variable.0].push((mdd_index, layer));
+        }
+    }
+    var_to_mdds
+}
+
+fn log_combine_and_normalize(log_combined: Vec<f64>) -> Vec<f64> {
+    let max_log = log_combined
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let mut combined: Vec<f64> = log_combined.iter().map(|&l| (l - max_log).exp()).collect();
+    let total: f64 = combined.iter().sum();
+    for c in &mut combined {
+        *c /= total;
+    }
+    combined
+}
 
 /// A one-hot distribution: all mass on `value`. Used as the permanent "message"/prior for a
 /// `decided` variable -- hard evidence from outside this belief-propagation call (e.g. the rest of
@@ -209,7 +255,7 @@ mod tests {
     use crate::modelling::{ConstraintIndex, Problem};
     use std::sync::Arc;
 
-    /// Same helper as `super::tests::build_mdd` -- duplicated locally rather than exposed across
+    /// Same helper as the NLS decode tests -- duplicated locally rather than exposed across
     /// the two test modules, to keep each self-contained.
     fn build_mdd(problem: Arc<Problem>, constraints: &[ConstraintIndex]) -> CompiledConstraint {
         let mut compiler = Compiler::new(
@@ -229,7 +275,7 @@ mod tests {
     fn belief_propagation_indexes_messages_by_mdd_layer_not_by_global_variable_id() {
         // Regression test for a real out-of-bounds panic hit on Sudoku: `w` sits *before* `x` and
         // `y` in the problem's global variable numbering (mirrors
-        // `super::super::tests::destroyed_variables_with_deterministic_rule_destroys_exactly_the_violated_mdds`'s
+        // `crate::nls::decode::tests::destroyed_variables_with_deterministic_rule_destroys_exactly_the_violated_mdds`'s
         // `_w` pattern, just placed first here instead of last), so x and y's global indices (1, 2)
         // no longer line up with their layer indices in the *2*-layer MDD covering just {x, y}
         // (layers 0, 1). `unclamped_alpha`/`unclamped_beta`/`mdd_local_beliefs` all index the

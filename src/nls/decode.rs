@@ -15,11 +15,11 @@ use burn::tensor::{Distribution, Int, Tensor};
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
+use crate::bp::belief_propagation;
 use crate::learning::consformer::MddCompilationConfig;
 use crate::mdd::arena::{compile_constraint, nominal_domain};
 use crate::mdd::{CompiledConstraint, MddArena};
 use crate::modelling::{Problem, ValueIndex, VariableIndex};
-use crate::sampling::belief_propagation;
 use crate::sampling::{DecodeMode, argmax, sample_categorical};
 use crate::utils::tensor::to_rows;
 
