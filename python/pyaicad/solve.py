@@ -101,7 +101,8 @@ class Compilation:
         start = time.perf_counter()
         mdd = compile_mdd(model, width=self.width, order=self.order, merge=self.merge)
         compile_time = time.perf_counter() - start
-        assignment = mdd.solution()
+        values = mdd.solution()
+        assignment = None if values is None else _assignment(model, mdd, values)
         if mdd.is_unsat:
             status = Status.INFEASIBLE
         elif assignment is not None and model.check(assignment):
@@ -110,6 +111,18 @@ class Compilation:
             status, assignment = Status.UNKNOWN, None
         runtime = time.perf_counter() - start
         return Result(status, assignment, runtime, compile_time, None, self.name)
+
+
+def _assignment(model: Model, mdd: Any, values: List[int]) -> List[int]:
+    """The assignment of ``model`` that gives ``values`` to the variables of the scope of ``mdd``.
+
+    A variable in no constraint has no layer and can take any value: it takes the first of its
+    domain.
+    """
+    assignment = [model.domain(variable)[0] for variable in model.variables]
+    for variable, value in zip(mdd.scope, values):
+        assignment[variable.index] = value
+    return assignment
 
 
 _DESTROY = {

@@ -42,9 +42,10 @@
 //!
 //! // The permutations of three values.
 //! assert_eq!(mdd.count_solutions().to_string(), "6");
-//! let mut solution = mdd.get_solution().expect("the diagram is satisfiable");
-//! solution.sort();
-//! assert_eq!(solution, vec![0, 1, 2]);
+//! let (mut values, variables) = mdd.get_solution().expect("the diagram is satisfiable");
+//! assert_eq!(variables.len(), 3);
+//! values.sort();
+//! assert_eq!(values, vec![0, 1, 2]);
 //! ```
 
 #![deny(missing_docs)]

@@ -128,26 +128,38 @@ class MDD:
         """
         return int(self._native.count_solutions())
 
-    def solution(self) -> Optional[List[int]]:
-        """A path of the diagram as an assignment, or ``None`` if there is none.
+    @property
+    def scope(self) -> List[Var]:
+        """The variables the diagram branches on, in the order they were declared.
 
-        It is a solution if the diagram is exact. If it is relaxed, check it with
-        :meth:`Model.check`.
+        All the variables of the model unless some are in no compiled constraint: they have no
+        layer. :meth:`solution` and :meth:`sample` give one value for each of these variables, in
+        this order.
+        """
+        variables = self._model.variables
+        return [variables[index] for index in self._native.scope()]
+
+    def solution(self) -> Optional[List[int]]:
+        """A path of the diagram as values for the variables of :attr:`scope`, or ``None`` if
+        there is none.
+
+        When the diagram covers the whole model this is an assignment of the model. It is a
+        solution if the diagram is exact. If it is relaxed, check it with :meth:`Model.check`.
         """
         if self.is_unsat:
             return None
-        sol = self._native.get_solution(False)
-        return None if sol is None else list(sol)
+        found = self._native.get_solution(False)
+        return None if found is None else list(found[0])
 
     def sample(self, n: int = 1) -> List[List[int]]:
-        """``n`` paths drawn at random, as assignments.
+        """``n`` paths drawn at random, as values for the variables of :attr:`scope`.
 
         Call :func:`pyaicad.set_seed` first to make them reproducible. Empty if the model is
         unsatisfiable.
         """
         if self.is_unsat:
             return []
-        return [list(self._native.get_solution(True)) for _ in range(operator.index(n))]
+        return [list(self._native.get_solution(True)[0]) for _ in range(operator.index(n))]
 
     @property
     def widths(self) -> List[int]:

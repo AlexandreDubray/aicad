@@ -759,9 +759,12 @@ mod test_not_equals {
         // trivially satisfiable problem came out UNSAT. Both orders exercise both directions.
         for order in [vec![0, 1], vec![1, 0]] {
             let (problem, _, _) = pair(vec![0], vec![1]);
-            let mdd = compile(problem, OrderingHeuristic::Custom(order), 1);
+            let mdd = compile(problem, OrderingHeuristic::Custom(order.clone()), 1);
             assert!(!mdd.is_unsat());
-            assert_eq!(mdd.get_solution(), Some(vec![0, 1]));
+            // The values and the variables they belong to, in the branching order.
+            let variables: Vec<VariableIndex> = order.iter().map(|&v| VariableIndex(v)).collect();
+            let values = order.iter().map(|&v| v as isize).collect();
+            assert_eq!(mdd.get_solution(), Some((values, variables)));
         }
     }
 
@@ -770,7 +773,7 @@ mod test_not_equals {
         // The mirror of the regression test above: a real conflict must still be detected.
         for order in [vec![0, 1], vec![1, 0]] {
             let (problem, _, _) = pair(vec![5], vec![5]);
-            let mdd = compile(problem, OrderingHeuristic::Custom(order), 1);
+            let mdd = compile(problem, OrderingHeuristic::Custom(order.clone()), 1);
             assert!(mdd.is_unsat());
             assert_eq!(mdd.get_solution(), None);
         }

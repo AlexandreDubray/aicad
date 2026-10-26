@@ -60,10 +60,7 @@ impl PyCompiler {
         if let Some(width) = max_width {
             compiler.refine(width);
         }
-        PyMdd {
-            inner: compiler,
-            is_solution_sat: false,
-        }
+        PyMdd { inner: compiler }
     }
 
     // --- MODEL INFO --- //
@@ -100,7 +97,6 @@ impl PyCompiler {
 #[pyclass]
 pub struct PyMdd {
     inner: Compiler,
-    is_solution_sat: bool,
 }
 
 #[pymethods]
@@ -116,27 +112,39 @@ impl PyMdd {
         self.inner.mdd().is_unsat()
     }
 
-    fn is_solution_sat(&self) -> bool {
-        self.is_solution_sat
-    }
-
+    /// A path of the diagram (the first one of exact nodes, or one drawn with the probabilities of
+    /// the variables if `sample`) as the values taken and the indices of the variables they are
+    /// the values of, in increasing order of variable: the order of the assignment of a model.
     #[pyo3(signature = (sample=false))]
-    fn get_solution(&mut self, sample: bool) -> Option<Vec<isize>> {
+    fn get_solution(&self, sample: bool) -> Option<(Vec<isize>, Vec<usize>)> {
         let mdd = self.inner.mdd();
         if mdd.is_unsat() {
             return None;
         }
-        let solution = if sample {
+        let (values, variables) = if sample {
             let weights = crate::sampling::problem_weights(mdd);
             let path = crate::sampling::sample_solution(mdd, &weights);
-            Some(mdd.solution_from_path(&path))
+            mdd.solution_from_path(&path)
         } else {
-            mdd.get_solution()
+            mdd.get_solution()?
         };
-        if let Some(sol) = solution.as_ref() {
-            self.is_solution_sat = mdd.problem().is_solution(sol);
-        }
-        solution
+        let mut assignment: Vec<(usize, isize)> = variables
+            .into_iter()
+            .map(|variable| variable.0)
+            .zip(values)
+            .collect();
+        assignment.sort_unstable();
+        Some(assignment.into_iter().map(|(v, value)| (value, v)).unzip())
+    }
+
+    /// The indices of the variables the diagram branches on, in increasing order.
+    fn scope(&self) -> Vec<usize> {
+        let mdd = self.inner.mdd();
+        let mut scope: Vec<usize> = (0..mdd.number_decisions())
+            .map(|layer| mdd.decision_at_layer(layer).0)
+            .collect();
+        scope.sort_unstable();
+        scope
     }
 
     fn is_solution(&self, solution: Vec<isize>) -> bool {

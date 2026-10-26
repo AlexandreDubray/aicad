@@ -199,7 +199,7 @@ mod tests {
         let weights = vec![vec![1.0; 3]; 3];
         for _ in 0..200 {
             let path = sample_solution(&mdd, &weights);
-            let mut solution = mdd.solution_from_path(&path);
+            let (mut solution, _) = mdd.solution_from_path(&path);
             solution.sort();
             assert_eq!(solution, vec![0, 1, 2]);
         }
@@ -212,7 +212,10 @@ mod tests {
         assert_eq!(weights.len(), 2);
         let draws = 4000;
         let zeros = (0..draws)
-            .filter(|_| mdd.solution_from_path(&sample_solution(&mdd, &weights))[0] == 0)
+            .filter(|_| {
+                let (values, variables) = mdd.solution_from_path(&sample_solution(&mdd, &weights));
+                values[variables.iter().position(|v| v.0 == 0).unwrap()] == 0
+            })
             .count();
         let frequency = zeros as f64 / draws as f64;
         // 0.9 with a standard deviation of about 0.005: always taking the last edge would give 0.
@@ -226,8 +229,9 @@ mod tests {
         // Whichever variable comes first, force 1 on it: the other one is then forced to 0.
         let weights = vec![vec![0.0, 1.0], vec![0.5, 0.5]];
         for _ in 0..100 {
-            let solution = mdd.solution_from_path(&sample_solution(&mdd, &weights));
-            assert_eq!((solution[first.0], solution[second.0]), (1, 0));
+            let (solution, variables) = mdd.solution_from_path(&sample_solution(&mdd, &weights));
+            assert_eq!(variables, vec![first, second]);
+            assert_eq!(solution, vec![1, 0]);
         }
     }
 

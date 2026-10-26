@@ -167,3 +167,31 @@ def test_compile_argument_errors():
 def test_merge_heuristics_run(merge):
     m = latin_3x3()
     assert ac.compile(m, width=2, merge=merge).count() >= 12
+
+
+def two_of_four_constrained():
+    m = ac.Model()
+    x = m.int_vars(4, domain=range(3))
+    m.add(ac.not_equal(x[3], x[1]))
+    return m, x
+
+
+def test_a_diagram_of_some_variables_gives_values_for_its_scope():
+    m, x = two_of_four_constrained()
+    mdd = ac.compile(m)
+    assert mdd.scope == [x[1], x[3]]
+    assert mdd.count() == 6
+    for values in [mdd.solution()] + mdd.sample(10):
+        assert len(values) == 2 and values[0] != values[1]
+
+
+def test_a_diagram_of_the_whole_model_has_every_variable_in_its_scope():
+    m = all_different_4()
+    assert ac.compile(m).scope == m.variables
+
+
+def test_solving_gives_a_value_to_variables_outside_every_constraint():
+    m, _ = two_of_four_constrained()
+    r = ac.solve(m, ac.Compilation())
+    assert r.found and len(r.assignment) == 4
+    assert m.check(r.assignment)

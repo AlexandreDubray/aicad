@@ -13,50 +13,42 @@
 
 use super::memory::MemoryReport;
 use super::*;
-use crate::modelling::ValueIndex;
+use crate::modelling::{ValueIndex, VariableIndex};
 
 use rustc_hash::FxHashMap;
 use std::fs;
 
 impl Mdd {
-    /// Reads one solution off the diagram, as the value taken by each variable (indexed by
-    /// variable), or `None` if the diagram has no path of exact nodes (in particular if it is
-    /// unsatisfiable). A relaxed diagram can hold solutions that this does not find: see
-    /// [`Mdd::exact_path`], which finds a path whenever there is one.
+    /// Reads one solution off the diagram, or `None` if the diagram has no path of exact nodes (in
+    /// particular if it is unsatisfiable). A relaxed diagram can hold solutions that this does
+    /// not find: see [`Mdd::exact_path`], which finds a path whenever there is one.
     ///
-    /// Panics unless the diagram branches on every variable of its problem: an assignment of
-    /// the whole problem is read off it, which a diagram of some of the constraints does not
-    /// hold.
-    pub fn get_solution(&self) -> Option<Vec<isize>> {
+    /// The solution is given as in [`Mdd::solution_from_path`]: the values, and the variables
+    /// they are the values of.
+    pub fn get_solution(&self) -> Option<(Vec<isize>, Vec<VariableIndex>)> {
         Some(self.solution_from_path(&self.exact_path()?))
     }
 
     /// The assignment that a path of the diagram stands for, given as the value index taken at
-    /// each layer (as returned by [`Mdd::exact_path`] or `sampling::sample_solution`): the
-    /// value taken by each variable, indexed by variable. Panics if `path` is not as long as
-    /// the number of variables branched on, or if the diagram does not branch on every variable
-    /// of its problem (see [`Mdd::get_solution`]).
-    pub fn solution_from_path(&self, path: &[ValueIndex]) -> Vec<isize> {
-        assert_eq!(
-            self.order.len(),
-            self.problem.number_variables(),
-            "a solution needs the diagram to branch on all {} variables of the problem, but it \
-             branches on {}: it was compiled from constraints that do not cover them all",
-            self.problem.number_variables(),
-            self.order.len()
-        );
+    /// each layer (as returned by [`Mdd::exact_path`] or `sampling::sample_solution`). It is
+    /// returned as the values taken and the variables they are the values of, both in the
+    /// branching order of the diagram: the first value is the one of the variable of the first
+    /// layer. A diagram compiled from constraints that do not cover every variable of the
+    /// problem holds only the variables in their scope, and its branching order is not the order
+    /// the variables were declared in, so the variables are returned too.
+    ///
+    /// Panics if `path` is not as long as the number of variables branched on.
+    pub fn solution_from_path(&self, path: &[ValueIndex]) -> (Vec<isize>, Vec<VariableIndex>) {
         assert_eq!(
             path.len(),
             self.order.len(),
             "a path needs a value for each of the {} variables of the diagram",
             self.order.len()
         );
-        let mut assignment = vec![0; path.len()];
-        for (layer, &value) in path.iter().enumerate() {
-            let variable = self.order[layer];
-            assignment[*variable] = self.problem[variable].value(value);
-        }
-        assignment
+        path.iter()
+            .zip(&self.order)
+            .map(|(&value, &variable)| (self.problem[variable].value(value), variable))
+            .unzip()
     }
 
     /// The diagram in Graphviz's DOT format: one point per node, one labelled edge per value.

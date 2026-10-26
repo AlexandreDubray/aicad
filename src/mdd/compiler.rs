@@ -161,9 +161,9 @@ use crate::modelling::*;
 
 use rustc_hash::FxHashMap;
 use std::cmp::Reverse;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::BinaryHeap;
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -1923,22 +1923,89 @@ pub mod test_mdd {
     }
 
     #[test]
-    #[should_panic(expected = "branch on all 4 variables of the problem, but it branches on 2")]
-    fn a_solution_is_refused_when_the_constraints_leave_variables_out() {
+    fn a_solution_names_the_variables_in_the_branching_order() {
         let mut problem = Problem::default();
         let vars = problem.add_variables(4, vec![0, 1, 2], None);
-        let constraint = not_equals(&mut problem, vars[0], vars[1]);
+        let constraint = not_equals(&mut problem, vars[3], vars[1]);
         let mut compiler = Compiler::new(
             Arc::new(problem),
             CompilationHeuristic {
-                ordering: OrderingHeuristic::MinDomMaxLinked,
+                ordering: OrderingHeuristic::Custom(vec![3, 1]),
                 merge: MergeHeuristic::LessRelaxed,
                 selection: SelectHeuristic::Greedy,
             },
             &[constraint],
         );
         compiler.refine(usize::MAX);
-        compiler.mdd().get_solution();
+        let (values, variables) = compiler.mdd().get_solution().expect("satisfiable");
+        assert_eq!(variables, vec![VariableIndex(3), VariableIndex(1)]);
+        assert_eq!(values.len(), 2);
+        assert_ne!(values[0], values[1]);
+    }
+
+    /// Checks that the stored properties describe at least the paths of the diagram: each one
+    /// joined with the property recomputed from the neighbouring nodes is itself. A property that
+    /// describes less would filter out solutions. With `same`, they must be equal, as when
+    /// nothing is left coarse. The stored properties are put back afterwards.
+    fn assert_properties_cover_the_paths(compiler: &mut Compiler, same: bool, context: &str) {
+        let stored_top_down = compiler.top_down_properties.clone();
+        let stored_bottom_up = compiler.bottom_up_properties.clone();
+        compiler.update_top_down_properties();
+        for layer in (0..compiler.mdd.nodes.len() - 1).rev() {
+            let variable = compiler.mdd.order[layer];
+            for index in 0..compiler.mdd.nodes[layer].len() {
+                let node = NodeIndex(layer, index);
+                if !compiler.mdd[node].is_active() {
+                    continue;
+                }
+                for constraint in 0..compiler.constraints.len() {
+                    compiler.bottom_up_properties[layer][index][constraint] =
+                        compiler.fold_property_over_children(node, variable, constraint);
+                }
+            }
+        }
+        let check = |stored: &[Vec<Vec<Box<dyn ConstraintProperty>>>],
+                     fresh: &[Vec<Vec<Box<dyn ConstraintProperty>>>],
+                     layers: std::ops::Range<usize>,
+                     direction: &str| {
+            for layer in layers {
+                for index in 0..stored[layer].len() {
+                    if !compiler.mdd[NodeIndex(layer, index)].is_active() {
+                        continue;
+                    }
+                    for (stored, fresh) in stored[layer][index].iter().zip(&fresh[layer][index]) {
+                        let mut joined = stored.clone();
+                        joined.merge(fresh.as_ref());
+                        assert!(
+                            ConstraintProperty::eq(joined.as_ref(), stored.as_ref()),
+                            "{context}: a {direction} property of node ({layer}, {index}) \
+                             describes fewer paths than the node holds"
+                        );
+                        assert!(
+                            !same || ConstraintProperty::eq(stored.as_ref(), fresh.as_ref()),
+                            "{context}: a {direction} property of node ({layer}, {index}) is \
+                             coarser than the node's paths"
+                        );
+                    }
+                }
+            }
+        };
+        // The root's top-down and the sink's bottom-up properties are fixed, and not recomputed.
+        let layers = stored_top_down.len();
+        check(
+            &stored_top_down,
+            &compiler.top_down_properties,
+            1..layers,
+            "top-down",
+        );
+        check(
+            &stored_bottom_up,
+            &compiler.bottom_up_properties,
+            0..layers - 1,
+            "bottom-up",
+        );
+        compiler.top_down_properties = stored_top_down;
+        compiler.bottom_up_properties = stored_bottom_up;
     }
 
     #[test]
@@ -2021,6 +2088,11 @@ pub mod test_mdd {
                             solutions.iter().all(|solution| is_a_path(mdd, solution)),
                             "case {case}, {merge:?}, widths {schedule:?} then {width}: a solution was lost"
                         );
+                        assert_properties_cover_the_paths(
+                            &mut compiler,
+                            width == usize::MAX,
+                            &format!("case {case}, {merge:?}, widths {schedule:?} then {width}"),
+                        );
                     }
                     assert_eq!(
                         compiler.mdd().count_solutions(),
@@ -2069,10 +2141,12 @@ pub mod test_mdd {
                     .all(|node| !mdd[node].is_relaxed()),
                 "schedule {schedule:?}"
             );
-            assert!(widths(&mdd)
-                .iter()
-                .zip(widths(&exact))
-                .all(|(w, e)| *w >= e));
+            assert!(
+                widths(&mdd)
+                    .iter()
+                    .zip(widths(&exact))
+                    .all(|(w, e)| *w >= e)
+            );
         }
     }
 
@@ -2085,7 +2159,7 @@ pub mod test_mdd {
         let mdd = compiler.into_mdd();
         assert_eq!(mdd.number_layers(), coarse_layers);
         assert_eq!(mdd.count_solutions(), 120u32.into());
-        let mut solution = mdd.get_solution().expect("the diagram is satisfiable");
+        let (mut solution, _) = mdd.get_solution().expect("the diagram is satisfiable");
         solution.sort();
         assert_eq!(solution, vec![0, 1, 2, 3, 4]);
     }
@@ -2258,8 +2332,10 @@ pub mod test_mdd {
         let mut compiler = five_different_variables();
         compiler.refine(usize::MAX);
         let mdd = compiler.mdd();
-        assert!((0..mdd.number_layers())
-            .flat_map(|layer| mdd.nodes_in_layer(layer))
-            .all(|node| !mdd[node].is_relaxed()));
+        assert!(
+            (0..mdd.number_layers())
+                .flat_map(|layer| mdd.nodes_in_layer(layer))
+                .all(|node| !mdd[node].is_relaxed())
+        );
     }
 }
