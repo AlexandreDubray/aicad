@@ -462,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "out of the network's")]
+    #[should_panic(expected = "out of the nominal")]
     fn compile_constraints_panics_when_domain_size_is_too_small() {
         let mut problem = Problem::default();
         let x = problem.add_variable(vec![0, 1, 2], None);

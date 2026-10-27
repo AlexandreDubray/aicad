@@ -17,12 +17,12 @@ use rand::RngExt;
 use crate::learning::consformer::TrainingDestroy;
 use crate::learning::consformer::{ConsFormer, ConsFormerBatch, ConsFormerConfig};
 use crate::mdd::arena::MddCompilationConfig;
-use crate::modelling::Problem;
+use crate::modelling::{Problem, Solution, Status};
 use crate::nls::decode::{Argmax, DecodeMode, DecodingOperator, MddSamplingDecode, Sampling};
 use crate::nls::destroy::{DestroyOperator, RandomDestroy, RelatedDestroy, WorstDestroy};
 use crate::nls::{
-    Budget, NetworkPrior, NeuralLocalSearch, PriorHeuristic, Solution, SolveConfig, Status,
-    UniformPrior, load_network,
+    Budget, NetworkPrior, NeuralLocalSearch, PriorHeuristic, SolveConfig, UniformPrior,
+    load_network,
 };
 
 use super::learn::cuda_available;
@@ -32,17 +32,18 @@ use super::problem::PyProblem;
 #[derive(Clone)]
 pub(crate) struct PySolution {
     /// Seconds elapsed before finding the solution (or before the budget ran out).
-    /// Sub-second precision -- see `nls::Solution::runtime`'s doc.
+    /// Sub-second precision -- see `Solution::runtime`'s doc.
     #[pyo3(get)]
     runtime: f64,
     /// Seconds spent compiling MDDs (`decode_kind=MddSampling`'s `MddSamplingDecode::prepare`)
     /// for the `run` call this solution came out of -- 0.0 for `decode_kind=Logits`, which has no
     /// compilation step. Already included in `runtime`, not additional to it -- see
-    /// `nls::Solution::compilation_runtime`'s doc.
+    /// `Solution::compilation_runtime`'s doc.
     #[pyo3(get)]
     compilation_runtime: f64,
+    /// `None` for a method without a search.
     #[pyo3(get)]
-    iterations: usize,
+    iterations: Option<usize>,
     #[pyo3(get)]
     solution: Option<Vec<isize>>,
     #[pyo3(get)]
@@ -55,8 +56,8 @@ impl From<&Solution> for PySolution {
             runtime: s.runtime(),
             compilation_runtime: s.compilation_runtime(),
             iterations: s.iterations(),
-            solution: s.solution().clone(),
-            status: (&s.status()).into(),
+            solution: s.assignment().map(<[isize]>::to_vec),
+            status: s.status().into(),
         }
     }
 }
@@ -69,8 +70,8 @@ pub(crate) enum PyStatus {
     Unknown,
 }
 
-impl From<&Status> for PyStatus {
-    fn from(s: &Status) -> Self {
+impl From<Status> for PyStatus {
+    fn from(s: Status) -> Self {
         match s {
             Status::Satisfiable => Self::Satisfiable,
             Status::Unsatisfiable => Self::Unsatisfiable,

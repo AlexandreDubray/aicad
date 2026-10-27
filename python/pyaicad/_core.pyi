@@ -109,7 +109,7 @@ class PySolveConfig:
 class PySolution:
     runtime: float
     compilation_runtime: float
-    iterations: int
+    iterations: Optional[int]
     solution: Optional[List[int]]
     status: PyStatus
 

@@ -59,11 +59,13 @@
 
 pub(crate) mod constraint;
 pub(crate) mod problem;
+pub(crate) mod solution;
 pub(crate) mod variable;
 
 #[doc(no_inline)]
 pub use constraint::{Constraint, ConstraintProperty, ConstraintShapeKey};
 pub use problem::Problem;
+pub use solution::{Solution, Status};
 pub use variable::Variable;
 
 /// Fixes `variable` to `value` by shrinking its domain to that value alone, with probability 1.

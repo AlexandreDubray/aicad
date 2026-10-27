@@ -28,61 +28,8 @@ use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
 
 use crate::learning::NetworkConfig;
-use crate::modelling::Problem;
+use crate::modelling::{Problem, Solution};
 use crate::utils::tensor::*;
-
-/// A solution returned by the solver, with its statistics
-#[derive(Clone)]
-pub(crate) struct Solution {
-    /// Seconds elapsed before finding the solution (or before the budget ran out). Sub-second
-    /// precision (`.as_secs_f64()`), not whole seconds -- a coarser `u64` version of this field
-    /// used to round every solve under a second down to `0`, which silently broke any per-
-    /// iteration timing derived from `runtime / iterations` for fast-solving instances.
-    pub(crate) runtime: f64,
-    /// Seconds spent in `DecodingOperator::prepare` (structure compilation -- MDD compilation
-    /// for `MddSamplingDecode`, a no-op for `Argmax`/`Sampling`) for the `run` call this solution
-    /// came out of. Sub-second precision, unlike `runtime`, since compilation is often well under
-    /// a second and `runtime`'s whole-second granularity would round it away. Already included in
-    /// `runtime` (the clock backing both starts before `prepare` runs), not on top of it -- this
-    /// field exists to let the two be told apart, not to be added to `runtime`.
-    pub(crate) compilation_runtime: f64,
-    /// Number of local search steps before finding the solution
-    pub(crate) iterations: usize,
-    /// Solution to the problem, None if the problem is UNSAT.
-    pub(crate) solution: Option<Vec<isize>>,
-    /// Status of the solution. Either proved SAT/UNSAT in the budget limits, or unknown if the
-    /// process reached a limit
-    pub(crate) status: Status,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) enum Status {
-    Satisfiable,
-    Unsatisfiable,
-    Unknown,
-}
-
-impl Solution {
-    pub(crate) fn runtime(&self) -> f64 {
-        self.runtime
-    }
-
-    pub(crate) fn compilation_runtime(&self) -> f64 {
-        self.compilation_runtime
-    }
-
-    pub(crate) fn iterations(&self) -> usize {
-        self.iterations
-    }
-
-    pub(crate) fn solution(&self) -> &Option<Vec<isize>> {
-        &self.solution
-    }
-
-    pub(crate) fn status(&self) -> Status {
-        self.status
-    }
-}
 
 /// Stopping criterion for the search; whichever limit is first reached stops it.
 #[derive(Debug, Clone, Copy)]
@@ -206,11 +153,11 @@ fn resolve_status<B: Backend>(
     problem: &Arc<Problem>,
     row: &[isize],
     solved: bool,
-) -> Option<(Status, Option<Vec<isize>>)> {
+) -> Option<Solution> {
     if solved {
-        Some((Status::Satisfiable, Some(row.to_owned())))
+        Some(Solution::satisfiable(problem, row.to_owned()))
     } else if decode_op.detect_unsat(problem) {
-        Some((Status::Unsatisfiable, None))
+        Some(Solution::unsatisfiable())
     } else {
         None
     }
@@ -356,16 +303,14 @@ impl<B: Backend> NeuralLocalSearch<B> {
                 }
                 let problem = &active_problems[local_idx];
                 let row = &rows[local_idx];
-                if let Some((status, solution)) =
+                if let Some(solution) =
                     resolve_status(decode_op, problem, row, solved_now[local_idx])
                 {
-                    solutions[problem_idx] = Some(Solution {
-                        runtime: stop.start.elapsed().as_secs_f64(),
-                        compilation_runtime,
-                        iterations: stop.iters_done,
-                        solution,
-                        status,
-                    });
+                    solutions[problem_idx] = Some(
+                        solution
+                            .with_runtime(stop.start.elapsed().as_secs_f64(), compilation_runtime)
+                            .with_iterations(stop.iters_done),
+                    );
                     if let Some(bar) = progress {
                         bar.inc(1);
                     }
@@ -406,12 +351,10 @@ impl<B: Backend> NeuralLocalSearch<B> {
         solutions
             .into_iter()
             .map(|s| {
-                s.unwrap_or(Solution {
-                    runtime: stop.start.elapsed().as_secs_f64(),
-                    compilation_runtime,
-                    iterations: stop.iters_done,
-                    solution: None,
-                    status: Status::Unknown,
+                s.unwrap_or_else(|| {
+                    Solution::unknown()
+                        .with_runtime(stop.start.elapsed().as_secs_f64(), compilation_runtime)
+                        .with_iterations(stop.iters_done)
                 })
             })
             .collect()
@@ -430,6 +373,7 @@ impl<B: Backend> NeuralLocalSearch<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modelling::Status;
     use crate::constraints::not_equals;
     use burn::backend::ndarray::NdArray;
 
@@ -469,10 +413,10 @@ mod tests {
     {
         let problem = not_equals_problem();
         let op = FixedUnsatDecode(true);
-        let (status, solution) = resolve_status(&op, &problem, &[0, 1], true)
+        let solution = resolve_status(&op, &problem, &[0, 1], true)
             .expect("a solving row must resolve to a status");
-        assert!(matches!(status, Status::Satisfiable));
-        assert_eq!(solution, Some(vec![0, 1]));
+        assert_eq!(solution.status(), Status::Satisfiable);
+        assert_eq!(solution.assignment(), Some(&[0, 1][..]));
     }
 
     #[test]
@@ -480,10 +424,10 @@ mod tests {
      {
         let problem = not_equals_problem();
         let op = FixedUnsatDecode(true);
-        let (status, solution) = resolve_status(&op, &problem, &[0, 0], false)
+        let solution = resolve_status(&op, &problem, &[0, 0], false)
             .expect("an operator-flagged problem must resolve to a status");
-        assert!(matches!(status, Status::Unsatisfiable));
-        assert_eq!(solution, None);
+        assert_eq!(solution.status(), Status::Unsatisfiable);
+        assert_eq!(solution.assignment(), None);
     }
 
     struct CallCounter {
@@ -562,8 +506,8 @@ mod tests {
         };
         let solutions = search.run(&problems, &Keep, budget, 0, None);
 
-        assert!(solutions[0].solution.is_some() && solutions[1].solution.is_some());
-        assert!(solutions[2].solution.is_none() && solutions[3].solution.is_none());
+        assert!(solutions[0].assignment().is_some() && solutions[1].assignment().is_some());
+        assert!(solutions[2].assignment().is_none() && solutions[3].assignment().is_none());
         let calls = counter.calls.lock().unwrap();
         for unsolved in &problems[2..] {
             let key = Arc::as_ptr(unsolved) as usize;
