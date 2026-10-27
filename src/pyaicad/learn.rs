@@ -18,11 +18,11 @@ use crate::learning::consformer::architecture::MaskingKind;
 use crate::learning::consformer::{
     ConsFormerBatch, ConsFormerBatcher, ConsFormerConfig, ConsFormerDataConfig, ConsFormerDataset,
     ConsFormerLoss, ConsFormerMddBatch, ConsFormerMddBatcher, ConsFormerMddDataset,
-    ConsFormerMddLoss, ConsFormerMddSample, ConsFormerSample, MddCompilationConfig,
-    TrainingDestroy,
+    ConsFormerMddLoss, ConsFormerMddSample, ConsFormerSample, TrainingDestroy,
 };
 use crate::learning::train::{ModelSelection, TrainingConfig, train_model};
 use crate::mdd::MddArena;
+use crate::mdd::arena::MddCompilationConfig;
 use crate::mdd::heuristics::MergeHeuristic;
 use crate::modelling::Problem;
 use crate::utils::with_rng;

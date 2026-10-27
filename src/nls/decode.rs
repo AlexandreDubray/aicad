@@ -16,8 +16,7 @@ use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
 use crate::bp::belief_propagation;
-use crate::learning::consformer::MddCompilationConfig;
-use crate::mdd::arena::{compile_constraint, nominal_domain};
+use crate::mdd::arena::{MddCompilationConfig, compile_constraints};
 use crate::mdd::{CompiledConstraint, MddArena};
 use crate::modelling::{Problem, ValueIndex, VariableIndex};
 use crate::utils::tensor::to_rows;
@@ -91,37 +90,11 @@ impl<B: Backend> DecodingOperator<B> for Sampling {
     }
 }
 
-/// Compiles `problem`'s constraints into `CompiledConstraint`s, sharing each constraint's
-/// structure (via `arena`) with every other structurally-identical constraint -- whether from
-/// this problem or any other problem this `MddCache` (and hence its `arena`) ever compiles for.
-/// See `crate::mdd::arena`'s module doc.
-fn compile_constraints_for(
-    problem: &Arc<Problem>,
-    arena: &MddArena,
-    compilation: &MddCompilationConfig,
-    domain_size: usize,
-) -> Vec<CompiledConstraint> {
-    let domain = nominal_domain(domain_size);
-    problem
-        .iter_constraints()
-        .map(|c| {
-            compile_constraint(
-                arena,
-                problem,
-                c,
-                &compilation.ordering,
-                &domain,
-                compilation.max_width,
-            )
-        })
-        .collect()
-}
-
 struct MddCache {
     compilation: MddCompilationConfig,
     /// Nominal domain size every constraint's shared structure is compiled against -- see
     /// `crate::mdd::arena`'s module doc. Must match the network's own configured domain size,
-    /// same convention as `mdd_dataset::compile_constraint_mdds`'s `domain_size` parameter.
+    /// same convention as `compile_constraints`'s `domain_size` parameter.
     domain_size: usize,
     /// Shared across every problem this cache ever compiles for -- structurally-identical
     /// constraints from different problems dedup here, not just within one problem's own
@@ -151,7 +124,7 @@ impl MddCache {
                 return Arc::clone(mdds);
             }
         }
-        let mdds = Arc::new(compile_constraints_for(
+        let mdds = Arc::new(compile_constraints(
             problem,
             &self.arena,
             &self.compilation,

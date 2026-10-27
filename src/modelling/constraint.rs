@@ -78,7 +78,7 @@ pub trait Constraint: DeepSizeOf + DynClone + Send + Sync {
 dyn_clone::clone_trait_object!(Constraint);
 
 /// Exact, hashable description of a constraint's compiled structure: the key of the arena that
-/// shares structures between constraints of the same shape in the learning based module.
+/// shares structures between constraints of the same shape.
 ///
 /// A key holds what the structure depends on, apart from the domain (the arena supplies one
 /// nominal domain) and the width limit (the arena adds it). Sets are sorted so that constraints

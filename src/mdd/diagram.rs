@@ -6,7 +6,8 @@
 //! An [`Mdd`] is what a [`Compiler`](super::Compiler) produces: the nodes and edges of the
 //! diagram, the variable branched on at each layer and the problem that gives the variables and
 //! their values a meaning. It carries nothing that only the compilation needs (the constraints,
-//! their properties, the heuristics), so a finished diagram is small, and the counting, sampling and learning code reads it directly.
+//! their properties, the heuristics), so a finished diagram is small, and the counting, sampling and weighted-counting code
+//! reads it directly.
 //!
 //! # How it works
 //!

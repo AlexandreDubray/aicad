@@ -132,7 +132,7 @@
 //!   UNSAT problem be added on the fly and make the compilation conclude.
 //! - **[`name`](Constraint::name) is a label** of the logs and metrics: renaming a constraint
 //!   changes them. [`as_any`](Constraint::as_any) exists so that code specialised to a kind of
-//!   constraint (the ConsFormer loss) can downcast.
+//!   constraint can downcast.
 //! - **The set of constraints is closed.** [`ConstraintShapeKey`] is an enum that the arena
 //!   matches exhaustively to rebuild a constraint from its key, so a constraint cannot be added
 //!   from outside the crate: adding one means editing it, which the checklist below describes.

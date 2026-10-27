@@ -1,9 +1,9 @@
 //! Loopy belief propagation over a set of compiled MDDs, following Gilles Pesant's "From Support
 //! Propagation to Belief Propagation in Constraint Programming" (JAIR 66, 2019). Each MDD is one
-//! factor/constraint in a factor graph; `probs` (the network's output) plays the role of a
+//! factor/constraint in a factor graph; `probs` (the prior beliefs on the variables, e.g. the output of a network) plays the role of a
 //! permanent unary prior factor on every variable, present every round. The paper's own baseline
 //! has no such prior -- Algorithm 5 resets every variable's marginal to 1 each round -- we reset to
-//! `probs` instead, since without it the network's beliefs would just wash out after a couple of
+//! `probs` instead, since without it the prior beliefs would just wash out after a couple of
 //! rounds and BP would degrade to plain (unweighted) counting-based propagation.
 //!
 //! Notation follows the paper directly:
@@ -153,7 +153,7 @@ pub(crate) fn belief_propagation(
     let num_vars = probs.len();
     let var_to_mdds = build_var_to_mdds(mdds, num_vars);
 
-    // The permanent prior for each variable: the network's own belief for one that's still free,
+    // The permanent prior for each variable: the prior belief for one that's still free,
     // or a one-hot at its fixed value for one already `decided`.
     let priors: Vec<Vec<f64>> = (0..num_vars)
         .map(|var| {

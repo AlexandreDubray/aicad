@@ -5,7 +5,7 @@
 //! module compiles the constraints of a [`Problem`](crate::modelling::Problem) into such a
 //! diagram, with a limit on the width of the layers if wanted, and allow tractable queries on it:
 //! counting its solutions and reading one off it, and weighted model counting (`wmc`) for the
-//! learning and sampling code.
+//! sampling and belief propagation code.
 //!
 //! - [`Compiler`] builds a diagram from any subset of the constraints of a problem and refines it,
 //!   as many times as wanted and with growing widths if wanted.

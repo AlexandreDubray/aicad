@@ -13,7 +13,6 @@ pub(crate) use dataset::{
 pub(crate) use loss::{ConsFormerLoss, ConsFormerMddLoss};
 pub(crate) use mdd_dataset::{
     ConsFormerMddBatch, ConsFormerMddBatcher, ConsFormerMddDataset, ConsFormerMddSample,
-    MddCompilationConfig,
 };
 
 use burn::config::Config;
@@ -84,7 +83,7 @@ pub(crate) struct ConsFormerConfig {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ConsFormerDataConfig {
     /// Must match the network's `domain_size` -- every compiled MDD's edges are validated against
-    /// this at dataset-construction time (see `mdd_dataset::compile_constraint_mdds`), and the
+    /// this at dataset-construction time (see `crate::mdd::arena::compile_constraints`), and the
     /// training loss reads/writes the network's per-variable probability vector at this width.
     pub domain_size: usize,
     /// Fraction of free variables randomly marked eligible for update on each training step (see

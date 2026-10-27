@@ -149,7 +149,7 @@
 //! - **A diagram is only as exact as its constraints' filtering.** Each constraint documents
 //!   what its properties can and cannot detect.
 //! - The MDD is separate from the compiler for at least two reasons. First, when compilation
-//!   finishes and the MDD must be used for other tasks (e.g., learning module) then all
+//!   finishes and the MDD must be used for other tasks (e.g., sampling or counting) then all
 //!   compilation-related data are not needed anymore (e.g., constraints' properties are not
 //!   useful). Then, the MDD structure can be extracted and used as-is. Moreover, a compiler
 //!   structure is useful when multiple turn of refine are called (e.g., with increased maximum

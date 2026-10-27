@@ -8,7 +8,7 @@
 //! Currently, we assume that the probability distribution on the solution space (i.e., an MDD) is
 //! factorised as the product of each variable's own probability distribution over its domain.
 //! Hence, the weighted model count can be computed in a single forward-pass on the MDD.
-//! Similarly, the gradient (when probabilities come from a neural-network) can be computed with,
+//! Similarly, the gradient (when probabilities come from a parametrised model such as a neural network) can be computed with,
 //! in addition, a single backward pass.
 //!
 //! # How it works

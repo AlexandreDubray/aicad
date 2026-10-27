@@ -428,11 +428,12 @@ mod mdd_loss_tests {
 
     use crate::constraints::{all_different, not_equals};
     use crate::mdd::MddArena;
+    use crate::mdd::arena::MddCompilationConfig;
     use crate::modelling::Problem;
 
     use super::super::ConsFormerDataConfig;
     use super::super::mdd_dataset::{
-        ConsFormerMddBatcher, ConsFormerMddDataset, ConsFormerMddSample, MddCompilationConfig,
+        ConsFormerMddBatcher, ConsFormerMddDataset, ConsFormerMddSample,
     };
     use super::*;
 

@@ -2,9 +2,9 @@
 //!
 //! # Purpose
 //!
-//! The learning and search code needs the MDD of every constraint of every instance it sees, and
-//! most of those constraints are copies of each other on different variables: the same
-//! `NotEquals` on every edge of a graph, the same `Gcc` for every nurse. Their diagrams are the
+//! Code that compiles many constraints needs the MDD of each of them, and most of those
+//! constraints are copies of each other on different variables: the same `NotEquals` on every
+//! edge of a graph, the same `Gcc` for every employee. Their diagrams are the
 //! same up to the names of the variables. `MddArena` compiles one diagram per *shape* and hands it
 //! out as an `Arc<Mdd>`; [`CompiledConstraint`] pairs it with the constraint's own
 //! branching order, which says which real variable each layer stands for.
@@ -19,7 +19,7 @@
 //! same shape end up with the same `Arc`.
 //!
 //! The arena never decides what the domain is: the caller passes the nominal domain of its
-//! network (`nominal_domain(n)` is `0..n`, the one of the benchmarks), and the shape is compiled
+//! variables (`nominal_domain(n)` is `0..n`), and the shape is compiled
 //! over that full domain even when a real variable's domain has been narrowed. Keeping the domain
 //! inside the key, and building the synthetic variables only from the key, is what lets the arena
 //! serve other domains without change.
@@ -37,7 +37,7 @@
 //!   variables. Neither is read through the arena: a [`CompiledConstraint`] brings the order of
 //!   the real constraint. The cost is one small problem per shape.
 //! - **Nothing is ever evicted.** The arena grows with the number of distinct shapes it sees,
-//!   which is small for the benchmarks (one `Sum` shape per target, one `Gcc` per set of bounds).
+//!   which is small for typical models (one `Sum` shape per target, one `Gcc` per set of bounds).
 //! - **The key holds the domain, not just its size.** Today every variable is assumed to take the
 //!   same domain, but this will be lifted some day. Then a `Sum([x, y], 4)` must not share its
 //!   structure with a `Sum([z, t], 4)` if the variables have different domains, so the domain
@@ -64,13 +64,13 @@ use crate::modelling::{ConstraintIndex, Problem, VariableIndex};
 pub(crate) struct ConstraintCompileKey {
     /// The constraint's own shape
     shape: ConstraintShapeKey,
-    /// The domain that every variable of the template takes (the network's nominal domain).
+    /// The domain that every variable of the template takes (the nominal domain).
     domain: Vec<isize>,
     /// Width limit the template is refined to (`usize::MAX` for an exact structure).
     max_width: usize,
 }
 
-/// The nominal domain `0..domain_size` of a network whose variables take the values
+/// The nominal domain `0..domain_size`, for variables that take the values
 /// `0..domain_size`, in the form [`compile_constraint`] takes.
 pub(crate) fn nominal_domain(domain_size: usize) -> Vec<isize> {
     (0..domain_size as isize).collect()
@@ -190,7 +190,7 @@ fn compile_template(key: &ConstraintCompileKey) -> Mdd {
 
 /// Thread-safe cache from a constraint's shape to its shared, compiled structure.
 ///
-/// One arena is shared by a whole dataset build or search run, so that constraints of the same
+/// One arena can be shared by a whole batch of compilations, so that constraints of the same
 /// shape, in one instance or across instances, are compiled once. It can be used from several
 /// threads.
 #[derive(Default)]
@@ -291,7 +291,7 @@ fn compute_constraint_order(
 /// structure comes from `arena` (shared with the constraints of the same shape, `domain` and
 /// `max_width`) and its branching order is computed with `ordering`.
 ///
-/// `domain` is the nominal domain of the network's variables (`nominal_domain(n)` for the values
+/// `domain` is the nominal domain of the variables (`nominal_domain(n)` for the values
 /// `0..n`). `max_width` is the width the structure is refined to, `usize::MAX` for an
 /// exact one.
 pub(crate) fn compile_constraint(
@@ -314,6 +314,87 @@ pub(crate) fn compile_constraint(
          was compiled/looked-up under"
     );
     CompiledConstraint { structure, order }
+}
+
+/// How the constraints of a problem are compiled by [`compile_constraints`].
+#[derive(Clone, Debug)]
+pub(crate) struct MddCompilationConfig {
+    /// Orders the scope of each constraint into its branching order.
+    pub ordering: OrderingHeuristic,
+    /// Not read today: the structures are compiled by the arena with a fixed merge heuristic.
+    #[allow(dead_code)]
+    pub merge: MergeHeuristic,
+    /// Not read today, for the same reason as `merge`.
+    #[allow(dead_code)]
+    pub select: SelectHeuristic,
+    /// Width the structures are refined to, `usize::MAX` for exact ones.
+    pub max_width: usize,
+}
+
+impl Default for MddCompilationConfig {
+    fn default() -> Self {
+        Self {
+            ordering: OrderingHeuristic::MinDomMaxLinked,
+            merge: MergeHeuristic::LessRelaxed,
+            select: SelectHeuristic::Greedy,
+            max_width: usize::MAX,
+        }
+    }
+}
+
+/// Compiles one [`CompiledConstraint`] per constraint of `problem`. The structure of each
+/// constraint is looked up in, or compiled into, `arena`, and so shared with every constraint of
+/// the same shape, from this problem or any other compiled against the same arena.
+///
+/// `domain_size` is the size of the nominal domain `0..domain_size` that every structure is
+/// compiled over; the domains of the variables in the scope of a constraint must lie inside it.
+///
+/// # Panics
+///
+/// If a value of a variable in the scope of a constraint is outside `[0, domain_size)`.
+pub(crate) fn compile_constraints(
+    problem: &Problem,
+    arena: &MddArena,
+    config: &MddCompilationConfig,
+    domain_size: usize,
+) -> Vec<CompiledConstraint> {
+    let domain = nominal_domain(domain_size);
+    problem
+        .iter_constraints()
+        .map(|c| {
+            let label = problem[c].name();
+
+            for variable in problem[c].iter_scope() {
+                for value in problem[variable].iter_domain() {
+                    assert!(
+                        value >= 0 && (value as usize) < domain_size,
+                        "constraint `{}`: domain value {} out of the nominal [0, {}) range",
+                        label,
+                        value,
+                        domain_size,
+                    );
+                }
+            }
+
+            let compiled = compile_constraint(
+                arena,
+                problem,
+                c,
+                &config.ordering,
+                &domain,
+                config.max_width,
+            );
+
+            if compiled.structure.is_unsat() {
+                log::warn!(
+                    "MDD constraint `{}`'s shape is unconditionally unsatisfiable",
+                    label,
+                );
+            }
+
+            compiled
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -529,16 +610,14 @@ mod tests {
             handles.into_iter().map(|h| h.join().unwrap()).collect()
         });
         assert_eq!(arena.len(), 1);
-        assert!(
-            structures
-                .windows(2)
-                .all(|pair| Arc::ptr_eq(&pair[0], &pair[1]))
-        );
+        assert!(structures
+            .windows(2)
+            .all(|pair| Arc::ptr_eq(&pair[0], &pair[1])));
     }
 
     #[test]
     fn structurally_identical_constraints_from_different_scopes_share_one_arena_entry() {
-        // Two "nurse"-style constraints: same bounds, but disjoint VariableIndex ranges (one
+        // Two constraints of the same shape: same bounds, but disjoint VariableIndex ranges (one
         // problem, 4 variables total -- first 2 form one constraint, last 2 form the other).
         let mut problem = Problem::default();
         let vars = problem.add_variables(4, (0..3isize).collect(), None);

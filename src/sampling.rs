@@ -28,7 +28,7 @@ pub fn problem_weights(mdd: &Mdd) -> Vec<Vec<f64>> {
 /// node, so the draw follows the weights restricted to the values the diagram still allows, and
 /// not the distribution of the solutions conditioned on the constraints (that is what the
 /// weighted model count and its gradient give). The weights can come from anywhere: those of the
-/// variables of the problem, the output of a network, a belief.
+/// variables of the problem, a learned model's output, a belief.
 ///
 /// The path is a solution if `mdd` is exact; a relaxed diagram can yield an assignment that
 /// violates a constraint. The random generator is the thread's own (see `crate::utils`).

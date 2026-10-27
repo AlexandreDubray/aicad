@@ -15,9 +15,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 use rand::RngExt;
 
 use crate::learning::consformer::TrainingDestroy;
-use crate::learning::consformer::{
-    ConsFormer, ConsFormerBatch, ConsFormerConfig, MddCompilationConfig,
-};
+use crate::learning::consformer::{ConsFormer, ConsFormerBatch, ConsFormerConfig};
+use crate::mdd::arena::MddCompilationConfig;
 use crate::modelling::Problem;
 use crate::nls::decode::{Argmax, DecodeMode, DecodingOperator, MddSamplingDecode, Sampling};
 use crate::nls::destroy::{DestroyOperator, RandomDestroy, RelatedDestroy, WorstDestroy};

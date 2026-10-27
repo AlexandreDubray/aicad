@@ -13,8 +13,7 @@ use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
 use crate::learning::BatchProblems;
-use crate::mdd::arena::{compile_constraint, nominal_domain};
-use crate::mdd::heuristics::{MergeHeuristic, OrderingHeuristic, SelectHeuristic};
+use crate::mdd::arena::{MddCompilationConfig, compile_constraints};
 use crate::mdd::{CompiledConstraint, MddArena};
 use crate::modelling::Problem;
 
@@ -22,93 +21,6 @@ use super::dataset::{
     ConsFormerMaskData, consformer_mask_data, stack_masks_and_sample_assignments,
 };
 use super::{ConsFormerDataConfig, ConsFormerInputs};
-
-#[derive(Clone, Debug)]
-pub(crate) struct MddCompilationConfig {
-    pub ordering: OrderingHeuristic,
-    /// Not read today: the MDDs are compiled with unbounded width, which never merges.
-    #[allow(dead_code)]
-    pub merge: MergeHeuristic,
-    /// Not read today, for the same reason as `merge`.
-    #[allow(dead_code)]
-    pub select: SelectHeuristic,
-    pub max_width: usize,
-}
-
-impl Default for MddCompilationConfig {
-    fn default() -> Self {
-        Self {
-            ordering: OrderingHeuristic::MinDomMaxLinked,
-            merge: MergeHeuristic::LessRelaxed,
-            select: SelectHeuristic::Greedy,
-            max_width: usize::MAX,
-        }
-    }
-}
-
-/// Compiles one `CompiledConstraint` per constraint of `problem`. Each constraint's *structure*
-/// is looked up/compiled once in `arena` and shared with every other structurally-identical
-/// constraint (from this problem or any other sharing the same `arena`).
-/// Always compiles/refines the shared structure to full exactness (`usize::MAX`), regardless of
-/// `compilation.max_width`.
-///
-/// `domain_size` must match the network's configured `ConsFormerConfig::domain_size`: it's the
-/// nominal alphabet every shared template is compiled against, and the index the training loss
-/// reads a raw domain value's weight from in the network's per-variable probability vector (see
-/// `crate::learning::consformer::loss::layer_weights_from_probs`), so this validates up front
-/// that every real variable actually referenced by a compiled constraint's scope has its whole
-/// domain inside `[0, domain_size)` -- a mismatch there would otherwise silently read/write the
-/// wrong slot instead of panicking loudly.
-fn compile_constraint_mdds(
-    problem: &Arc<Problem>,
-    arena: &MddArena,
-    compilation: &MddCompilationConfig,
-    domain_size: usize,
-) -> Vec<CompiledConstraint> {
-    let domain = nominal_domain(domain_size);
-    problem
-        .iter_constraints()
-        .map(|c| {
-            let label = problem[c].name();
-
-            for variable in problem[c].iter_scope() {
-                for value in problem[variable].iter_domain() {
-                    assert!(
-                        value >= 0 && (value as usize) < domain_size,
-                        "constraint `{}`: domain value {} out of the network's [0, {}) range -- \
-                         `domain_size` passed to the MDD dataset doesn't match the network's \
-                         configured domain_size",
-                        label,
-                        value,
-                        domain_size,
-                    );
-                }
-            }
-
-            // Always compiled exactly, regardless of `compilation.max_width` -- see this
-            // function's doc.
-            let compiled = compile_constraint(
-                arena,
-                problem,
-                c,
-                &compilation.ordering,
-                &domain,
-                usize::MAX,
-            );
-
-            if compiled.structure.is_unsat() {
-                log::warn!(
-                    "MDD constraint `{}`'s shape is unconditionally unsatisfiable -- its \
-                     compiled structure has no accepting path regardless of instance, so its \
-                     WMC will always be 0.",
-                    label,
-                );
-            }
-
-            compiled
-        })
-        .collect()
-}
 
 /// Sample used to train ConsFormer-MDD. Carries the same attention/var masks as the classical
 /// `ConsFormerSample` (see `consformer_masks`), plus one `CompiledConstraint` per constraint of
@@ -164,7 +76,7 @@ impl<B: Backend> ConsFormerMddDataset<B> {
     /// across every group (from any problem in this call, or from any earlier/later call given
     /// the same `arena`) whose shape matches -- see `crate::mdd::arena`'s module doc.
     /// `data_config.domain_size` must match the network's configured `ConsFormerConfig::domain_size`
-    /// -- see `compile_constraint_mdds`. Build `data_config` via
+    /// -- see `compile_constraints`. Build `data_config` via
     /// `ConsFormerDataConfig::from(&network_config)` rather than by hand, so this and the
     /// `ConsFormerMddBatcher` built alongside it can't end up with different `domain_size`s.
     ///
@@ -179,6 +91,11 @@ impl<B: Backend> ConsFormerMddDataset<B> {
         device: &B::Device,
     ) -> Self {
         let domain_size = data_config.domain_size;
+        // The loss needs exact diagrams, whatever width the setting asks for.
+        let exact = MddCompilationConfig {
+            max_width: usize::MAX,
+            ..compilation
+        };
         let progress = ProgressBar::new(problems.len() as u64);
         progress.set_style(
             ProgressStyle::with_template(
@@ -196,7 +113,7 @@ impl<B: Backend> ConsFormerMddDataset<B> {
                     .map(|problem| {
                         (
                             consformer_mask_data(problem),
-                            compile_constraint_mdds(problem, arena, &compilation, domain_size),
+                            compile_constraints(problem, arena, &exact, domain_size),
                         )
                     })
                     .collect()
@@ -376,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn compile_constraint_mdds_matches_brute_force_for_not_equals() {
+    fn compile_constraints_matches_brute_force_for_not_equals() {
         let mut problem = Problem::default();
         let x = problem.add_variable(vec![0, 1, 2], None);
         let y = problem.add_variable(vec![0, 1, 2], None);
@@ -385,7 +302,7 @@ mod tests {
 
         let domain_size = 3;
         let arena = MddArena::new();
-        let mdds = compile_constraint_mdds(
+        let mdds = compile_constraints(
             &problem,
             &arena,
             &MddCompilationConfig::default(),
@@ -412,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn compile_constraint_mdds_matches_brute_force_for_all_different_permutation() {
+    fn compile_constraints_matches_brute_force_for_all_different_permutation() {
         let mut problem = Problem::default();
         let vars = problem.add_variables(3, vec![0, 1, 2], None);
         all_different(&mut problem, vars.clone());
@@ -420,7 +337,7 @@ mod tests {
 
         let domain_size = 3;
         let arena = MddArena::new();
-        let mdds = compile_constraint_mdds(
+        let mdds = compile_constraints(
             &problem,
             &arena,
             &MddCompilationConfig::default(),
@@ -450,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn compile_constraint_mdds_matches_brute_force_for_sum() {
+    fn compile_constraints_matches_brute_force_for_sum() {
         let mut problem = Problem::default();
         let vars = problem.add_variables(3, vec![0, 1, 2], None);
         sum(&mut problem, vars.clone(), 3);
@@ -458,7 +375,7 @@ mod tests {
 
         let domain_size = 3;
         let arena = MddArena::new();
-        let mdds = compile_constraint_mdds(
+        let mdds = compile_constraints(
             &problem,
             &arena,
             &MddCompilationConfig::default(),
@@ -486,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn compile_constraint_mdds_matches_brute_force_for_among() {
+    fn compile_constraints_matches_brute_force_for_among() {
         let mut problem = Problem::default();
         let vars = problem.add_variables(3, vec![0, 1, 2], None);
         among(&mut problem, vars.clone(), vec![1, 2], 1, 2);
@@ -494,7 +411,7 @@ mod tests {
 
         let domain_size = 3;
         let arena = MddArena::new();
-        let mdds = compile_constraint_mdds(
+        let mdds = compile_constraints(
             &problem,
             &arena,
             &MddCompilationConfig::default(),
@@ -531,7 +448,7 @@ mod tests {
 
         let domain_size = 2;
         let arena = MddArena::new();
-        let mdds = compile_constraint_mdds(
+        let mdds = compile_constraints(
             &problem,
             &arena,
             &MddCompilationConfig::default(),
@@ -546,7 +463,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "out of the network's")]
-    fn compile_constraint_mdds_panics_when_domain_size_is_too_small() {
+    fn compile_constraints_panics_when_domain_size_is_too_small() {
         let mut problem = Problem::default();
         let x = problem.add_variable(vec![0, 1, 2], None);
         let y = problem.add_variable(vec![0, 1, 2], None);
@@ -554,11 +471,11 @@ mod tests {
         let problem = Arc::new(problem);
 
         let arena = MddArena::new();
-        compile_constraint_mdds(&problem, &arena, &MddCompilationConfig::default(), 2);
+        compile_constraints(&problem, &arena, &MddCompilationConfig::default(), 2);
     }
 
     /// End-to-end: `ConsFormerMddDataset::new` compiles MDDs and builds mask tensors for many
-    /// problems in parallel (see the `par_iter` in `compile_constraint_mdds` and `new` itself).
+    /// problems in parallel (see the `par_iter` in `compile_constraints` and `new` itself).
     /// This checks that parallel construction still (a) preserves problem order and (b) produces
     /// results identical to compiling the same problems one at a time -- i.e. that splitting the
     /// work across threads didn't introduce any cross-problem interference.
@@ -598,7 +515,7 @@ mod tests {
             assert!(Arc::ptr_eq(sample.problem(), problem));
 
             let expected_arena = MddArena::new();
-            let expected = compile_constraint_mdds(
+            let expected = compile_constraints(
                 problem,
                 &expected_arena,
                 &MddCompilationConfig::default(),
