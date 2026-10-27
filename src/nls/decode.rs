@@ -20,8 +20,17 @@ use crate::learning::consformer::MddCompilationConfig;
 use crate::mdd::arena::{compile_constraint, nominal_domain};
 use crate::mdd::{CompiledConstraint, MddArena};
 use crate::modelling::{Problem, ValueIndex, VariableIndex};
-use crate::sampling::{DecodeMode, argmax, sample_categorical};
 use crate::utils::tensor::to_rows;
+use crate::utils::{argmax, sample_categorical};
+
+/// How a variable's combined distribution turns into a value: [`sample_categorical`] or [`argmax`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum DecodeMode {
+    /// Draw a value proportionally to the combined distribution
+    Sample,
+    /// Take the most likely value
+    Greedy,
+}
 
 /// Turns this iteration's logits into the next assignment. Only positions
 /// flagged in `destroy_mask` may change; everywhere else the current value

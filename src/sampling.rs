@@ -2,40 +2,7 @@
 
 use crate::mdd::{Mdd, NodeIndex};
 use crate::modelling::ValueIndex;
-
-use rand::RngExt;
-
-/// How a variable's combined distribution turns into a value: `sample_categorical` or `argmax`.
-#[derive(Clone, Copy, Debug)]
-pub enum DecodeMode {
-    /// Draw a value proportionally to the combined distribution
-    Sample,
-    /// Take the most likely value
-    Greedy,
-}
-
-pub(crate) fn argmax(weights: &[f64]) -> usize {
-    weights
-        .iter()
-        .enumerate()
-        .max_by(|a, b| a.1.partial_cmp(b.1).expect("weights should never be NaN"))
-        .map(|(index, _)| index)
-        .expect("weights should not be empty")
-}
-
-pub(crate) fn sample_categorical(weights: &[f64]) -> usize {
-    crate::utils::with_rng(|rng| {
-        let total: f64 = weights.iter().sum();
-        let mut target = rng.random_range(0.0..total);
-        for (index, &w) in weights.iter().enumerate() {
-            target -= w;
-            if target <= 0.0 {
-                return index;
-            }
-        }
-        weights.len() - 1
-    })
-}
+use crate::utils::sample_categorical;
 
 /// The probabilities of the variables of the problem of `mdd`, as weights for [`sample_solution`]:
 /// `result[layer][value]` for the variable branched on at `layer`.
@@ -203,22 +170,5 @@ mod tests {
     #[should_panic(expected = "has a weight of zero")]
     fn weights_that_forbid_every_edge_cannot_be_sampled() {
         sample_solution(&skewed(), &[vec![0.0, 0.0], vec![1.0, 1.0]]);
-    }
-
-    #[test]
-    fn sample_categorical_respects_zero_weight_never_selected() {
-        // Not a statistical test (no fixed seed guarantee here) -- just checks that a value with
-        // zero weight is structurally unreachable given how `sample_categorical` walks the
-        // cumulative distribution, run enough times to be confident about it.
-        let weights = vec![0.0, 1.0, 0.0];
-        for _ in 0..200 {
-            assert_eq!(sample_categorical(&weights), 1);
-        }
-    }
-
-    #[test]
-    fn argmax_picks_the_largest_weight() {
-        assert_eq!(argmax(&[0.1, 0.7, 0.2]), 1);
-        assert_eq!(argmax(&[0.9, 0.05, 0.05]), 0);
     }
 }

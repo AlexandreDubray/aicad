@@ -19,13 +19,12 @@ use crate::learning::consformer::{
     ConsFormer, ConsFormerBatch, ConsFormerConfig, MddCompilationConfig,
 };
 use crate::modelling::Problem;
-use crate::nls::decode::{Argmax, DecodingOperator, MddSamplingDecode, Sampling};
+use crate::nls::decode::{Argmax, DecodeMode, DecodingOperator, MddSamplingDecode, Sampling};
 use crate::nls::destroy::{DestroyOperator, RandomDestroy, RelatedDestroy, WorstDestroy};
 use crate::nls::{
     Budget, NetworkPrior, NeuralLocalSearch, PriorHeuristic, Solution, SolveConfig, Status,
     UniformPrior, load_network,
 };
-use crate::sampling::DecodeMode;
 
 use super::learn::cuda_available;
 use super::problem::PyProblem;
