@@ -10,6 +10,7 @@ use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
 
+use crate::destroy::DestroyOperator;
 use crate::learning::{Batch, BatchProblems};
 use crate::modelling::{Problem, VariableIndex};
 
@@ -162,7 +163,7 @@ pub(super) fn stack_masks_and_sample_assignments<B: Backend>(
     var_mask_tensors: &[Tensor<B, 1, Bool>],
     problems: &[Arc<Problem>],
     mask_fraction: f64,
-    destroy: Option<&dyn TrainingDestroy>,
+    destroy: Option<&dyn DestroyOperator>,
     device: &B::Device,
 ) -> (Tensor<B, 3, Bool>, Tensor<B, 2, Bool>, Tensor<B, 2, Int>) {
     let attention_masks = Tensor::stack(attention_mask_tensors, 0);
@@ -226,7 +227,7 @@ fn sample_initial_assignments(problems: &[Arc<Problem>]) -> Vec<i64> {
 }
 
 fn destroyed_var_masks(
-    destroy: &dyn TrainingDestroy,
+    destroy: &dyn DestroyOperator,
     problems: &[Arc<Problem>],
     init: &[i64],
     n: usize,
@@ -244,7 +245,7 @@ fn destroyed_var_masks(
                     .map(|&v| v as isize)
                     .collect();
                 let mut rng = StdRng::seed_from_u64(seed);
-                destroy.select(problem, &row, &mut rng)
+                destroy.destroy(problem, &row, &mut rng)
             })
             .collect()
     });
@@ -258,14 +259,10 @@ fn destroyed_var_masks(
     masks
 }
 
-pub(crate) trait TrainingDestroy: Send + Sync {
-    fn select(&self, problem: &Problem, assignment: &[isize], rng: &mut StdRng) -> Vec<usize>;
-}
-
 #[derive(Clone)]
 pub(crate) struct ConsFormerBatcher {
     pub mask_fraction: f64,
-    pub destroy: Option<Arc<dyn TrainingDestroy>>,
+    pub destroy: Option<Arc<dyn DestroyOperator>>,
 }
 
 /// A batch is just a collection of samples with the addition of initial assignments that are
@@ -376,13 +373,13 @@ mod destroy_tests {
 
     struct OnlyFirst;
 
-    impl TrainingDestroy for OnlyFirst {
-        fn select(&self, _: &Problem, _: &[isize], _: &mut StdRng) -> Vec<usize> {
+    impl DestroyOperator for OnlyFirst {
+        fn destroy(&self, _: &Problem, _: &[isize], _: &mut StdRng) -> Vec<usize> {
             vec![0]
         }
     }
 
-    fn batch_with(destroy: Option<Arc<dyn TrainingDestroy>>) -> ConsFormerBatch<NdArray> {
+    fn batch_with(destroy: Option<Arc<dyn DestroyOperator>>) -> ConsFormerBatch<NdArray> {
         let device = NdArrayDevice::default();
         let problems: Vec<Arc<Problem>> = (0..4)
             .map(|_| {

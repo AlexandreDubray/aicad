@@ -166,9 +166,10 @@ class NLS:
         bp_iterations: Rounds of belief propagation; only for ``decode="mdd"``.
         stochastic: Sample the values from the prediction instead of taking the most likely ones.
         temperature: Softens (above 1) or sharpens (below 1) the prediction when ``stochastic``.
-        batch_size: How many problems are on the device at once; ``None`` puts them all.
-        parallel_batches: How many batches run concurrently. Raise it only when ``batch_size`` is
-            small enough for several batches to fit in memory together.
+        batch_size: How many problems are stepped together on the device; ``None`` puts them all in
+            one batch. Batches run one after the other, each with the full limits. The problems of a
+            batch must have the same number of variables. Use 1 to solve problems one at a time,
+            as a deployment would.
     """
 
     checkpoint: Optional[Union[Checkpoint, str, "os.PathLike[str]"]] = None
@@ -180,7 +181,6 @@ class NLS:
     stochastic: bool = False
     temperature: float = 1.0
     batch_size: Optional[int] = None
-    parallel_batches: int = 1
 
     name = "nls"
 
@@ -192,8 +192,8 @@ class NLS:
             raise ValueError("prior='uniform' needs decode='mdd': raw logits would carry no information")
         if not 0 < self.destroy_fraction <= 1:
             raise ValueError(f"destroy_fraction must be in (0, 1], got {self.destroy_fraction!r}")
-        if self.bp_iterations < 1 or self.parallel_batches < 1:
-            raise ValueError("bp_iterations and parallel_batches must be at least 1")
+        if self.bp_iterations < 1:
+            raise ValueError("bp_iterations must be at least 1")
         if self.batch_size is not None and self.batch_size < 1:
             raise ValueError(f"batch_size must be at least 1, got {self.batch_size!r}")
 
@@ -237,7 +237,6 @@ class NLS:
             decode_kind=_DECODE[self.decode],
             bp_iterations=self.bp_iterations,
             prior_kind=_PRIOR[self.prior],
-            max_concurrent_chunks=self.parallel_batches,
             # The search takes whole seconds; a limit is rounded up so it is never cut short.
             time_limit=None if limits.time is None else math.ceil(limits.time),
             iteration_limit=limits.iterations,

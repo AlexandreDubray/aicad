@@ -2,6 +2,16 @@
 
 use rand::RngExt;
 
+/// How a categorical distribution given as weights turns into a value: [`sample_categorical`] or
+/// [`argmax`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum DecodeMode {
+    /// Draw a value proportionally to its weight.
+    Sample,
+    /// Take the value of largest weight.
+    Greedy,
+}
+
 /// The index of the largest weight; the first one on ties.
 pub(crate) fn argmax(weights: &[f64]) -> usize {
     weights

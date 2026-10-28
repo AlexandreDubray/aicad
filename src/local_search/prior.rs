@@ -11,8 +11,10 @@ use burn::tensor::{Int, Tensor};
 use crate::learning::{Batch, Network};
 use crate::modelling::Problem;
 
+/// Source of the per-value priors that guide each step of the search.
 pub(crate) trait PriorHeuristic<B: Backend>: Send + Sync {
-    /// Logits of shape `[rows, variables, domain_size]`, one row per problem in `problems`.
+    /// Priors of shape `[rows, variables, domain_size]`, one row per problem in `problems`: unnormalised
+    /// scores per value (a network's logits, for instance), a higher score being a more likely value.
     fn priors(
         &self,
         problems: &[Arc<Problem>],
@@ -22,12 +24,17 @@ pub(crate) trait PriorHeuristic<B: Backend>: Send + Sync {
     ) -> Tensor<B, 3>;
 }
 
+/// Priors given by a trained network: the batch the network expects is built from the current
+/// assignments and destroy mask, and its output is the priors.
 pub(crate) struct NetworkPrior<N, Ba> {
+    /// The network evaluated at each step.
     network: N,
+    /// Marks the batch type `Ba` the network consumes without storing one.
     _batch: PhantomData<fn() -> Ba>,
 }
 
 impl<N, Ba> NetworkPrior<N, Ba> {
+    /// Wraps a loaded network.
     pub(crate) fn new(network: N) -> Self {
         Self {
             network,
@@ -55,13 +62,15 @@ where
     }
 }
 
-/// Equal logits everywhere, so every in-domain value starts equally likely. No network is
+/// Equal priors everywhere, so every in-domain value starts equally likely. No network is
 /// evaluated and no batch is built.
 pub(crate) struct UniformPrior {
+    /// Number of values per variable in the priors produced.
     domain_size: usize,
 }
 
 impl UniformPrior {
+    /// Uniform priors over `domain_size` values per variable.
     pub(crate) fn new(domain_size: usize) -> Self {
         Self { domain_size }
     }
@@ -114,15 +123,15 @@ mod tests {
         let problems = vec![problem_over(vec![0, 1, 2]), problem_over(vec![0, 1, 2])];
         let assignments = Tensor::<NdArray, 2, Int>::zeros([2, 2], &device);
         let mask = Tensor::<NdArray, 2, Int>::ones([2, 2], &device);
-        let logits = PriorHeuristic::<NdArray>::priors(
+        let priors = PriorHeuristic::<NdArray>::priors(
             &UniformPrior::new(3),
             &problems,
             &assignments,
             &mask,
             &device,
         );
-        assert_eq!(logits.dims(), [2, 2, 3]);
-        let values: Vec<f32> = logits.into_data().to_vec().unwrap();
+        assert_eq!(priors.dims(), [2, 2, 3]);
+        let values: Vec<f32> = priors.into_data().to_vec().unwrap();
         assert!(values.iter().all(|&v| v == 0.0));
     }
 

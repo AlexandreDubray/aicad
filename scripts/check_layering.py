@@ -29,9 +29,10 @@ LAYERS = [
     ("mdd", 3),
     ("sampling", 4),
     ("bp", 5),
-    ("learning", 6),
-    ("nls", 7),
-    ("pyaicad", 8),
+    ("destroy", 6),
+    ("learning", 7),
+    ("local_search", 8),
+    ("pyaicad", 9),
 ]
 RANK = dict(LAYERS)
 

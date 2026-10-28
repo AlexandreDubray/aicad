@@ -1,55 +1,50 @@
-//! Destroy operators for neural local search.
-//! We only implement stochastics versions of the operators
+//! Destroy operators: heuristical way of destroying parts of a full assignment to variables.
+//!
+//! They are shared by the training of the learned models, which masks the variables it asks the
+//! network to predict, and by the local searches, which free them to repair the assignment.
 
 use std::collections::HashSet;
-use std::sync::Arc;
 
 use rand::RngExt;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 
-use crate::learning::consformer::TrainingDestroy;
 use crate::modelling::Problem;
 
-/// Selects, for a single assignment row, the indices of variables to
-/// unassign ("destroy") this iteration.
+// Flooring factor for scoring to avoid division by zero
+const SCORE_EPS: f64 = 1e-8;
+
+/// Trait to implement for a new destroy operator.
 pub(crate) trait DestroyOperator: Send + Sync {
+    /// Returns the index of the variables in `problem` to destroy given the current assignment.
     fn destroy(&self, problem: &Problem, assignment: &[isize], rng: &mut StdRng) -> Vec<usize>;
-
-    /// Called once by `NeuralLocalSearch::run`, before the destroy/repair loop starts, with the
-    /// exact set of problems that run will search over. Stateless operators ignore it.
-    fn on_run_start(&self, _problems: &[Arc<Problem>]) {}
 }
 
-impl<T: DestroyOperator> TrainingDestroy for T {
-    fn select(&self, problem: &Problem, assignment: &[isize], rng: &mut StdRng) -> Vec<usize> {
-        self.destroy(problem, assignment, rng)
-    }
+/// The destroy operators one can choose from, as a plain value that builds the operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum DestroyKind {
+    /// [`RandomDestroy`].
+    #[default]
+    Random,
+    /// [`WorstDestroy`].
+    Worst,
+    /// [`RelatedDestroy`].
+    Related,
 }
 
-/// Hard-violation info for the current assignment: how many currently
-/// unsatisfied constraints each variable participates in, and which
-/// constraints are violated.
-struct ViolationInfo {
-    per_variable: Vec<usize>,
-}
-
-impl ViolationInfo {
-    fn compute(problem: &Problem, assignment: &[isize]) -> Self {
-        let mut per_variable = vec![0usize; problem.number_variables()];
-        for c in problem.iter_constraints() {
-            if !problem[c].is_satisfied(assignment) {
-                for v in problem[c].iter_scope() {
-                    per_variable[v.0] += 1;
-                }
-            }
+impl DestroyKind {
+    /// Builds the operator of this kind that destroys (on average) `fraction` of the free
+    /// variables.
+    pub(crate) fn build(self, fraction: f64) -> Box<dyn DestroyOperator> {
+        match self {
+            DestroyKind::Random => Box::new(RandomDestroy { fraction }),
+            DestroyKind::Worst => Box::new(WorstDestroy { fraction }),
+            DestroyKind::Related => Box::new(RelatedDestroy { fraction }),
         }
-        ViolationInfo { per_variable }
     }
 }
 
 /// Uniformly destroys a `fraction` of the free (domain size > 1) variables.
-/// Corresponds to the original ConsFormer's random subset selection.
 pub(crate) struct RandomDestroy {
     pub fraction: f64,
 }
@@ -76,8 +71,38 @@ pub(crate) struct WorstDestroy {
 
 impl DestroyOperator for WorstDestroy {
     fn destroy(&self, problem: &Problem, assignment: &[isize], rng: &mut StdRng) -> Vec<usize> {
-        let info = ViolationInfo::compute(problem, assignment);
-        sigmoid_select(problem, &info.per_variable, self.fraction, rng)
+        let mut unsat_per_variable = vec![0f64; problem.number_variables()];
+        for c in problem.iter_constraints() {
+            if !problem[c].is_satisfied(assignment) {
+                for v in problem[c].iter_scope() {
+                    unsat_per_variable[v.0] += 1.0;
+                }
+            }
+        }
+        let free = free_variables(problem);
+        if free.is_empty() {
+            return free;
+        }
+
+        let n = free.len() as f64;
+        let values: Vec<f64> = free.iter().map(|&i| unsat_per_variable[i]).collect();
+        let mean = values.iter().sum::<f64>() / n;
+        let std = if free.len() > 1 {
+            (values.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / (n - 1.0)).sqrt()
+        } else {
+            0.0
+        };
+        let probs: Vec<f64> = values
+            .iter()
+            .map(|s| 1.0 / (1.0 + (-(s - mean) / (std + SCORE_EPS)).exp()))
+            .collect();
+        let scale = self.fraction / (probs.iter().sum::<f64>() / n + SCORE_EPS);
+
+        free.into_iter()
+            .zip(probs)
+            .filter(|&(_, p)| rng.random_bool((p * scale).clamp(0.0, 1.0)))
+            .map(|(i, _)| i)
+            .collect()
     }
 }
 
@@ -105,8 +130,7 @@ impl DestroyOperator for RelatedDestroy {
         let avg_scope = (total_scope as f64 / m as f64).max(1.0);
 
         // E[# destroyed] ~= p_constraint * m * avg_scope (upper bound, ignores
-        // overlap between scopes) -- solve for p_constraint so this tracks
-        // fraction * n.
+        // overlap between scopes)
         let p_constraint = (self.fraction * n as f64 / (m as f64 * avg_scope)).clamp(0.0, 1.0);
 
         let mut destroyed = HashSet::new();
@@ -123,6 +147,8 @@ impl DestroyOperator for RelatedDestroy {
     }
 }
 
+/// Returns the variables that can be destroyed in the problem; that is, the variables with domain
+/// size greater than 1.
 fn free_variables(problem: &Problem) -> Vec<usize> {
     problem
         .iter_variables()
@@ -130,40 +156,6 @@ fn free_variables(problem: &Problem) -> Vec<usize> {
         .map(|v| v.0)
         .collect()
 }
-
-fn sigmoid_select(
-    problem: &Problem,
-    scores: &[usize],
-    fraction: f64,
-    rng: &mut StdRng,
-) -> Vec<usize> {
-    let free = free_variables(problem);
-    if free.is_empty() {
-        return free;
-    }
-
-    let n = free.len() as f64;
-    let values: Vec<f64> = free.iter().map(|&i| scores[i] as f64).collect();
-    let mean = values.iter().sum::<f64>() / n;
-    let std = if free.len() > 1 {
-        (values.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / (n - 1.0)).sqrt()
-    } else {
-        0.0
-    };
-    let probs: Vec<f64> = values
-        .iter()
-        .map(|s| 1.0 / (1.0 + (-(s - mean) / (std + SCORE_EPS)).exp()))
-        .collect();
-    let scale = fraction / (probs.iter().sum::<f64>() / n + SCORE_EPS);
-
-    free.into_iter()
-        .zip(probs)
-        .filter(|&(_, p)| rng.random_bool((p * scale).clamp(0.0, 1.0)))
-        .map(|(i, _)| i)
-        .collect()
-}
-
-const SCORE_EPS: f64 = 1e-8;
 
 #[cfg(test)]
 mod tests {

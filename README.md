@@ -43,5 +43,5 @@ Build the extension with `maturin develop` and run the tests with `pytest`.
 
 The Rust crate is the core the Python package is built on: `modelling`, `constraints`, `mdd` and
 `sampling`. It is public so that other solvers can embed the MDD compiler, but it is
-**experimental** and may change between minor versions. The modules above it (`learning`, `nls`,
+**experimental** and may change between minor versions. The modules above it (`learning`, `local_search`,
 the bindings) are private.

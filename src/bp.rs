@@ -275,7 +275,7 @@ mod tests {
     fn belief_propagation_indexes_messages_by_mdd_layer_not_by_global_variable_id() {
         // Regression test for a real out-of-bounds panic hit on Sudoku: `w` sits *before* `x` and
         // `y` in the problem's global variable numbering (mirrors
-        // `crate::nls::decode::tests::destroyed_variables_with_deterministic_rule_destroys_exactly_the_violated_mdds`'s
+        // `crate::local_search::decode::tests::destroyed_variables_with_deterministic_rule_destroys_exactly_the_violated_mdds`'s
         // `_w` pattern, just placed first here instead of last), so x and y's global indices (1, 2)
         // no longer line up with their layer indices in the *2*-layer MDD covering just {x, y}
         // (layers 0, 1). `unclamped_alpha`/`unclamped_beta`/`mdd_local_beliefs` all index the

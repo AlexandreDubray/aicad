@@ -19,7 +19,7 @@
 //! the parallel parts of the library ([`set_num_threads`], [`num_threads`]), a quarter of the
 //! available threads unless set.
 //!
-//! Everything above the core (`learning`, `nls`, the Python bindings) and the helpers below it
+//! Everything above the core (`learning`, `local_search`, the Python bindings) and the helpers below it
 //! are private. Modules only depend on the ones listed before them, which `scripts/check_layering.py`
 //! checks in CI.
 
@@ -31,9 +31,10 @@ pub mod modelling;
 pub mod sampling;
 
 mod bp;
+mod destroy;
 mod diagnostics;
 mod learning;
-mod nls;
+mod local_search;
 mod pyaicad;
 mod utils;
 

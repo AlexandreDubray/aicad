@@ -14,11 +14,12 @@ use burn::tensor::backend::{AutodiffBackend, Backend};
 
 use rand::seq::SliceRandom;
 
+use crate::destroy::DestroyOperator;
 use crate::learning::consformer::architecture::MaskingKind;
 use crate::learning::consformer::{
     ConsFormerBatch, ConsFormerBatcher, ConsFormerConfig, ConsFormerDataConfig, ConsFormerDataset,
     ConsFormerLoss, ConsFormerMddBatch, ConsFormerMddBatcher, ConsFormerMddDataset,
-    ConsFormerMddLoss, ConsFormerMddSample, ConsFormerSample, TrainingDestroy,
+    ConsFormerMddLoss, ConsFormerMddSample, ConsFormerSample,
 };
 use crate::learning::train::{ModelSelection, TrainingConfig, train_model};
 use crate::mdd::MddArena;
@@ -28,7 +29,7 @@ use crate::modelling::Problem;
 use crate::utils::with_rng;
 
 use super::heuristics::{PyMergeHeuristic, PyOrderingHeuristic, PySelectHeuristic};
-use super::nls::PyDestroyKind;
+use super::local_search::PyDestroyKind;
 use super::problem::PyProblem;
 
 #[pyclass]
@@ -389,7 +390,7 @@ fn run_training<B: AutodiffBackend>(
     validation: Option<Vec<Arc<Problem>>>,
     network_config: ConsFormerConfig,
     training_config: TrainingConfig,
-    destroy: Option<Arc<dyn TrainingDestroy>>,
+    destroy: Option<Arc<dyn DestroyOperator>>,
     checkpoint_dir: &Path,
 ) -> PyResult<()> {
     prepare_checkpoint_dir(checkpoint_dir, &network_config)?;

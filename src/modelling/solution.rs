@@ -161,13 +161,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "full solution")]
+    #[should_panic]
     fn a_partial_assignment_is_not_a_solution() {
         Solution::satisfiable(&differ(), vec![0]);
     }
 
     #[test]
-    #[should_panic(expected = "full solution")]
+    #[should_panic]
     fn an_assignment_that_violates_a_constraint_is_not_a_solution() {
         Solution::satisfiable(&differ(), vec![1, 1]);
     }

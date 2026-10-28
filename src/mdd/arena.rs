@@ -24,6 +24,16 @@
 //! inside the key, and building the synthetic variables only from the key, is what lets the arena
 //! serve other domains without change.
 //!
+//! # When to use it
+//!
+//! The arena pays off when the compiled constraints overlap a lot: many small diagrams, one per
+//! constraint, of which most share a shape. When each diagram is large and specific to its
+//! problem, as with several constraints compiled together into one diagram, nothing is shared,
+//! and the arena only adds a lookup and keeps every diagram alive for as long as it lives. Then
+//! the diagrams should be compiled directly into a list owned by the problem, which frees them
+//! as soon as the problem is done. The arena is a choice of the caller, not a requirement of the
+//! compiler.
+//!
 //! # Design notes
 //!
 //! - **A structure serves every ordering of the scope.** The template is always compiled with
@@ -610,9 +620,11 @@ mod tests {
             handles.into_iter().map(|h| h.join().unwrap()).collect()
         });
         assert_eq!(arena.len(), 1);
-        assert!(structures
-            .windows(2)
-            .all(|pair| Arc::ptr_eq(&pair[0], &pair[1])));
+        assert!(
+            structures
+                .windows(2)
+                .all(|pair| Arc::ptr_eq(&pair[0], &pair[1]))
+        );
     }
 
     #[test]

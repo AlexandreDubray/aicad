@@ -60,7 +60,7 @@ pub(crate) struct SatisfactionReport {
 }
 
 impl SatisfactionReport {
-    /// Builds a report for the current batch. Mirrors how `nls::decode::Argmax` turns logits
+    /// Builds a report for the current batch. Mirrors how `local_search::decode::Argmax` turns logits
     /// into an assignment -- only the variables this sample actually masked (destroyed) take the
     /// network's argmax; every other position keeps `batch`'s current/given value regardless of
     /// what the network predicted there. Without this, a raw `logits.argmax(2)` asks the network

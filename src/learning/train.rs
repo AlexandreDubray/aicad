@@ -552,8 +552,8 @@ mod test_horizon_checkpoint_layout {
     use crate::learning::consformer::{
         ConsFormerBatcher, ConsFormerConfig, ConsFormerDataset, ConsFormerLoss,
     };
+    use crate::local_search::load_network;
     use crate::modelling::Problem;
-    use crate::nls::load_network;
 
     /// End-to-end: a horizon checkpoint must be its own self-contained, loadable directory --
     /// `out_dir/epoch_<N>/{config.json, weights.mpk}` -- not just a bare weights file that needs
