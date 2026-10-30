@@ -1,30 +1,150 @@
-//! Loopy belief propagation over a set of compiled MDDs, following Gilles Pesant's "From Support
-//! Propagation to Belief Propagation in Constraint Programming" (JAIR 66, 2019). Each MDD is one
-//! factor/constraint in a factor graph; `probs` (the prior beliefs on the variables, e.g. the output of a network) plays the role of a
-//! permanent unary prior factor on every variable, present every round. The paper's own baseline
-//! has no such prior -- Algorithm 5 resets every variable's marginal to 1 each round -- we reset to
-//! `probs` instead, since without it the prior beliefs would just wash out after a couple of
-//! rounds and BP would degrade to plain (unweighted) counting-based propagation.
+//! Loopy belief propagation over compiled MDDs: refines the per-variable distributions of a
+//! network with what the constraints say about them.
 //!
-//! Notation follows the paper directly:
-//! - `mu_{x -> c}(v)`, Eq. 1: the *cavity* message a variable sends a constraint -- its current
-//!   marginal with that same constraint's own previous contribution divided back out, so a
-//!   constraint never receives its own opinion back as evidence about itself.
-//! - `mu_{c -> x}(v)`, Eq. 2: the message a constraint sends a variable -- weighted counting over
-//!   every tuple consistent with `x=v`, weighted by every *other* scope variable's incoming
-//!   message. `x`'s own message is explicitly excluded from that product.
+//! # Purpose
 //!
-//! For a compiled MDD, "weighted counting consistent with x=v" is exactly a forward/backward (WMC)
-//! pass: `alpha[layer]` accumulates path mass up to `layer` and `beta[layer]` accumulates it from
-//! `layer` to the sink, both weighted edge-by-edge by the current message of whichever variable
-//! owns that layer. Reading off `alpha[layer(x)][node] * beta[layer(x)+1][child]` for every edge
-//! labelled `v` gives `mu_{c -> x}(v)` directly -- *without* multiplying in `x`'s own message,
-//! since layer `layer(x)` is exactly the one being read off, not one folded into alpha or beta.
+//! A network gives every variable $x$ a distribution $q_x$ over its domain (`probs`, the softmax
+//! of its scores). Sampling each variable from $q_x$ alone ignores the constraints, and the values
+//! picked together often violate them. This module computes, for every variable, an approximation
+//! of the distribution of its value *given that the constraints hold*, starting from $q_x$.
+//! Some variables can be `decided`: they are hard evidence (for instance the part of a board that
+//! a destroy/repair step does not resample) and the other variables are refined around them.
 //!
-//! Belief propagation needs *every* variable's local belief from the *same* MDD, every round,
-//! which is an O(edges) computation: one full forward pass and one full backward pass per MDD per
-//! iteration, with every layer's local belief read off the same pair of arrays in a single combined
-//! pass (`mdd_local_beliefs`; the passes themselves live in `crate::mdd::wmc`).
+//! The scheme is the CP-BP framework \[1\], on a factor graph whose factors are the MDDs of the
+//! constraints. Using a network's distribution as a permanent unary factor follows GeAI-BLAnC \[2\],
+//! where it is the `oracle` constraint.
+//!
+//! # How it works
+//!
+//! ## Messages
+//!
+//! Let $c$ be a constraint, compiled to an MDD, with scope $S_c$. Two kinds of messages circulate,
+//! both distributions over the domain of a variable (normalised, which the proportionality signs
+//! below leave implicit):
+//!
+//! - $\mu_{x \to c}$, from a variable to a constraint containing it in its scope: what the rest of
+//!   the problem believes about $x$. It labels the edges of the layer of $x$ in the MDD of $c$: an
+//!   edge with value $v$ gets the weight $\mu_{x \to c}(v)$.
+//! - $\mu_{c \to x}$, from a constraint to a variable of its scope: what $c$ alone says about
+//!   $x$, given what the other variables of its scope say.
+//!
+//! ## The message of a constraint, and how it is computed
+//!
+//! The message of $c$ to $x$ is a weighted count of the solutions of $c$ that give $x$ the value
+//! $v$, each solution being weighted by the messages of the *other* variables (Eq. 2 \[1\]):
+//!
+//! $$\mu_{c \to x}(v) \propto \sum_{\tau \models c,\ \tau(x) = v} \ \prod_{y \in S_c \setminus
+//! x} \mu_{y \to c}(\tau(y)).$$
+//!
+//! The outer sum is over all models of the constraint assigning $v$ to $x$. This corresponds
+//! exactly to the paths of an MDD following the edges labelled with $v$ at the layer of $x$.
+//! The inner product multiplies the messages of all the variables in the constraint's scope,
+//! except $x$. Since the messages from the variables to the constraints are used to weight the
+//! edges of the MDD, this corresponds to considering all the paths passing through edges labelled
+//! $v$ and summing their weight, excluding $x$'s contribution. This is exactly how the
+//! [WMC](crate::mdd::wmc) is computed, see its documentation for the notations.
+//!
+//! Let us consider the message $\mu_{c \to x}(v)$, with $E_{x,v}$ the set of edges labelled with
+//! $v$ in the layer of $x$. Let $\alpha(u)$ be the sum of the weights of the paths from the root
+//! to a node $u$ and $\beta(u)$ the sum of those from $u$ to the sink, with the current labels.
+//! Then, before normalisation,
+//!
+//! $$\mu_{c \to x}(v) = \sum_{e \in E_{x,v}} \alpha(\mathrm{from}(e))\beta(\mathrm{to}(e)).$$
+//!
+//! $x$'s contribution is excluded without any extra work: $\alpha$ only covers the layers above
+//! the layer of $x$ and $\beta$ only the layers below it, so the labels of that layer never enter.
+//! For the same reason this is the gradient of the WMC with respect to the labels of the layer
+//! of $x$, and a single forward and a single backward pass give the messages to *all* the
+//! variables of the scope (`mdd_local_beliefs`, which normalises the gradient returned by
+//! [`log_wmc_and_gradient`]).
+//!
+//! The message is a likelihood. If the variables of the scope are independent with the
+//! distributions $\mu_{y \to c}$, then $\mu_{c \to x}(v) \propto \Pr[c \text{ holds} \mid x = v]$:
+//! how much of the remaining scope can still complete a solution if $x = v$. It is only the
+//! evidence brought by $c$, the label $\mu_{x \to c}(v)$ (what the variable already believes
+//! about itself) being left out of it. Where the support propagation of classical CP only keeps
+//! whether this is positive, BP keeps how large it is.
+//!
+//! ## One round
+//!
+//! The edges of every MDD start labelled with the priors, $\mu_{x \to c} = q_x$. A round has
+//! three steps:
+//!
+//! 1. **Compute the messages from the constraints to the variables.** Each MDD runs its
+//!    forward and backward passes with its current labels and reads $\mu_{c \to x}$ for every
+//!    variable of its scope (`mdd_local_beliefs`).
+//! 2. **Update the marginals.** A variable multiplies its prior by the messages of all the
+//!    constraints that contain it, in log-space:
+//!    $$m_x(v) \propto q_x(v) \prod_{c \ni x} \mu_{c \to x}(v).$$
+//!    The prior is the evidence from outside the factor graph and the messages are the evidence
+//!    of the constraints, each of which is counted once.
+//! 3. **Relabel the edges of the MDDs.** The variable tells each of its constraints what the
+//!    others think, with that constraint's own message divided back out (Eq. 1, the *cavity*
+//!    message, \[1\]):
+//!    $$\mu_{x \to c}(v) \propto \frac{m_x(v)}{\mu_{c \to x}(v)} = q_x(v) \prod_{c^\prime \neq
+//!    c} \mu_{c^\prime \to x}(v).$$
+//!    The product is over the other constraints $c^\prime \neq c$ that contain $x$. Without the
+//!    division, $c$ would receive its own opinion back as new evidence and count it twice. The new
+//!    messages label the layer of $x$ in the MDD of $c$ for the next round.
+//!
+//! After `iterations` rounds the marginals $m_x$ are returned. With no round they are the priors.
+//!
+//! ## Decided variables
+//!
+//! A `decided` variable has the one-hot prior $\mathbb{1}[v = a_x]$ at the value $a_x$ of
+//! `assignment`. It is never updated and always sends that one-hot message, so in every MDD the
+//! paths that give it another value have weight zero: the evidence restricts what the other
+//! variables of the constraint can say.
+//!
+//! # Design notes
+//!
+//! - **The prior is permanent.** Pesant's baseline resets every marginal to uniform at each round,
+//!   which is the same as having no prior. We reset to the prior instead, as a unary factor that
+//!   sends the same message every round. Without it, the network's distribution would wash out
+//!   after a couple of rounds and BP would reduce to counting.
+//! - **No domain filtering.** The CP-BP framework interleaves BP with constraint propagation,
+//!   which removes the values that cannot be part of a solution. Here nothing is removed and
+//!   nothing is propagated between rounds: a value that a constraint rules out gets a zero
+//!   message and its marginal becomes zero, but it stays in the domain. The only hard evidence is
+//!   the `decided` variables.
+//! - **Every constraint counts equally**, as in the paper: there is no weight per MDD, nor on the
+//!   prior.
+//! - **Exact for one constraint, approximate for several.** With a single constraint, one round
+//!   gives the marginal $\Pr[x = v \mid c]$ under the priors. With several, the product in step 2
+//!   treats the constraints as independent evidence, which they are not when their scopes
+//!   overlap, hence an approximation. There is no convergence check: a handful of rounds is meant
+//!   to run inside the search, and Pesant observes that a few rounds capture most of the benefit,
+//!   the distance to the true marginals sometimes growing again with more.
+//! - **Numerics.** Products are accumulated as sums of logarithms, with `safe_ln` mapping a zero
+//!   to a very small number. A constraint with no solution of positive weight under the current
+//!   labels has no evidence to give and sends a uniform message (`normalize_or_uniform`).
+//! - **Indexing.** The messages of an MDD are indexed by its layers, not by the global index of
+//!   the variable: a variable owns a different layer in each of its constraints, which is what
+//!   `build_var_to_mdds` records.
+//!
+//! # Example
+//!
+//! Take $x \ne y$ over $\lbrace 0, 1 \rbrace$ with $q_x = q_y = (0.9, 0.1)$. The MDD has two
+//! paths, $x = 0, y = 1$ and $x = 1, y = 0$, and all the edges are labelled with the priors.
+//!
+//! - **Messages.** Reading the edges of $x$'s layer, $\alpha$ is 1 at the root and $\beta$ is the
+//!   label of the $y$ edge below, so $\mu_{c \to x} \propto (q_y(1), q_y(0)) = (0.1, 0.9)$, and
+//!   the same for $y$. The constraint pushes each variable away from the value that both favour.
+//! - **Marginals.** $m_x \propto (0.9 \cdot 0.1, 0.1 \cdot 0.9) = (0.09, 0.09)$, that is
+//!   $(0.5, 0.5)$, and the same for $y$.
+//! - **Relabelling.** $m_x / \mu_{c \to x} = (0.5 / 0.1, 0.5 / 0.9) \propto (0.9, 0.1) = q_x$: with
+//!   one constraint, the cavity message is the prior, so further rounds change nothing.
+//!
+//! The test `single_not_equals_mdd_with_symmetric_conflicting_prior_becomes_uniform_after_one_iteration`
+//! checks these marginals.
+//!
+//! # References
+//!
+//! \[1\] "From Support Propagation to Belief Propagation in Constraint Programming" - G. Pesant,
+//! JAIR 2019
+//!
+//! \[2\] "Constrained Sequential Inference in Machine Learning using Constraint Programming" - V.
+//! Manibod et al., IJCAI 2025
 
 use crate::mdd::wmc::log_wmc_and_gradient;
 use crate::mdd::{CompiledConstraint, Mdd};
@@ -81,23 +201,15 @@ fn log_combine_and_normalize(log_combined: Vec<f64>) -> Vec<f64> {
 }
 
 /// A one-hot distribution: all mass on `value`. Used as the permanent "message"/prior for a
-/// `decided` variable -- hard evidence from outside this belief-propagation call (e.g. the rest of
-/// a destroy/repair board that isn't being resampled this round), rather than something for the
-/// MDDs to keep refining.
+/// `decided` variable.
 fn one_hot(value: ValueIndex, domain_size: usize) -> Vec<f64> {
     let mut weights = vec![0.0; domain_size];
     weights[value.0] = 1.0;
     weights
 }
 
-/// One MDD's local belief for every variable in its scope -- Eq. 2, with `x`'s own message
-/// excluded from the product (its own layer's edges carry only structural existence; everything
-/// else is already folded into the forward/backward pass via every *other* layer's weighting).
-/// `crate::mdd::wmc::log_wmc_and_gradient`'s `d(ln WMC)/d(messages[layer][value])` is exactly this
-/// quantity before normalization (it differs from `d(WMC)/d(messages[layer][value])` by a factor
-/// that is the same for every value of the layer) -- see that function's doc. Returned as one
-/// probability vector per layer, indexed the same way as `mdd.decision_at_layer` (and the same way
-/// `messages` itself is indexed -- by layer within this MDD, not by global variable id).
+/// One MDD's local belief for every variable in its scope.
+/// Returned as one probability vector per layer, indexed the same way as `mdd.decision_at_layer` .
 fn mdd_local_beliefs(mdd: &Mdd, messages: &[Vec<f64>]) -> Vec<Vec<f64>> {
     log_wmc_and_gradient(mdd, messages)
         .1
@@ -107,10 +219,9 @@ fn mdd_local_beliefs(mdd: &Mdd, messages: &[Vec<f64>]) -> Vec<Vec<f64>> {
         .collect()
 }
 
-/// Eq. 1's cavity message: `marginal` with `local_belief` (that same constraint's own previous
-/// contribution) divided back out, in log-space via `safe_ln` so a genuinely zero local belief
-/// doesn't produce infinities -- it just leaves that value's message at (numerically) zero, same
-/// convention as the rest of this module's WMC machinery.
+/// Cavity message sent from the variables to the constraints. This is the marginals of the
+/// variables with the constraint's own contribution divided back out. This division is made in
+/// log-space via `safe_ln` so local belief that are zero don't lead to infinities.
 fn cavity_message(marginal: &[f64], local_belief: &[f64]) -> Vec<f64> {
     let weights: Vec<f64> = marginal
         .iter()
@@ -120,29 +231,9 @@ fn cavity_message(marginal: &[f64], local_belief: &[f64]) -> Vec<f64> {
     normalize_or_uniform(weights, marginal.len())
 }
 
-/// Loopy belief propagation over `mdds`, seeded from and permanently anchored to `probs` (see the
-/// module doc). Runs a fixed `iterations` rounds, synchronous/flooding-style -- every constraint's
-/// local beliefs this round come from messages computed last round, matching Pesant's Algorithm 5 --
-/// with no convergence check: this is meant to run a handful of iterations inside search, and
-/// Pesant's own empirical results (Section 6) show a few iterations already capture most of the
-/// benefit, with KL-divergence to the true marginals sometimes *increasing* again after many more.
-///
-/// No per-MDD weights: every constraint counts equally, matching the paper's plain (unweighted)
-/// formulation.
-///
-/// `assignment`/`decided` supply hard evidence exactly the way `partial_alpha_at`/`partial_beta_at`
-/// do: a `decided` variable is clamped to `assignment`'s value for the *entire* run -- its outgoing
-/// message to every MDD is a permanent one-hot rather than something derived from a cavity message,
-/// and it never receives an updated marginal from the MDDs' local beliefs about it (its returned
-/// marginal is just that same one-hot). This is what lets belief propagation be dropped into a
-/// destroy/repair loop: the variables *not* being resampled this round are folded in as fixed
-/// context for the ones that are, instead of every call re-solving the whole board from scratch as
-/// if nothing were already decided. An all-`false` `decided` recovers the plain, evidence-free
-/// marginal (nothing clamped, same as this function's first version).
-///
-/// Returns one combined marginal per variable (`probs[var]`'s one-hot at `assignment[var]` for a
-/// `decided` variable; `probs[var]` itself, unchanged, for an undecided one that belongs to no MDD
-/// or when `iterations == 0`).
+/// Runs the belief propagation over the `mdds` and the priors `probs` for `iterations` steps.
+/// The current assignment and the decided values are given as parameter to generate one-hot
+/// distributions for these variables.
 pub(crate) fn belief_propagation(
     mdds: &[CompiledConstraint],
     probs: &[Vec<f64>],
@@ -192,16 +283,12 @@ pub(crate) fn belief_propagation(
 
     for _ in 0..iterations {
         // Every constraint computes its local beliefs for every variable in its scope from this
-        // round's messages, in one combined forward-backward pass each (Algorithm 4's
-        // `updateBelief`).
+        // round's messages, in one combined forward-backward pass each.
         for (mdd_index, mdd) in mdds.iter().enumerate() {
             local_beliefs[mdd_index] = mdd_local_beliefs(mdd, &messages[mdd_index]);
         }
 
-        // Reset every variable's marginal to its prior, then accumulate every MDD's local belief
-        // about it in log-space (Algorithm 1's `receiveMessage`, applied once per MDD membership)
-        // -- except for a `decided` variable, which stays exactly at its one-hot prior: it's fixed
-        // evidence, not something for the MDDs to keep refining.
+        // Reset every variable's marginal to its prior, then accumulate every MDD's local belief.
         let mut log_marginal: Vec<Vec<f64>> = priors
             .iter()
             .map(|p| p.iter().map(|&v| safe_ln(v)).collect())
@@ -217,19 +304,13 @@ pub(crate) fn belief_propagation(
                 }
             }
         }
+        // Updates the marginals for the variables.
         marginal = log_marginal
             .into_iter()
             .map(log_combine_and_normalize)
             .collect();
 
-        // Every variable sends each of its constraints a fresh cavity message for next round
-        // (Eq. 1), built from this round's marginal and this round's local belief -- except a
-        // `decided` variable, whose outgoing message is always its fixed one-hot prior rather than
-        // a cavity message: dividing a one-hot marginal by a constraint's local belief could hit a
-        // genuine zero there (evidence that's locally infeasible under this MDD given some *other*
-        // decided variable) and blow up `cavity_message`'s `safe_ln` division for no benefit -- a
-        // decided variable's outgoing message doesn't depend on what any MDD currently believes
-        // about it.
+        // Re-weight the MDDs' edges with the new marginals.
         for var in 0..num_vars {
             for &(mdd_index, layer) in &var_to_mdds[var] {
                 messages[mdd_index][layer] = if decided[var] {
