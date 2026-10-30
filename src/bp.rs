@@ -169,6 +169,58 @@ fn normalize_or_uniform(mut weights: Vec<f64>, domain_size: usize) -> Vec<f64> {
     weights
 }
 
+/// Panics, with a message naming what is wrong, if the arguments of `belief_propagation` do not
+/// fit together. Without it the same mistakes surface as out-of-bounds indexing deep in the
+/// passes, which does not say which argument was wrong.
+fn check_inputs(
+    mdds: &[CompiledConstraint],
+    probs: &[Vec<f64>],
+    assignment: &[ValueIndex],
+    decided: &[bool],
+) {
+    let num_vars = probs.len();
+    assert_eq!(
+        assignment.len(),
+        num_vars,
+        "belief_propagation: `assignment` has {} entries for {num_vars} variables",
+        assignment.len()
+    );
+    assert_eq!(
+        decided.len(),
+        num_vars,
+        "belief_propagation: `decided` has {} entries for {num_vars} variables",
+        decided.len()
+    );
+    for (var, row) in probs.iter().enumerate() {
+        assert!(
+            !row.is_empty(),
+            "belief_propagation: the prior of variable {var} is empty"
+        );
+        assert!(
+            row.iter().all(|p| p.is_finite() && *p >= 0.0),
+            "belief_propagation: the prior of variable {var} has a negative or non-finite \
+             weight: {row:?}"
+        );
+        assert!(
+            !decided[var] || assignment[var].0 < row.len(),
+            "belief_propagation: variable {var} is decided at value {} but its prior has only {} \
+             values",
+            assignment[var].0,
+            row.len()
+        );
+    }
+    for (mdd_index, mdd) in mdds.iter().enumerate() {
+        for layer in 0..mdd.number_decisions() {
+            let var = mdd.decision_at_layer(layer).0;
+            assert!(
+                var < num_vars,
+                "belief_propagation: MDD {mdd_index} branches on variable {var} but only \
+                 {num_vars} priors were given"
+            );
+        }
+    }
+}
+
 /// For each global variable, every `(mdd_index, layer)` pair where that MDD has this variable in
 /// its scope, at that layer. Used by `belief_propagation` (multi-round marginal aggregation)
 /// to know "which MDDs does this variable belong to, and at what layer in each".
@@ -234,6 +286,19 @@ fn cavity_message(marginal: &[f64], local_belief: &[f64]) -> Vec<f64> {
 /// Runs the belief propagation over the `mdds` and the priors `probs` for `iterations` steps.
 /// The current assignment and the decided values are given as parameter to generate one-hot
 /// distributions for these variables.
+///
+/// The MDDs are expected to be satisfiable. An unsatisfiable one, like a constraint that the
+/// decided variables make infeasible, has no solution to count: it sends a uniform message, that
+/// is no information, and does not make the call fail.
+///
+/// # Panics
+///
+/// - If `assignment` or `decided` does not have one entry per row of `probs`.
+/// - If a row of `probs` is empty or holds a negative or non-finite weight.
+/// - If a `decided` variable has a value outside its row of `probs`.
+/// - If an MDD branches on a variable that has no row in `probs`.
+/// - If a row of `probs` is shorter than the largest value its variable takes in an MDD (see
+///   `crate::mdd::wmc::log_wmc_and_gradient`).
 pub(crate) fn belief_propagation(
     mdds: &[CompiledConstraint],
     probs: &[Vec<f64>],
@@ -242,6 +307,7 @@ pub(crate) fn belief_propagation(
     iterations: usize,
 ) -> Vec<Vec<f64>> {
     let num_vars = probs.len();
+    check_inputs(mdds, probs, assignment, decided);
     let var_to_mdds = build_var_to_mdds(mdds, num_vars);
 
     // The permanent prior for each variable: the prior belief for one that's still free,
@@ -328,12 +394,14 @@ pub(crate) fn belief_propagation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constraints::{gcc, not_equals};
+    use crate::constraints::{all_different, gcc, not_equals, sum};
     use crate::mdd::Compiler;
     use crate::mdd::heuristics::{
         CompilationHeuristic, MergeHeuristic, OrderingHeuristic, SelectHeuristic,
     };
     use crate::modelling::{ConstraintIndex, Problem};
+    use rand::rngs::StdRng;
+    use rand::{RngExt, SeedableRng};
     use std::sync::Arc;
 
     /// Same helper as the NLS decode tests -- duplicated locally rather than exposed across
@@ -503,6 +571,211 @@ mod tests {
                         (marginals[0][d] - probs[0][d]).abs() < 1e-6,
                         "count={count}, iterations={iterations}, d={d}, marginals={marginals:?}"
                     );
+                }
+            }
+        }
+    }
+
+    // ---- Input checks ----
+
+    /// `x != y` over `{0, 1}` and the arguments of a valid call on it, for the tests of the checks.
+    fn not_equals_inputs() -> (Vec<CompiledConstraint>, Vec<Vec<f64>>) {
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1], None);
+        let y = problem.add_variable(vec![0, 1], None);
+        not_equals(&mut problem, x, y);
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        (
+            vec![build_mdd(problem, &constraints)],
+            vec![vec![0.5, 0.5], vec![0.5, 0.5]],
+        )
+    }
+
+    #[test]
+    #[should_panic(expected = "`assignment` has 1 entries for 2 variables")]
+    fn an_assignment_of_the_wrong_length_panics() {
+        let (mdds, probs) = not_equals_inputs();
+        belief_propagation(&mdds, &probs, &[ValueIndex(0)], &[false; 2], 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "`decided` has 3 entries for 2 variables")]
+    fn a_decided_mask_of_the_wrong_length_panics() {
+        let (mdds, probs) = not_equals_inputs();
+        belief_propagation(&mdds, &probs, &[ValueIndex(0); 2], &[false; 3], 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "the prior of variable 1 is empty")]
+    fn an_empty_prior_panics() {
+        let (mdds, mut probs) = not_equals_inputs();
+        probs[1] = vec![];
+        belief_propagation(&mdds, &probs, &[ValueIndex(0); 2], &[false; 2], 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "the prior of variable 0 has a negative or non-finite weight")]
+    fn a_negative_prior_weight_panics() {
+        let (mdds, mut probs) = not_equals_inputs();
+        probs[0] = vec![1.5, -0.5];
+        belief_propagation(&mdds, &probs, &[ValueIndex(0); 2], &[false; 2], 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "the prior of variable 0 has a negative or non-finite weight")]
+    fn a_nan_prior_weight_panics() {
+        let (mdds, mut probs) = not_equals_inputs();
+        probs[0] = vec![f64::NAN, 0.5];
+        belief_propagation(&mdds, &probs, &[ValueIndex(0); 2], &[false; 2], 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "variable 1 is decided at value 2 but its prior has only 2 values")]
+    fn a_decided_value_outside_its_prior_panics() {
+        let (mdds, probs) = not_equals_inputs();
+        belief_propagation(
+            &mdds,
+            &probs,
+            &[ValueIndex(0), ValueIndex(2)],
+            &[false, true],
+            1,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "MDD 0 branches on variable 1 but only 1 priors were given")]
+    fn an_mdd_over_a_variable_without_prior_panics() {
+        let (mdds, probs) = not_equals_inputs();
+        belief_propagation(&mdds, &probs[..1], &[ValueIndex(0)], &[false], 1);
+    }
+
+    #[test]
+    fn an_unsatisfiable_mdd_sends_no_information() {
+        // x != y with both variables decided at 0: the evidence makes the constraint infeasible,
+        // so every local belief is the uniform fallback, the call neither fails nor produces a NaN,
+        // and the decided variables stay put.
+        let (mdds, probs) = not_equals_inputs();
+        let marginals = belief_propagation(&mdds, &probs, &[ValueIndex(0); 2], &[true, true], 2);
+        for marginal in &marginals {
+            assert!((marginal[0] - 1.0).abs() < 1e-12, "{marginals:?}");
+            assert!(marginal[1] < 1e-12, "{marginals:?}");
+        }
+    }
+
+    // ---- Exactness for a single constraint ----
+
+    /// The distribution of every variable given that `problem` holds, with independent variables
+    /// distributed as `priors`, by enumerating all the assignments. The reference for the
+    /// exactness of belief propagation on a single constraint.
+    fn exact_marginals(problem: &Problem, priors: &[Vec<f64>]) -> Vec<Vec<f64>> {
+        let sizes: Vec<usize> = priors.iter().map(Vec::len).collect();
+        let mut marginals: Vec<Vec<f64>> = sizes.iter().map(|&n| vec![0.0; n]).collect();
+        let mut assignment = vec![0isize; sizes.len()];
+        loop {
+            if problem.is_solution(&assignment) {
+                let weight: f64 = assignment
+                    .iter()
+                    .enumerate()
+                    .map(|(var, &value)| priors[var][value as usize])
+                    .product();
+                for (var, &value) in assignment.iter().enumerate() {
+                    marginals[var][value as usize] += weight;
+                }
+            }
+            // Next assignment, like an odometer.
+            let mut var = 0;
+            while var < sizes.len() {
+                assignment[var] += 1;
+                if (assignment[var] as usize) < sizes[var] {
+                    break;
+                }
+                assignment[var] = 0;
+                var += 1;
+            }
+            if var == sizes.len() {
+                break;
+            }
+        }
+        marginals
+            .into_iter()
+            .map(|row| {
+                let total: f64 = row.iter().sum();
+                row.into_iter().map(|w| w / total).collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn with_a_single_constraint_one_round_gives_the_exact_marginals() {
+        // With one constraint there is no loop in the factor graph, so the marginals are the
+        // exact distribution of each variable given that the constraint holds. Checked against
+        // enumeration, on random priors, with and without a decided variable, and on a variable
+        // outside the scope, whose marginal is its prior. Further rounds change nothing: the
+        // cavity message of a lone constraint is the prior.
+        type Build = fn(&mut Problem) -> Vec<crate::modelling::VariableIndex>;
+        let cases: [(&str, Build); 3] = [
+            ("all_different", |problem| {
+                let vars = problem.add_variables(4, vec![0, 1, 2], None);
+                all_different(problem, vars[..3].to_vec());
+                vars
+            }),
+            ("sum", |problem| {
+                let vars = problem.add_variables(4, vec![0, 1, 2], None);
+                sum(problem, vars[..3].to_vec(), 3);
+                vars
+            }),
+            ("gcc", |problem| {
+                let vars = problem.add_variables(4, vec![0, 1, 2], None);
+                gcc(problem, vars.clone(), vec![(0, 1, 2), (1, 0, 1), (2, 1, 3)]);
+                vars
+            }),
+        ];
+
+        let mut rng = StdRng::seed_from_u64(7);
+        for (name, build) in cases {
+            let mut problem = Problem::default();
+            build(&mut problem);
+            let problem = Arc::new(problem);
+            let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+            let mdds = vec![build_mdd(problem.clone(), &constraints)];
+            let n = problem.number_variables();
+
+            for decide_first in [false, true] {
+                for _ in 0..10 {
+                    let probs: Vec<Vec<f64>> = (0..n)
+                        .map(|_| {
+                            let weights: Vec<f64> =
+                                (0..3).map(|_| rng.random_range(0.05..1.0)).collect();
+                            let total: f64 = weights.iter().sum();
+                            weights.into_iter().map(|w| w / total).collect()
+                        })
+                        .collect();
+                    // Variable 0 decided at 1, which every case can complete to a solution.
+                    let mut assignment = vec![ValueIndex(0); n];
+                    let mut decided = vec![false; n];
+                    let mut reference_priors = probs.clone();
+                    if decide_first {
+                        assignment[0] = ValueIndex(1);
+                        decided[0] = true;
+                        reference_priors[0] = one_hot(ValueIndex(1), 3);
+                    }
+                    let expected = exact_marginals(&problem, &reference_priors);
+
+                    for iterations in [1, 3] {
+                        let marginals =
+                            belief_propagation(&mdds, &probs, &assignment, &decided, iterations);
+                        for var in 0..n {
+                            for value in 0..3 {
+                                assert!(
+                                    (marginals[var][value] - expected[var][value]).abs() < 1e-9,
+                                    "{name}, decided={decide_first}, iterations={iterations}, \
+                                     variable {var}, value {value}: got {marginals:?}, \
+                                     expected {expected:?}"
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }
