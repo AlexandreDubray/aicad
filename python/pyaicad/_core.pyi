@@ -78,10 +78,6 @@ class PyConsFormerConfig:
 class PyTrainingConfig:
     def __init__(self, **kwargs: Any) -> None: ...
 
-class PyModelSelection:
-    Loss: "PyModelSelection"
-    ConstraintSatisfaction: "PyModelSelection"
-
 class PyNetworkKind:
     ConsFormer: "PyNetworkKind"
 

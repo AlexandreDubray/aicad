@@ -110,10 +110,6 @@ _DESTROY = {
     "worst": _core.PyDestroyKind.Worst,
     "related": _core.PyDestroyKind.Related,
 }
-_SELECTION = {
-    "loss": _core.PyModelSelection.Loss,
-    "satisfaction": _core.PyModelSelection.ConstraintSatisfaction,
-}
 
 
 @dataclass(frozen=True)
@@ -151,7 +147,6 @@ class Training:
     epochs: int = 10
     batch_size: int = 32
     validation_interval: int = 10
-    selection: str = "loss"  # which network is kept: "loss" or "satisfaction"
     beta_1: float = 0.9
     beta_2: float = 0.999
     epsilon: float = 1e-5
@@ -166,8 +161,6 @@ class Training:
     destroy: str = "random"  # which variables are re-predicted in a training step; "consformer" only
 
     def __post_init__(self) -> None:
-        if self.selection not in _SELECTION:
-            raise ValueError(f"selection must be one of {sorted(_SELECTION)}, got {self.selection!r}")
         if self.destroy not in _DESTROY:
             raise ValueError(f"destroy must be one of {sorted(_DESTROY)}, got {self.destroy!r}")
 
@@ -323,7 +316,6 @@ def _native_training(t: Training) -> Any:
         num_epochs=t.epochs,
         batch_size=t.batch_size,
         validation_interval=t.validation_interval,
-        model_selection=_SELECTION[t.selection],
         beta_1=t.beta_1,
         beta_2=t.beta_2,
         epsilon=t.epsilon,
@@ -349,7 +341,7 @@ def fit(
 ) -> Checkpoint:
     """Trains a network and keeps the best one found in ``checkpoint_dir``.
 
-    The best network (as judged on the validation set by the recipe's ``selection``) is written
+    The network with the lowest loss on the validation set is written
     to ``checkpoint_dir`` during training, so an interrupted run still leaves a usable one.
 
     Args:

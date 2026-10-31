@@ -44,8 +44,6 @@ def test_recipe_replace_routes_names():
         r.replace(epoch=3)
     with pytest.raises(ValueError):
         Recipe.named("nope")
-    with pytest.raises(ValueError):
-        r.replace(selection="nope")
 
 
 def test_destroy_is_a_training_setting():

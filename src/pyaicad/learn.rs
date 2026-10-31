@@ -18,7 +18,7 @@ use crate::learning::consformer::{
     ConsFormerBatch, ConsFormerBatcher, ConsFormerConfig, ConsFormerDataset, ConsFormerLoss,
     ConsFormerSample, DecomposedMddLoss,
 };
-use crate::learning::train::{ModelSelection, TrainingConfig, train_model};
+use crate::learning::train::{TrainingConfig, train_model};
 use crate::mdd::arena::MddCompilationConfig;
 use crate::mdd::heuristics::MergeHeuristic;
 use crate::modelling::Problem;
@@ -119,29 +119,12 @@ impl From<&PyConsFormerConfig> for ConsFormerConfig {
     }
 }
 
-#[pyclass(from_py_object)]
-#[derive(Clone)]
-pub enum PyModelSelection {
-    Loss,
-    ConstraintSatisfaction,
-}
-
-impl From<&PyModelSelection> for ModelSelection {
-    fn from(c: &PyModelSelection) -> Self {
-        match c {
-            PyModelSelection::Loss => Self::Loss,
-            PyModelSelection::ConstraintSatisfaction => Self::ConstraintSatisfaction,
-        }
-    }
-}
-
 #[pyclass]
 pub struct PyTrainingConfig {
     pub lr: f64,
     pub num_epochs: usize,
     pub batch_size: usize,
     pub validation_interval: usize,
-    pub model_selection: PyModelSelection,
     /// Adam's first moment (gradient mean) decay rate.
     pub beta_1: f64,
     /// Adam's second moment (gradient variance) decay rate.
@@ -165,11 +148,11 @@ pub struct PyTrainingConfig {
     pub save_horizons: bool,
     /// How many horizon checkpoints to save across `[0, num_epochs]` when `save_horizons` is set.
     pub num_checkpoints: usize,
-    /// Stop training once `model_selection`'s score hasn't improved by more than
+    /// Stop training once the validation loss hasn't improved by more than
     /// `early_stopping_min_delta` for this many consecutive validation checks. `None` disables
     /// early stopping.
     pub early_stopping_patience: Option<usize>,
-    /// How much `model_selection`'s score must improve to count as progress rather than
+    /// How much the validation loss must improve to count as progress rather than
     /// stagnation. Only used when `early_stopping_patience` is set.
     pub early_stopping_min_delta: f64,
     pub destroy_kind: PyDestroyKind,
@@ -179,7 +162,7 @@ pub struct PyTrainingConfig {
 impl PyTrainingConfig {
     #[new]
     #[pyo3(signature = (lr=3e-4, num_epochs=10, batch_size=32, validation_interval=10,
-            model_selection=PyModelSelection::Loss, beta_1=0.9, beta_2=0.999, epsilon=1e-5,
+            beta_1=0.9, beta_2=0.999, epsilon=1e-5,
             amsgrad=false, weight_decay=None, grad_clip_norm=None, grad_clip_value=None,
             save_horizons=false, num_checkpoints=15, early_stopping_patience=None,
             early_stopping_min_delta=1e-4, destroy_kind=PyDestroyKind::Random))]
@@ -189,7 +172,6 @@ impl PyTrainingConfig {
         num_epochs: usize,
         batch_size: usize,
         validation_interval: usize,
-        model_selection: PyModelSelection,
         beta_1: f64,
         beta_2: f64,
         epsilon: f64,
@@ -208,7 +190,6 @@ impl PyTrainingConfig {
             num_epochs,
             batch_size,
             validation_interval,
-            model_selection,
             beta_1,
             beta_2,
             epsilon,
@@ -232,7 +213,6 @@ impl From<&PyTrainingConfig> for TrainingConfig {
             num_epochs: c.num_epochs,
             batch_size: c.batch_size,
             validation_interval: c.validation_interval,
-            model_selection: ModelSelection::from(&c.model_selection),
             beta_1: c.beta_1,
             beta_2: c.beta_2,
             epsilon: c.epsilon,
@@ -306,7 +286,7 @@ macro_rules! dispatch_backend {
 type ProblemSplit = (Vec<Arc<Problem>>, Vec<Arc<Problem>>, Vec<Arc<Problem>>);
 
 /// Splits `problems` into a `(all, train, validation)` triple: `all` is an unshuffled clone (the
-/// full problem set that `train_model` wants for e.g. constraint-satisfaction model selection),
+/// full problem set that `train_model` hands to the network and the loss to prepare),
 /// while `train`/`validation` are a random 80/20 split of a shuffled copy. Shared by every
 /// `run_training_*` function so the split logic can't drift between recipes.
 fn split_train_validation(

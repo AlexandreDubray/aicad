@@ -11,8 +11,7 @@ mod threads;
 pub(crate) use compiler::{PyCompiler, PyMdd};
 pub(crate) use heuristics::{PyMergeHeuristic, PyOrderingHeuristic, PySelectHeuristic};
 pub(crate) use learn::{
-    PyConsFormerConfig, PyModelSelection, PyTrainingConfig, set_seed, train_consformer,
-    train_consformer_mdd,
+    PyConsFormerConfig, PyTrainingConfig, set_seed, train_consformer, train_consformer_mdd,
 };
 pub(crate) use local_search::{
     PyDecodeKind, PyDestroyKind, PyNetworkKind, PyPriorKind, PySolution, PySolveConfig, PyStatus,
@@ -55,7 +54,6 @@ fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMergeHeuristic>()?;
     m.add_class::<PySelectHeuristic>()?;
     m.add_class::<PyConsFormerConfig>()?;
-    m.add_class::<PyModelSelection>()?;
     m.add_class::<PyTrainingConfig>()?;
     m.add_class::<PyNetworkKind>()?;
     m.add_class::<PyDestroyKind>()?;

@@ -18,15 +18,6 @@ use crate::learning::monitoring::SatisfactionReport;
 use crate::learning::{Batch, Loss, Network, NetworkConfig};
 use crate::modelling::Problem;
 
-/// Heuristic to select the best model during training
-#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
-pub(crate) enum ModelSelection {
-    /// Use the best training loss
-    Loss,
-    /// Use the best constraint satisfaction ratio
-    ConstraintSatisfaction,
-}
-
 /// Configuration of the training loop
 #[derive(Config, Debug)]
 pub(crate) struct TrainingConfig {
@@ -39,12 +30,10 @@ pub(crate) struct TrainingConfig {
     /// Batch size
     #[config(default = 512)]
     pub batch_size: usize,
-    /// How often (in epochs) to evaluate on the validation set and update
-    /// the best-so-far model.
+    /// How often (in epochs) to evaluate the loss on the validation set and update the best-so-far
+    /// model, the one with the lowest validation loss.
     #[config(default = 10)]
     pub validation_interval: usize,
-    /// How to evaluate the best model found so far
-    pub model_selection: ModelSelection,
     /// Adam's first moment (gradient mean) decay rate.
     #[config(default = 0.9)]
     pub beta_1: f64,
@@ -84,12 +73,12 @@ pub(crate) struct TrainingConfig {
     /// training changes the model much more per epoch than late training does.
     #[config(default = 15)]
     pub num_checkpoints: usize,
-    /// Stop training once `model_selection`'s score hasn't improved by more than
+    /// Stop training once the validation loss hasn't improved by more than
     /// `early_stopping_min_delta` for this many consecutive validation checks. `None` (the
     /// default) disables early stopping, matching the previous always-run-`num_epochs` behavior.
     #[config(default = "None")]
     pub early_stopping_patience: Option<usize>,
-    /// How much `model_selection`'s score must improve over `best_score` at a validation check to
+    /// How much the validation loss must drop below `best_score` at a validation check to
     /// count as progress rather than stagnation. Only used when `early_stopping_patience` is set.
     #[config(default = 1e-4)]
     pub early_stopping_min_delta: f64,
@@ -335,7 +324,6 @@ where
         if (epoch + 1) % training.validation_interval == 0 {
             // Pass the network in validation mode
             let valid_network = network.valid();
-            let mut valid_report: Option<SatisfactionReport> = None;
             let mut valid_loss_sum = 0.0f64;
             let mut valid_batches = 0usize;
             let valid_start = Instant::now();
@@ -356,19 +344,8 @@ where
                 t_valid_forward += t.elapsed().as_secs_f64();
 
                 let t = Instant::now();
-                match training.model_selection {
-                    ModelSelection::Loss => {
-                        let loss = loss_fn.loss(logits, &batch);
-                        valid_loss_sum += loss.into_scalar().elem::<f32>() as f64;
-                    }
-                    ModelSelection::ConstraintSatisfaction => {
-                        let batch_report = SatisfactionReport::build(logits.clone(), &batch);
-                        match &mut valid_report {
-                            Some(report) => report.merge(batch_report),
-                            None => valid_report = Some(batch_report),
-                        }
-                    }
-                }
+                let loss = loss_fn.loss(logits, &batch);
+                valid_loss_sum += loss.into_scalar().elem::<f32>() as f64;
                 B::InnerBackend::sync(device).ok();
                 t_valid_score += t.elapsed().as_secs_f64();
                 valid_batches += 1;
@@ -378,21 +355,8 @@ where
                 valid_start.elapsed().as_secs_f64(),
             );
 
-            let score = match training.model_selection {
-                ModelSelection::Loss => {
-                    let avg_valid_loss = valid_loss_sum / valid_batches as f64;
-                    log::info!("epoch {epoch}: validation loss = {avg_valid_loss:.4}");
-                    avg_valid_loss
-                }
-                ModelSelection::ConstraintSatisfaction => {
-                    let overall = valid_report
-                        .as_ref()
-                        .map(SatisfactionReport::overall_satisfaction)
-                        .unwrap_or(0.0);
-                    log::info!("epoch {epoch}: validation constraint satisfaction = {overall:.4}");
-                    1.0 - overall
-                }
-            };
+            let score = valid_loss_sum / valid_batches as f64;
+            log::info!("epoch {epoch}: validation loss = {score:.4}");
             crate::diagnostics::data_log!(
                 "valid_epoch",
                 epoch = epoch,
@@ -586,7 +550,7 @@ mod test_horizon_checkpoint_layout {
             destroy: None,
         };
 
-        let training = TrainingConfig::new(ModelSelection::Loss)
+        let training = TrainingConfig::new()
             .with_num_epochs(2)
             .with_validation_interval(1)
             .with_batch_size(1)
@@ -655,7 +619,7 @@ mod test_horizon_checkpoint_layout {
         // `best_score = INFINITY`) is the only one that will ever count -- every validation check
         // after the first must register as stagnant, so training should stop at
         // epoch `early_stopping_patience + 1`, well short of `num_epochs`.
-        let training = TrainingConfig::new(ModelSelection::Loss)
+        let training = TrainingConfig::new()
             .with_num_epochs(10)
             .with_validation_interval(1)
             .with_batch_size(1)
@@ -679,57 +643,6 @@ mod test_horizon_checkpoint_layout {
         // `num_checkpoints = 1` on a 10-epoch run means the only horizon is epoch 10 -- it must
         // never be reached if early stopping actually cut the run short.
         assert!(!out_dir.join("epoch_00010").exists());
-
-        std::fs::remove_dir_all(&out_dir).ok();
-    }
-
-    #[test]
-    fn constraint_satisfaction_model_selection_does_not_panic() {
-        type ADBackend = Autodiff<NdArray>;
-        let device = NdArrayDevice::default();
-
-        let out_dir = std::env::temp_dir().join(format!(
-            "aicad_test_constraint_satisfaction_selection_{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&out_dir);
-
-        let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1, 2], None);
-        let y = problem.add_variable(vec![0, 1, 2], None);
-        not_equals(&mut problem, x, y);
-        let problems = vec![Arc::new(problem)];
-
-        let network_config = ConsFormerConfig::new(3, 4, 4, 1, 4, 0, 0.5, 1.0).with_num_layers(1);
-
-        std::fs::create_dir_all(&out_dir).unwrap();
-        network_config.save(out_dir.join("config.json")).unwrap();
-
-        let train_dataset = ConsFormerDataset::<ADBackend>::new(problems.clone(), &device);
-        let valid_dataset = ConsFormerDataset::<NdArray>::new(problems.clone(), &device);
-        let batcher = ConsFormerBatcher {
-            mask_fraction: 0.5,
-            destroy: None,
-        };
-
-        let training = TrainingConfig::new(ModelSelection::ConstraintSatisfaction)
-            .with_num_epochs(2)
-            .with_validation_interval(1)
-            .with_batch_size(1);
-
-        train_model::<ADBackend, ConsFormerConfig, _, _, _, ConsFormerLoss, _, _>(
-            network_config,
-            &problems,
-            train_dataset,
-            valid_dataset,
-            batcher,
-            ConsFormerLoss,
-            training,
-            &out_dir,
-            &device,
-        );
-
-        assert!(out_dir.join("weights.mpk").is_file());
 
         std::fs::remove_dir_all(&out_dir).ok();
     }
