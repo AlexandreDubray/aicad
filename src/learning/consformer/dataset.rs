@@ -11,7 +11,7 @@ use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
 
 use crate::destroy::DestroyOperator;
-use crate::learning::{Batch, BatchProblems};
+use crate::learning::Batch;
 use crate::modelling::{Problem, VariableIndex};
 
 use super::ConsFormerInputs;
@@ -21,13 +21,13 @@ use super::ConsFormerInputs;
 /// be computed for many problems in parallel (see `ConsFormerDataset::new`), while the actual
 /// `Tensor::from_data` calls -- which touch the device, and so are kept single-threaded to avoid
 /// any backend-specific thread/context assumptions (e.g. around CUDA) -- happen afterward.
-pub(super) struct ConsFormerMaskData {
+struct ConsFormerMaskData {
     number_vars: usize,
     flat_attention_mask: Vec<bool>,
     is_var: Vec<bool>,
 }
 
-pub(super) fn consformer_mask_data(problem: &Problem) -> ConsFormerMaskData {
+fn consformer_mask_data(problem: &Problem) -> ConsFormerMaskData {
     let n = problem.number_variables();
     let mut flat_attention_mask = vec![false; n * n];
 
@@ -65,7 +65,7 @@ pub(super) fn consformer_mask_data(problem: &Problem) -> ConsFormerMaskData {
 }
 
 impl ConsFormerMaskData {
-    pub(super) fn into_tensors<B: Backend>(
+    fn into_tensors<B: Backend>(
         self,
         device: &B::Device,
     ) -> (Tensor<B, 2, Bool>, Tensor<B, 1, Bool>) {
@@ -149,16 +149,14 @@ impl<B: Backend> Dataset<ConsFormerSample<B>> for ConsFormerDataset<B> {
     }
 }
 
-/// Shared by every ConsFormer-compatible batcher (see `ConsFormerBatcher` and
-/// `mdd_dataset::ConsFormerMddBatcher`): stacks the per-sample attention masks, builds the
-/// randomly-thinned (`mask_fraction`) variable mask, and samples each problem's initial
-/// assignment. Kept here rather than duplicated per batcher, since both recipes need exactly this
-/// -- only what they do with the MDD/penalty side of the batch differs.
+/// Used by `ConsFormerBatcher`: stacks the per-sample attention masks, builds the variable mask
+/// (randomly thinned by `mask_fraction`, or chosen by `destroy`), and samples each problem's
+/// initial assignment.
 ///
 /// `attention_mask_tensors` is consumed (moved into `Tensor::stack`); `var_mask_tensors` and
-/// `problems` are only read. All three, plus `problems`, are expected to be in the same
-/// sample order and the same length.
-pub(super) fn stack_masks_and_sample_assignments<B: Backend>(
+/// `problems` are only read. All of them are expected to be in the same sample order and the
+/// same length.
+fn stack_masks_and_sample_assignments<B: Backend>(
     attention_mask_tensors: Vec<Tensor<B, 2, Bool>>,
     var_mask_tensors: &[Tensor<B, 1, Bool>],
     problems: &[Arc<Problem>],
@@ -318,27 +316,25 @@ impl<B: Backend> Batcher<B, ConsFormerSample<B>, ConsFormerBatch<B>> for ConsFor
     }
 }
 
-impl<B: Backend> BatchProblems<B> for ConsFormerBatch<B> {
-    fn problems(&self) -> &[Arc<Problem>] {
-        &self.problems
-    }
-}
-
 impl<B: Backend> ConsFormerInputs<B> for ConsFormerBatch<B> {
     fn attention_masks(&self) -> Tensor<B, 3, Bool> {
         self.attention_masks.clone()
+    }
+}
+
+impl<B: Backend> Batch<B> for ConsFormerBatch<B> {
+    fn problems(&self) -> &[Arc<Problem>] {
+        &self.problems
+    }
+
+    fn assignments(&self) -> Tensor<B, 2, Int> {
+        self.assignments.clone()
     }
 
     fn var_masks(&self) -> Tensor<B, 2, Bool> {
         self.var_masks.clone()
     }
 
-    fn assignments(&self) -> Tensor<B, 2, Int> {
-        self.assignments.clone()
-    }
-}
-
-impl<B: Backend> Batch<B> for ConsFormerBatch<B> {
     fn for_assignments(
         problems: &[Arc<Problem>],
         assignments: Tensor<B, 2, Int>,

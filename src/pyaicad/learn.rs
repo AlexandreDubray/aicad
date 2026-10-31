@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -9,7 +8,6 @@ use burn::backend::Autodiff;
 use burn::backend::cuda::{Cuda, CudaDevice};
 use burn::backend::ndarray::{NdArray, NdArrayDevice};
 use burn::config::Config;
-use burn::data::dataset::Dataset;
 use burn::tensor::backend::{AutodiffBackend, Backend};
 
 use rand::seq::SliceRandom;
@@ -17,12 +15,10 @@ use rand::seq::SliceRandom;
 use crate::destroy::DestroyOperator;
 use crate::learning::consformer::architecture::MaskingKind;
 use crate::learning::consformer::{
-    ConsFormerBatch, ConsFormerBatcher, ConsFormerConfig, ConsFormerDataConfig, ConsFormerDataset,
-    ConsFormerLoss, ConsFormerMddBatch, ConsFormerMddBatcher, ConsFormerMddDataset,
-    ConsFormerMddLoss, ConsFormerMddSample, ConsFormerSample,
+    ConsFormerBatch, ConsFormerBatcher, ConsFormerConfig, ConsFormerDataset, ConsFormerLoss,
+    ConsFormerSample, DecomposedMddLoss,
 };
 use crate::learning::train::{ModelSelection, TrainingConfig, train_model};
-use crate::mdd::MddArena;
 use crate::mdd::arena::MddCompilationConfig;
 use crate::mdd::heuristics::MergeHeuristic;
 use crate::modelling::Problem;
@@ -431,7 +427,7 @@ fn run_training<B: AutodiffBackend>(
 }
 
 /// Trains ConsFormer against the exact per-constraint MDD weighted model count (see
-/// `ConsFormerMddLoss`) instead of the classical hand-written per-constraint-type penalty --
+/// `DecomposedMddLoss`) instead of the classical hand-written per-constraint-type penalty --
 /// otherwise identical to `train_consformer`: same network architecture, same config, same
 /// checkpointing. No `epsilon`: the loss's gradient is computed by hand, walking each compiled
 /// `Mdd` directly (`crate::mdd::wmc`) instead of through Burn's autodiff, with its own small fixed
@@ -501,11 +497,9 @@ pub(crate) fn train_consformer_mdd(
 }
 
 /// Runs the ConsFormer-MDD training loop -- see `run_training` for the classical recipe this
-/// mirrors. The only structural differences are the dataset/batcher/loss types (`ConsFormerMdd*`
-/// instead of `ConsFormer*`) and the `compilation`/`data_config` the MDD dataset needs to compile
-/// each problem's constraints into exact MDDs. `data_config` is derived from `network_config` via
-/// `ConsFormerDataConfig::from` -- not built by hand -- so the dataset and its batcher can't end
-/// up with different `domain_size`s (see `ConsFormerDataConfig`'s doc).
+/// mirrors. The only structural difference is the loss: `DecomposedMddLoss` scores each problem
+/// through its constraints compiled into exact MDDs, which `train_model` has it compile, once,
+/// for every training and validation problem.
 fn run_training_mdd<B: AutodiffBackend>(
     device: B::Device,
     problems: Vec<Arc<Problem>>,
@@ -520,56 +514,32 @@ fn run_training_mdd<B: AutodiffBackend>(
     let (all_problems, problems, validation_problems) =
         split_train_validation(problems, validation);
 
-    let data_config = ConsFormerDataConfig::from(&network_config);
-    // Shared across both datasets so a constraint group shape compiled for training reuses its
-    // structure for an identically-shaped validation group instead of compiling it twice -- see
-    // `crate::mdd::arena`'s module doc.
-    let arena = MddArena::new();
-
-    let t = Instant::now();
-    let train_dataset =
-        ConsFormerMddDataset::<B>::new(problems, &arena, compilation.clone(), data_config, &device);
-    crate::diagnostics::data_log!(
-        "mdd_dataset_build",
-        split = "train",
-        num_problems = train_dataset.len(),
-        elapsed_s = t.elapsed().as_secs_f64(),
-    );
-
-    let t = Instant::now();
-    let validation_dataset = ConsFormerMddDataset::<B::InnerBackend>::new(
-        validation_problems,
-        &arena,
-        compilation,
-        data_config,
-        &device,
-    );
-    crate::diagnostics::data_log!(
-        "mdd_dataset_build",
-        split = "valid",
-        num_problems = validation_dataset.len(),
-        elapsed_s = t.elapsed().as_secs_f64(),
-    );
-
-    let batcher = ConsFormerMddBatcher::new(data_config);
+    let loss = DecomposedMddLoss::new(compilation, network_config.domain_size);
+    let train_dataset = ConsFormerDataset::<B>::new(problems, &device);
+    let validation_dataset =
+        ConsFormerDataset::<B::InnerBackend>::new(validation_problems, &device);
+    let batcher = ConsFormerBatcher {
+        mask_fraction: network_config.mask_fraction,
+        destroy: None,
+    };
 
     // Create and train the network
     let _network = train_model::<
         B,
         ConsFormerConfig,
-        ConsFormerMddSample<B>,
-        ConsFormerMddBatch<B>,
-        ConsFormerMddBatcher,
-        ConsFormerMddLoss,
-        ConsFormerMddSample<B::InnerBackend>,
-        ConsFormerMddBatch<B::InnerBackend>,
+        ConsFormerSample<B>,
+        ConsFormerBatch<B>,
+        ConsFormerBatcher,
+        DecomposedMddLoss,
+        ConsFormerSample<B::InnerBackend>,
+        ConsFormerBatch<B::InnerBackend>,
     >(
         network_config,
         &all_problems,
         train_dataset,
         validation_dataset,
         batcher,
-        ConsFormerMddLoss,
+        loss,
         training_config,
         checkpoint_dir,
         &device,

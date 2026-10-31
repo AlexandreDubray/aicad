@@ -27,8 +27,8 @@
 //!   `t_monitor`, `t_loss`, `t_backward`, `epoch_rt_s` and `epoch_loss`.
 //! - `valid_epoch` (`learning::train`): `epoch`, `t_batch`, `t_forward`, `t_score`, `total_s`
 //!   and `score`.
-//! - `mdd_dataset_build` (`pyaicad::learn`): `split` (`"train"` or `"valid"`), `num_problems`
-//!   and `elapsed_s`.
+//! - `mdd_compilation` (`learning::consformer::decomposed_mdd_loss`): `num_problems` (training and
+//!   validation together) and `elapsed_s`.
 //!
 //! Nothing is recorded unless the caller opens a sink: training, solving and compiling never
 //! start one themselves. A script that wants the timings of a training run calls

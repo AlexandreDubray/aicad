@@ -1,17 +1,16 @@
 pub(crate) mod architecture;
 pub(crate) mod dataset;
+pub(crate) mod decomposed_mdd_loss;
 pub(crate) mod loss;
-pub(crate) mod mdd_dataset;
+pub(crate) mod utils;
 
 use super::*;
 use crate::modelling::Problem;
 pub(crate) use architecture::ConsFormer;
 use architecture::*;
 pub(crate) use dataset::{ConsFormerBatch, ConsFormerBatcher, ConsFormerDataset, ConsFormerSample};
-pub(crate) use loss::{ConsFormerLoss, ConsFormerMddLoss};
-pub(crate) use mdd_dataset::{
-    ConsFormerMddBatch, ConsFormerMddBatcher, ConsFormerMddDataset, ConsFormerMddSample,
-};
+pub(crate) use decomposed_mdd_loss::DecomposedMddLoss;
+pub(crate) use loss::ConsFormerLoss;
 
 use burn::config::Config;
 use burn::module::Param;
@@ -20,19 +19,11 @@ use burn::tensor::Bool;
 
 use std::sync::Arc;
 
-/// Shared inputs every ConsFormer-compatible batch must provide for a
-/// forward pass. Kept separate from `BatchProblems`/`Batch` (see
-/// `learning::mod`) so `ConsFormer` can be driven by several different batch
-/// structs -- e.g. `ConsFormerBatch` for the classical per-constraint-penalty
-/// loss, and a future dedicated batch for the MDD-WMC loss -- without
-/// merging their data into one shared batch type.
-pub(crate) trait ConsFormerInputs<B: Backend> {
+/// A [`Batch`] that `ConsFormer` can read: on top of the assignments and the variables to
+/// re-predict, the network needs the attention mask of each problem.
+pub(crate) trait ConsFormerInputs<B: Backend>: Batch<B> {
     /// (batch_size, number_vars, number_vars)
     fn attention_masks(&self) -> Tensor<B, 3, Bool>;
-    /// (batch_size, number_vars)
-    fn var_masks(&self) -> Tensor<B, 2, Bool>;
-    /// (batch_size, number_vars)
-    fn assignments(&self) -> Tensor<B, 2, Int>;
 }
 
 #[derive(Config, Debug)]
@@ -70,32 +61,6 @@ pub(crate) struct ConsFormerConfig {
     /// uniformly over many neighbours.
     #[config(default = "MaskingKind::Hard")]
     pub masking_kind: MaskingKind,
-}
-
-/// The subset of `ConsFormerConfig` the data pipeline (a `ConsFormerMddDataset` and its
-/// `ConsFormerMddBatcher`) needs. Threading one value of this through both, instead of passing
-/// `domain_size`/`mask_fraction` as independent arguments, is what keeps a dataset and its batcher
-/// from ever being built against different `domain_size`s. Build one via
-/// `ConsFormerDataConfig::from(&network_config)` rather than constructing it by hand, so it's
-/// always sourced from the same `ConsFormerConfig` the network itself was built with.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct ConsFormerDataConfig {
-    /// Must match the network's `domain_size` -- every compiled MDD's edges are validated against
-    /// this at dataset-construction time (see `crate::mdd::arena::compile_constraints`), and the
-    /// training loss reads/writes the network's per-variable probability vector at this width.
-    pub domain_size: usize,
-    /// Fraction of free variables randomly marked eligible for update on each training step (see
-    /// `ConsFormerBatcher::mask_fraction`).
-    pub mask_fraction: f64,
-}
-
-impl From<&ConsFormerConfig> for ConsFormerDataConfig {
-    fn from(c: &ConsFormerConfig) -> Self {
-        Self {
-            domain_size: c.domain_size,
-            mask_fraction: c.mask_fraction,
-        }
-    }
 }
 
 impl<B: Backend> NetworkConfig<B> for ConsFormerConfig {

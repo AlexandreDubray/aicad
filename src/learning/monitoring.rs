@@ -4,8 +4,7 @@ use burn::prelude::ElementConversion;
 use burn::tensor::backend::Backend;
 use burn::tensor::{Int, Tensor};
 
-use crate::learning::BatchProblems;
-use crate::learning::consformer::ConsFormerInputs;
+use crate::learning::Batch;
 
 struct ConstraintStats {
     count: usize,
@@ -66,13 +65,10 @@ impl SatisfactionReport {
     /// what the network predicted there. Without this, a raw `logits.argmax(2)` asks the network
     /// to also correctly reproduce every kept/given value (e.g. every Sudoku hint, every
     /// non-masked cell) on top of actually solving the masked ones, which it has no training
-    /// signal to do (`ConsFormerLoss`/`ConsFormerMddLoss` only score masked positions -- see
+    /// signal to do (`ConsFormerLoss`/`DecomposedMddLoss` only score masked positions -- see
     /// `blend_with_current` in `consformer::loss`) -- so the printed satisfaction rate stays
     /// near-permanently at 0% even once training is actually working.
-    pub(crate) fn build<B: Backend, Ba: BatchProblems<B> + ConsFormerInputs<B>>(
-        logits: Tensor<B, 3>,
-        batch: &Ba,
-    ) -> Self {
+    pub(crate) fn build<B: Backend, Ba: Batch<B>>(logits: Tensor<B, 3>, batch: &Ba) -> Self {
         let problems = batch.problems();
         let batch_size = problems.len();
 

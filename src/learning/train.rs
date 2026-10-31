@@ -14,9 +14,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::learning::consformer::ConsFormerInputs;
 use crate::learning::monitoring::SatisfactionReport;
-use crate::learning::{BatchProblems, Loss, Network, NetworkConfig};
+use crate::learning::{Batch, Loss, Network, NetworkConfig};
 use crate::modelling::Problem;
 
 /// Heuristic to select the best model during training
@@ -156,7 +155,7 @@ fn compute_horizons(
 ///                since evaluating it never needs autodiff bookkeeping
 /// batcher: shared by both dataloaders; needs to implement `Batcher` for both `B` and
 ///          `B::InnerBackend`, which is automatic for any batcher generic over `Backend`
-/// loss_fn: The loss function
+/// loss_fn: The loss function; it is first prepared with `problems` (see `Loss::prepare`)
 /// training: Configuration of the training loop
 /// device: Device to launch the training on (cpu or gpu) -- also valid as `B::InnerBackend`'s
 ///         device, since `Autodiff<X>::Device == X::Device`
@@ -167,7 +166,7 @@ pub(crate) fn train_model<B, NC, S, TBatch, Ba, L, SValid, VBatch>(
     train_dataset: impl Dataset<S> + 'static,
     valid_dataset: impl Dataset<SValid> + 'static,
     batcher: Ba,
-    loss_fn: L,
+    mut loss_fn: L,
     training: TrainingConfig,
     out_dir: &Path,
     device: &B::Device,
@@ -179,15 +178,8 @@ where
     <NC::N as AutodiffModule<B>>::InnerModule: Network<B::InnerBackend, VBatch>,
     S: Send + Sync + Clone + std::fmt::Debug + 'static,
     SValid: Send + Sync + Clone + std::fmt::Debug + 'static,
-    TBatch:
-        BatchProblems<B> + ConsFormerInputs<B> + Clone + Send + Sync + std::fmt::Debug + 'static,
-    VBatch: BatchProblems<B::InnerBackend>
-        + ConsFormerInputs<B::InnerBackend>
-        + Clone
-        + Send
-        + Sync
-        + std::fmt::Debug
-        + 'static,
+    TBatch: Batch<B>,
+    VBatch: Batch<B::InnerBackend>,
     Ba: Batcher<B, S, TBatch>
         + Batcher<B::InnerBackend, SValid, VBatch>
         + Clone
@@ -196,6 +188,9 @@ where
         + 'static,
     L: Loss<B, TBatch> + Loss<B::InnerBackend, VBatch>,
 {
+    // Let the loss prepare whatever it needs about the problems (e.g. compile their MDDs)
+    <L as Loss<B, TBatch>>::prepare(&mut loss_fn, problems);
+
     // Initialise the network architecture with the given parameters
     let mut network = network_config.init(problems, device);
 
