@@ -1,5 +1,6 @@
 pub(crate) mod consformer;
 pub(crate) mod monitoring;
+pub(crate) mod optimiser;
 pub(crate) mod train;
 
 use std::sync::Arc;

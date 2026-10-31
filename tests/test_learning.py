@@ -2,7 +2,7 @@ import pytest
 
 import pyaicad as ac
 from pyaicad import CheckpointError, learning
-from pyaicad.learning import Dataset, Recipe
+from pyaicad.learning import SGD, Adam, AdamW, Dataset, Recipe
 
 
 def latin_with_hint(n, hint):
@@ -44,6 +44,64 @@ def test_recipe_replace_routes_names():
         r.replace(epoch=3)
     with pytest.raises(ValueError):
         Recipe.named("nope")
+
+
+def test_the_default_optimiser_is_adam_and_its_settings_can_be_replaced():
+    r = Recipe.named("consformer")
+    assert r.training.optimiser == Adam()
+    s = r.replace(lr=1e-3, beta_1=0.8)
+    assert s.training.optimiser == Adam(lr=1e-3, beta_1=0.8)
+    assert r.training.optimiser.lr == 3e-4  # the original is untouched
+
+
+def test_replacing_the_optimiser_changes_which_settings_exist():
+    r = Recipe.named("consformer")
+    with pytest.raises(TypeError):
+        r.replace(momentum=0.9)  # Adam has no momentum
+    s = r.replace(optimiser=SGD(), momentum=0.9, lr=0.1)
+    assert s.training.optimiser == SGD(lr=0.1, momentum=0.9)
+    with pytest.raises(TypeError):
+        s.replace(beta_1=0.8)
+    with pytest.raises(TypeError):
+        r.replace(optimiser="adam")
+
+
+def test_optimiser_settings_are_checked():
+    with pytest.raises(ValueError):
+        Adam(lr=0)
+    with pytest.raises(ValueError, match="not both"):
+        Adam(grad_clip_norm=1.0, grad_clip_value=1.0)
+    with pytest.raises(ValueError):
+        Adam(beta_1=1.0)
+    with pytest.raises(ValueError, match="need a momentum"):
+        SGD(nesterov=True)
+    with pytest.raises(ValueError):
+        AdamW(weight_decay=-1.0)
+
+
+@pytest.mark.parametrize(
+    "optimiser",
+    [
+        Adam(lr=1e-2, weight_decay=1e-3, grad_clip_norm=1.0),
+        AdamW(lr=1e-2, grad_clip_value=1.0),
+        SGD(lr=1e-2, momentum=0.9, nesterov=True, grad_clip_norm=5.0),
+    ],
+)
+def test_every_optimiser_trains(tmp_path, optimiser):
+    ckpt = learning.fit(
+        problems(6),
+        "consformer",
+        checkpoint_dir=tmp_path / type(optimiser).__name__,
+        seed=0,
+        optimiser=optimiser,
+        epochs=2,
+        validation_interval=1,
+        batch_size=2,
+        embedding_size=8,
+        hidden_size=8,
+        expand_size=8,
+    )
+    assert ckpt.domain_size == 3
 
 
 def test_destroy_is_a_training_setting():

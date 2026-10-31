@@ -2,10 +2,8 @@ use burn::config::Config;
 use burn::data::dataloader::DataLoaderBuilder;
 use burn::data::dataloader::batcher::Batcher;
 use burn::data::dataset::Dataset;
-use burn::grad_clipping::GradientClippingConfig;
 use burn::module::{AutodiffModule, Module};
-use burn::optim::decay::WeightDecayConfig;
-use burn::optim::{AdamConfig, GradientsParams, Optimizer};
+use burn::optim::GradientsParams;
 use burn::prelude::ElementConversion;
 use burn::record::CompactRecorder;
 use burn::tensor::backend::{AutodiffBackend, Backend};
@@ -15,15 +13,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::learning::monitoring::SatisfactionReport;
+use crate::learning::optimiser::OptimiserConfig;
 use crate::learning::{Batch, Loss, Network, NetworkConfig};
 use crate::modelling::Problem;
 
 /// Configuration of the training loop
 #[derive(Config, Debug)]
 pub(crate) struct TrainingConfig {
-    /// Learning rate
-    #[config(default = 3e-4)]
-    pub lr: f64,
     /// Number of epochs
     #[config(default = 10)]
     pub num_epochs: usize,
@@ -34,31 +30,9 @@ pub(crate) struct TrainingConfig {
     /// model, the one with the lowest validation loss.
     #[config(default = 10)]
     pub validation_interval: usize,
-    /// Adam's first moment (gradient mean) decay rate.
-    #[config(default = 0.9)]
-    pub beta_1: f64,
-    /// Adam's second moment (gradient variance) decay rate.
-    #[config(default = 0.999)]
-    pub beta_2: f64,
-    /// Numerical-stability floor added to Adam's denominator.
-    #[config(default = 1e-5)]
-    pub epsilon: f64,
-    /// Whether to use the AMSGrad variant of Adam (keeps a running max of the second moment
-    /// instead of the plain EMA, which can help when the loss landscape is noisy).
-    #[config(default = false)]
-    pub amsgrad: bool,
-    /// L2 weight decay penalty. `None` (the default) disables it.
-    #[config(default = "None")]
-    pub weight_decay: Option<f64>,
-    /// Clip each gradient tensor's global L2 norm to this value before the optimizer step, if
-    /// set. Takes precedence over `grad_clip_value` when both are set. Useful against the loss
-    /// blowing up over a long fixed-LR run (e.g. climbing back up after an initial good minimum).
-    #[config(default = "None")]
-    pub grad_clip_norm: Option<f64>,
-    /// Clip each gradient element to `[-grad_clip_value, grad_clip_value]` before the optimizer
-    /// step, if set. Ignored when `grad_clip_norm` is also set.
-    #[config(default = "None")]
-    pub grad_clip_value: Option<f64>,
+    /// The optimiser, with its learning rate and hyper-parameters (Adam by default).
+    #[config(default = "OptimiserConfig::default()")]
+    pub optimiser: OptimiserConfig,
     /// If true, also save the best-so-far model at a decaying-density set of training-epoch
     /// horizons (see `compute_horizons`), so a later sweep can evaluate performance as a function
     /// of training budget without needing a separate run per budget. Each horizon is its own
@@ -192,25 +166,9 @@ where
         .batch_size(training.batch_size)
         .build(valid_dataset);
 
-    let mut adam_config = AdamConfig::new()
-        .with_beta_1(training.beta_1 as f32)
-        .with_beta_2(training.beta_2 as f32)
-        .with_epsilon(training.epsilon as f32)
-        .with_amsgrad(training.amsgrad);
-    if let Some(penalty) = training.weight_decay {
-        adam_config = adam_config.with_weight_decay(Some(WeightDecayConfig::new(penalty as f32)));
-    }
-    if let Some(norm) = training.grad_clip_norm {
-        adam_config =
-            adam_config.with_grad_clipping(Some(GradientClippingConfig::Norm(norm as f32)));
-    } else if let Some(value) = training.grad_clip_value {
-        adam_config =
-            adam_config.with_grad_clipping(Some(GradientClippingConfig::Value(value as f32)));
-    }
-    let mut optim = adam_config.init();
+    let mut optim = training.optimiser.init::<B, NC::N>();
 
     let mut best_score = f64::INFINITY;
-    let mut best_network: Option<NC::N> = None;
     let mut stagnant_checks = 0usize;
 
     let horizons: std::collections::HashSet<usize> = if training.save_horizons {
@@ -232,17 +190,16 @@ where
         let mut epoch_report: Option<SatisfactionReport> = None;
         let epoch_start = Instant::now();
 
-        let mut t_batch = 0.0f64;
+        // Some runtime statistics for logging. The statistics are over the batches; it is the sum
+        // of each batch runtime, so it can be used as a comparison if the batch sizes are equal.
+        // Total time passed in forward pass of the neural network.
         let mut t_forward = 0.0f64;
-        let mut t_monitor = 0.0f64;
         let mut t_loss = 0.0f64;
         let mut t_backward = 0.0f64;
 
         let mut train_iter = train_dataloader.iter();
         loop {
-            let t = Instant::now();
             let next = train_iter.next();
-            t_batch += t.elapsed().as_secs_f64();
             let Some(batch) = next else { break };
 
             let t = Instant::now();
@@ -250,14 +207,12 @@ where
             B::sync(device).ok();
             t_forward += t.elapsed().as_secs_f64();
 
-            let t = Instant::now();
             let batch_report = SatisfactionReport::build(logits.clone(), &batch);
             match &mut epoch_report {
                 Some(report) => report.merge(batch_report),
                 None => epoch_report = Some(batch_report),
             }
             B::sync(device).ok();
-            t_monitor += t.elapsed().as_secs_f64();
 
             let t = Instant::now();
             let loss = loss_fn.loss(logits.clone(), &batch);
@@ -289,7 +244,7 @@ where
 
             let t = Instant::now();
             let grads = GradientsParams::from_grads(loss.backward(), &network);
-            network = optim.step(training.lr, network, grads);
+            network = optim.step(network, grads);
             B::sync(device).ok();
             t_backward += t.elapsed().as_secs_f64();
 
@@ -298,20 +253,14 @@ where
         }
         let epoch_rt = epoch_start.elapsed().as_secs();
         log::info!(
-            "epoch {epoch}: batch={t_batch:.3}s forward={t_forward:.3}s monitor={t_monitor:.3}s loss={t_loss:.3}s backward+step={t_backward:.3}s"
+            "epoch {epoch}: forward={t_forward:.3}s loss={t_loss:.3}s backward+step={t_backward:.3}s"
         );
-        // Averaged per batch, matching how validation loss below is reported -- previously this
-        // was a raw sum over the epoch's mini-batches, which made it look ~(batch count) larger
-        // than the (correctly averaged) validation loss printed a few lines down, even when the
-        // two were otherwise on the same footing.
-        let epoch_loss = epoch_loss_sum / epoch_batches.max(1) as f32;
+        let epoch_loss = epoch_loss_sum / epoch_batches as f32;
         log::info!("epoch {epoch}: loss = {epoch_loss} ({epoch_rt} seconds)");
         crate::diagnostics::data_log!(
             "train_epoch",
             epoch = epoch,
-            t_batch = t_batch,
             t_forward = t_forward,
-            t_monitor = t_monitor,
             t_loss = t_loss,
             t_backward = t_backward,
             epoch_rt_s = epoch_start.elapsed().as_secs_f64(),
@@ -326,62 +275,36 @@ where
             let valid_network = network.valid();
             let mut valid_loss_sum = 0.0f64;
             let mut valid_batches = 0usize;
-            let valid_start = Instant::now();
-            let mut t_valid_batch = 0.0f64;
-            let mut t_valid_forward = 0.0f64;
-            let mut t_valid_score = 0.0f64;
 
             let mut valid_iter = valid_dataloader.iter();
             loop {
-                let t = Instant::now();
                 let next = valid_iter.next();
-                t_valid_batch += t.elapsed().as_secs_f64();
                 let Some(batch) = next else { break };
 
-                let t = Instant::now();
                 let logits = valid_network.forward(&batch);
                 B::InnerBackend::sync(device).ok();
-                t_valid_forward += t.elapsed().as_secs_f64();
 
-                let t = Instant::now();
                 let loss = loss_fn.loss(logits, &batch);
                 valid_loss_sum += loss.into_scalar().elem::<f32>() as f64;
                 B::InnerBackend::sync(device).ok();
-                t_valid_score += t.elapsed().as_secs_f64();
                 valid_batches += 1;
             }
-            log::info!(
-                "epoch {epoch}: validation batch={t_valid_batch:.3}s forward={t_valid_forward:.3}s score={t_valid_score:.3}s total={:.3}s",
-                valid_start.elapsed().as_secs_f64(),
-            );
 
             let score = valid_loss_sum / valid_batches as f64;
             log::info!("epoch {epoch}: validation loss = {score:.4}");
-            crate::diagnostics::data_log!(
-                "valid_epoch",
-                epoch = epoch,
-                t_batch = t_valid_batch,
-                t_forward = t_valid_forward,
-                t_score = t_valid_score,
-                total_s = valid_start.elapsed().as_secs_f64(),
-                score = score,
-            );
+            crate::diagnostics::data_log!("valid_epoch", epoch = epoch, score = score,);
 
             let improved = score < best_score - training.early_stopping_min_delta;
 
             if score < best_score {
                 best_score = score;
-                best_network = Some(network.clone());
                 if let Err(e) = network
                     .clone()
                     .save_file(out_dir.join("weights"), &CompactRecorder::new())
                 {
                     log::warn!("warning: failed to save checkpoint at epoch {epoch}: {e}");
                 }
-            }
-
-            if horizons.contains(&(epoch + 1)) {
-                if let Some(best) = &best_network {
+                if horizons.contains(&(epoch + 1)) {
                     let epoch_dir = out_dir.join(format!("epoch_{:05}", epoch + 1));
                     let saved = std::fs::create_dir_all(&epoch_dir)
                         .and_then(|_| {
@@ -392,7 +315,8 @@ where
                         })
                         .map_err(|e| e.to_string())
                         .and_then(|_| {
-                            best.clone()
+                            network
+                                .clone()
                                 .save_file(epoch_dir.join("weights"), &CompactRecorder::new())
                                 .map_err(|e| e.to_string())
                         });
@@ -414,10 +338,6 @@ where
                             "warning: failed to save horizon checkpoint at epoch {epoch}: {e}"
                         ),
                     }
-                } else {
-                    log::warn!(
-                        "epoch {epoch}: horizon reached but no best model has been found yet -- skipping"
-                    );
                 }
             }
 

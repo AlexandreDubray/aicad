@@ -134,8 +134,8 @@ impl<B: Backend> Loss<B, ConsFormerBatch<B>> for ConsFormerLoss {
 mod tests {
     use std::sync::Arc;
 
-    use burn::backend::ndarray::{NdArray, NdArrayDevice};
     use burn::backend::Autodiff;
+    use burn::backend::ndarray::{NdArray, NdArrayDevice};
     use burn::data::dataloader::batcher::Batcher;
     use burn::data::dataset::Dataset;
     use burn::tensor::Distribution;

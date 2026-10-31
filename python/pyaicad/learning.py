@@ -30,6 +30,10 @@ from .model import Model
 __all__ = [
     "Dataset",
     "Network",
+    "Adam",
+    "AdamW",
+    "SGD",
+    "Optimiser",
     "Training",
     "Recipe",
     "RECIPES",
@@ -135,18 +139,34 @@ class Network:
     learned_attention_mask: bool = False
 
 
-@dataclass(frozen=True)
-class Training:
-    """How the network is optimised (Adam).
+def _check_optimiser(
+    lr: float, grad_clip_norm: Optional[float], grad_clip_value: Optional[float]
+) -> None:
+    if not lr > 0:
+        raise ValueError(f"lr must be positive, got {lr!r}")
+    if grad_clip_norm is not None and grad_clip_value is not None:
+        raise ValueError("set grad_clip_norm or grad_clip_value, not both")
+    for name, value in (("grad_clip_norm", grad_clip_norm), ("grad_clip_value", grad_clip_value)):
+        if value is not None and not value > 0:
+            raise ValueError(f"{name} must be positive, got {value!r}")
 
-    The network is evaluated on the validation set every ``validation_interval`` epochs, and the
-    best one so far is kept; so ``validation_interval`` must not exceed ``epochs``.
+
+def _check_betas(beta_1: float, beta_2: float, epsilon: float) -> None:
+    if not (0 <= beta_1 < 1 and 0 <= beta_2 < 1):
+        raise ValueError(f"beta_1 and beta_2 must be in [0, 1), got {beta_1!r} and {beta_2!r}")
+    if not epsilon > 0:
+        raise ValueError(f"epsilon must be positive, got {epsilon!r}")
+
+
+@dataclass(frozen=True)
+class Adam:
+    """The Adam optimiser. ``weight_decay`` is an L2 penalty (``None`` for none).
+
+    ``grad_clip_norm`` clips the L2 norm of each gradient tensor and ``grad_clip_value`` clips each
+    element of the gradient; set at most one.
     """
 
     lr: float = 3e-4
-    epochs: int = 10
-    batch_size: int = 32
-    validation_interval: int = 10
     beta_1: float = 0.9
     beta_2: float = 0.999
     epsilon: float = 1e-5
@@ -154,6 +174,82 @@ class Training:
     weight_decay: Optional[float] = None
     grad_clip_norm: Optional[float] = None
     grad_clip_value: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        _check_optimiser(self.lr, self.grad_clip_norm, self.grad_clip_value)
+        _check_betas(self.beta_1, self.beta_2, self.epsilon)
+        if self.weight_decay is not None and self.weight_decay < 0:
+            raise ValueError(f"weight_decay must not be negative, got {self.weight_decay!r}")
+
+
+@dataclass(frozen=True)
+class AdamW:
+    """Adam with a decoupled weight decay, which is always applied (``0`` for none).
+
+    ``grad_clip_norm`` clips the L2 norm of each gradient tensor and ``grad_clip_value`` clips each
+    element of the gradient; set at most one.
+    """
+
+    lr: float = 3e-4
+    beta_1: float = 0.9
+    beta_2: float = 0.999
+    epsilon: float = 1e-5
+    amsgrad: bool = False
+    weight_decay: float = 1e-4
+    grad_clip_norm: Optional[float] = None
+    grad_clip_value: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        _check_optimiser(self.lr, self.grad_clip_norm, self.grad_clip_value)
+        _check_betas(self.beta_1, self.beta_2, self.epsilon)
+        if self.weight_decay < 0:
+            raise ValueError(f"weight_decay must not be negative, got {self.weight_decay!r}")
+
+
+@dataclass(frozen=True)
+class SGD:
+    """Stochastic gradient descent, with momentum if ``momentum`` is set.
+
+    ``dampening`` and ``nesterov`` only apply with a momentum. ``weight_decay`` is an L2 penalty
+    (``None`` for none). ``grad_clip_norm`` clips the L2 norm of each gradient tensor and
+    ``grad_clip_value`` clips each element of the gradient; set at most one.
+    """
+
+    lr: float = 1e-2
+    momentum: Optional[float] = None
+    dampening: float = 0.0
+    nesterov: bool = False
+    weight_decay: Optional[float] = None
+    grad_clip_norm: Optional[float] = None
+    grad_clip_value: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        _check_optimiser(self.lr, self.grad_clip_norm, self.grad_clip_value)
+        if self.momentum is None and (self.nesterov or self.dampening != 0):
+            raise ValueError("dampening and nesterov need a momentum")
+        if self.momentum is not None and not 0 <= self.momentum < 1:
+            raise ValueError(f"momentum must be in [0, 1), got {self.momentum!r}")
+        if self.weight_decay is not None and self.weight_decay < 0:
+            raise ValueError(f"weight_decay must not be negative, got {self.weight_decay!r}")
+
+
+Optimiser = Union[Adam, AdamW, SGD]
+"""An optimiser with its settings: one of :class:`Adam`, :class:`AdamW` and :class:`SGD`."""
+
+
+@dataclass(frozen=True)
+class Training:
+    """How the network is optimised.
+
+    ``optimiser`` is the optimiser with its learning rate and settings (Adam by default). The
+    network is evaluated on the validation set every ``validation_interval`` epochs, and the best
+    one so far is kept; so ``validation_interval`` must not exceed ``epochs``.
+    """
+
+    optimiser: Optimiser = field(default_factory=Adam)
+    epochs: int = 10
+    batch_size: int = 32
+    validation_interval: int = 10
     save_horizons: bool = False
     num_checkpoints: int = 15
     early_stopping_patience: Optional[int] = None
@@ -161,6 +257,8 @@ class Training:
     destroy: str = "random"  # which variables are re-predicted in a training step; "consformer" only
 
     def __post_init__(self) -> None:
+        if not isinstance(self.optimiser, (Adam, AdamW, SGD)):
+            raise TypeError(f"optimiser must be Adam, AdamW or SGD, got {self.optimiser!r}")
         if self.destroy not in _DESTROY:
             raise ValueError(f"destroy must be one of {sorted(_DESTROY)}, got {self.destroy!r}")
 
@@ -173,6 +271,8 @@ class Recipe:
 
     >>> Recipe.named("consformer-mdd").replace(epochs=50, lr=1e-3).training.epochs
     50
+    >>> Recipe.named("consformer").replace(optimiser=SGD(momentum=0.9)).training.optimiser.lr
+    0.01
 
     ``replace`` takes the name of any setting of the network, the training, or the recipe itself,
     and refuses names it does not know.
@@ -198,13 +298,24 @@ class Recipe:
             raise ValueError(f"unknown recipe {name!r}; choose from {sorted(RECIPES)}") from None
 
     def replace(self, **changes: Any) -> "Recipe":
-        """A copy with some settings changed, by name."""
+        """A copy with some settings changed, by name.
+
+        A setting of the optimiser (``lr``, ``momentum``, ...) changes the optimiser the recipe
+        has once ``optimiser=`` is applied, if given.
+        """
         own = {f.name for f in dataclasses.fields(self)} - {"network", "training"}
         net = {f.name for f in dataclasses.fields(Network)}
         train = {f.name for f in dataclasses.fields(Training)}
         top: Dict[str, Any] = {}
         n: Dict[str, Any] = {}
         t: Dict[str, Any] = {}
+        o: Dict[str, Any] = {}
+        optimiser = changes.get("optimiser", self.training.optimiser)
+        opt = (
+            {f.name for f in dataclasses.fields(optimiser)}
+            if dataclasses.is_dataclass(optimiser)
+            else set()
+        )
         for key, value in changes.items():
             if key in own:
                 top[key] = value
@@ -212,13 +323,20 @@ class Recipe:
                 n[key] = value
             elif key in train:
                 t[key] = value
+            elif key in opt:
+                o[key] = value
             else:
-                known = sorted(own | net | train)
+                known = sorted(own | net | train | opt)
                 raise TypeError(f"unknown setting {key!r}; the settings are {known}")
+        training = dataclasses.replace(self.training, **t)
+        if o:
+            training = dataclasses.replace(
+                training, optimiser=dataclasses.replace(training.optimiser, **o)
+            )
         return dataclasses.replace(
             self,
             network=dataclasses.replace(self.network, **n),
-            training=dataclasses.replace(self.training, **t),
+            training=training,
             **top,
         )
 
@@ -310,19 +428,48 @@ def _native_network(net: Network, domain_size: int) -> Any:
     )
 
 
+def _native_optimiser(o: Optimiser) -> Any:
+    if isinstance(o, Adam):
+        return _core.PyOptimiser.Adam(
+            lr=o.lr,
+            beta_1=o.beta_1,
+            beta_2=o.beta_2,
+            epsilon=o.epsilon,
+            amsgrad=o.amsgrad,
+            weight_decay=o.weight_decay,
+            grad_clip_norm=o.grad_clip_norm,
+            grad_clip_value=o.grad_clip_value,
+        )
+    if isinstance(o, AdamW):
+        return _core.PyOptimiser.AdamW(
+            lr=o.lr,
+            beta_1=o.beta_1,
+            beta_2=o.beta_2,
+            epsilon=o.epsilon,
+            amsgrad=o.amsgrad,
+            weight_decay=o.weight_decay,
+            grad_clip_norm=o.grad_clip_norm,
+            grad_clip_value=o.grad_clip_value,
+        )
+    if isinstance(o, SGD):
+        return _core.PyOptimiser.Sgd(
+            lr=o.lr,
+            momentum=o.momentum,
+            dampening=o.dampening,
+            nesterov=o.nesterov,
+            weight_decay=o.weight_decay,
+            grad_clip_norm=o.grad_clip_norm,
+            grad_clip_value=o.grad_clip_value,
+        )
+    raise TypeError(f"optimiser must be Adam, AdamW or SGD, got {o!r}")
+
+
 def _native_training(t: Training) -> Any:
     return _core.PyTrainingConfig(
-        lr=t.lr,
+        optimiser=_native_optimiser(t.optimiser),
         num_epochs=t.epochs,
         batch_size=t.batch_size,
         validation_interval=t.validation_interval,
-        beta_1=t.beta_1,
-        beta_2=t.beta_2,
-        epsilon=t.epsilon,
-        amsgrad=t.amsgrad,
-        weight_decay=t.weight_decay,
-        grad_clip_norm=t.grad_clip_norm,
-        grad_clip_value=t.grad_clip_value,
         save_horizons=t.save_horizons,
         num_checkpoints=t.num_checkpoints,
         early_stopping_patience=t.early_stopping_patience,

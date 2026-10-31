@@ -15,14 +15,14 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
-use burn::tensor::backend::Backend;
 use burn::tensor::Tensor;
+use burn::tensor::backend::Backend;
 
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
 use crate::learning::Loss;
-use crate::mdd::arena::{compile_constraints, MddCompilationConfig};
+use crate::mdd::arena::{MddCompilationConfig, compile_constraints};
 use crate::mdd::wmc::log_wmc_and_gradient;
 use crate::mdd::{CompiledConstraint, MddArena};
 use crate::modelling::Problem;
@@ -601,8 +601,8 @@ mod loss_tests {
     use burn::data::dataset::Dataset;
 
     use crate::constraints::{all_different, not_equals};
-    use crate::mdd::arena::MddCompilationConfig;
     use crate::mdd::MddArena;
+    use crate::mdd::arena::MddCompilationConfig;
     use crate::modelling::Problem;
 
     use burn::tensor::Int;

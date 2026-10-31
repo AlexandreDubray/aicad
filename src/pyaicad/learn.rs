@@ -18,6 +18,7 @@ use crate::learning::consformer::{
     ConsFormerBatch, ConsFormerBatcher, ConsFormerConfig, ConsFormerDataset, ConsFormerLoss,
     ConsFormerSample, DecomposedMddLoss,
 };
+use crate::learning::optimiser::OptimiserConfig;
 use crate::learning::train::{TrainingConfig, train_model};
 use crate::mdd::arena::MddCompilationConfig;
 use crate::mdd::heuristics::MergeHeuristic;
@@ -26,6 +27,7 @@ use crate::utils::with_rng;
 
 use super::heuristics::{PyMergeHeuristic, PyOrderingHeuristic, PySelectHeuristic};
 use super::local_search::PyDestroyKind;
+use super::optimiser::PyOptimiser;
 use super::problem::PyProblem;
 
 #[pyclass]
@@ -121,26 +123,11 @@ impl From<&PyConsFormerConfig> for ConsFormerConfig {
 
 #[pyclass]
 pub struct PyTrainingConfig {
-    pub lr: f64,
+    /// The optimiser and its hyper-parameters, learning rate included.
+    pub optimiser: PyOptimiser,
     pub num_epochs: usize,
     pub batch_size: usize,
     pub validation_interval: usize,
-    /// Adam's first moment (gradient mean) decay rate.
-    pub beta_1: f64,
-    /// Adam's second moment (gradient variance) decay rate.
-    pub beta_2: f64,
-    /// Numerical-stability floor added to Adam's denominator.
-    pub epsilon: f64,
-    /// Whether to use the AMSGrad variant of Adam.
-    pub amsgrad: bool,
-    /// L2 weight decay penalty. `None` disables it.
-    pub weight_decay: Option<f64>,
-    /// Clip each gradient tensor's global L2 norm to this value, if set. Takes precedence over
-    /// `grad_clip_value` when both are set.
-    pub grad_clip_norm: Option<f64>,
-    /// Clip each gradient element to `[-grad_clip_value, grad_clip_value]`, if set. Ignored when
-    /// `grad_clip_norm` is also set.
-    pub grad_clip_value: Option<f64>,
     /// If true, also save the best-so-far model at a decaying-density set of training-epoch
     /// horizons, each as its own `checkpoint_dir/epoch_<N>/{config.json, weights.mpk}` --
     /// loadable directly, the same way as `checkpoint_dir` itself -- so performance can later be
@@ -161,24 +148,15 @@ pub struct PyTrainingConfig {
 #[pymethods]
 impl PyTrainingConfig {
     #[new]
-    #[pyo3(signature = (lr=3e-4, num_epochs=10, batch_size=32, validation_interval=10,
-            beta_1=0.9, beta_2=0.999, epsilon=1e-5,
-            amsgrad=false, weight_decay=None, grad_clip_norm=None, grad_clip_value=None,
+    #[pyo3(signature = (optimiser, num_epochs=10, batch_size=32, validation_interval=10,
             save_horizons=false, num_checkpoints=15, early_stopping_patience=None,
             early_stopping_min_delta=1e-4, destroy_kind=PyDestroyKind::Random))]
     #[allow(clippy::too_many_arguments)]
     fn new(
-        lr: f64,
+        optimiser: PyOptimiser,
         num_epochs: usize,
         batch_size: usize,
         validation_interval: usize,
-        beta_1: f64,
-        beta_2: f64,
-        epsilon: f64,
-        amsgrad: bool,
-        weight_decay: Option<f64>,
-        grad_clip_norm: Option<f64>,
-        grad_clip_value: Option<f64>,
         save_horizons: bool,
         num_checkpoints: usize,
         early_stopping_patience: Option<usize>,
@@ -186,17 +164,10 @@ impl PyTrainingConfig {
         destroy_kind: PyDestroyKind,
     ) -> Self {
         PyTrainingConfig {
-            lr,
+            optimiser,
             num_epochs,
             batch_size,
             validation_interval,
-            beta_1,
-            beta_2,
-            epsilon,
-            amsgrad,
-            weight_decay,
-            grad_clip_norm,
-            grad_clip_value,
             save_horizons,
             num_checkpoints,
             early_stopping_patience,
@@ -209,17 +180,10 @@ impl PyTrainingConfig {
 impl From<&PyTrainingConfig> for TrainingConfig {
     fn from(c: &PyTrainingConfig) -> Self {
         TrainingConfig {
-            lr: c.lr,
+            optimiser: OptimiserConfig::from(&c.optimiser),
             num_epochs: c.num_epochs,
             batch_size: c.batch_size,
             validation_interval: c.validation_interval,
-            beta_1: c.beta_1,
-            beta_2: c.beta_2,
-            epsilon: c.epsilon,
-            amsgrad: c.amsgrad,
-            weight_decay: c.weight_decay,
-            grad_clip_norm: c.grad_clip_norm,
-            grad_clip_value: c.grad_clip_value,
             save_horizons: c.save_horizons,
             num_checkpoints: c.num_checkpoints,
             early_stopping_patience: c.early_stopping_patience,

@@ -5,6 +5,7 @@ mod heuristics;
 mod learn;
 mod local_search;
 mod logging;
+mod optimiser;
 mod problem;
 mod threads;
 
@@ -21,6 +22,7 @@ pub(crate) use logging::{
     disable_data_log, enable_data_log, set_verbosity_debug, set_verbosity_error,
     set_verbosity_info, set_verbosity_off, set_verbosity_trace, set_verbosity_warning,
 };
+pub(crate) use optimiser::PyOptimiser;
 pub(crate) use problem::PyProblem;
 pub(crate) use threads::{get_num_threads, set_num_threads};
 
@@ -54,6 +56,7 @@ fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMergeHeuristic>()?;
     m.add_class::<PySelectHeuristic>()?;
     m.add_class::<PyConsFormerConfig>()?;
+    m.add_class::<PyOptimiser>()?;
     m.add_class::<PyTrainingConfig>()?;
     m.add_class::<PyNetworkKind>()?;
     m.add_class::<PyDestroyKind>()?;
