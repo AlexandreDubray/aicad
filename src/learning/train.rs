@@ -1,6 +1,6 @@
 use burn::config::Config;
-use burn::data::dataloader::DataLoaderBuilder;
 use burn::data::dataloader::batcher::Batcher;
+use burn::data::dataloader::DataLoaderBuilder;
 use burn::data::dataset::Dataset;
 use burn::module::{AutodiffModule, Module};
 use burn::optim::GradientsParams;
@@ -101,6 +101,12 @@ where
         + 'static,
     L: Loss<B, TBatch> + Loss<B::InnerBackend, VBatch>,
 {
+    if training.validation_interval == 0 || training.validation_interval > training.num_epochs {
+        panic!(
+            "Training over {} epochs and validation interval is {} (should be in [1, {}]",
+            training.num_epochs, training.validation_interval, training.num_epochs
+        );
+    }
     // Let the loss prepare whatever it needs about the problems (e.g. compile their MDDs)
     <L as Loss<B, TBatch>>::prepare(&mut loss_fn, problems);
 
