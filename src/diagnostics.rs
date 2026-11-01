@@ -167,7 +167,9 @@ pub(crate) use data_log;
 mod tests {
     use super::*;
 
-    // The sink is process-wide, so the tests of this module must not overlap.
+    // The sink is process-wide, so the tests of this module must not overlap. Tests of other
+    // modules do not take this lock and may record their own events while a sink is open, so the
+    // events of these tests are named `test_...` and `Scenario::lines` keeps only those.
     static SERIAL: Mutex<()> = Mutex::new(());
 
     /// Holds the test lock, hands out a fresh path, and closes the sink even if the test panics.
@@ -189,7 +191,12 @@ mod tests {
             std::fs::read_to_string(&self.path)
                 .unwrap()
                 .lines()
-                .map(|l| serde_json::from_str(l).unwrap())
+                .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+                .filter(|event| {
+                    event["event"]
+                        .as_str()
+                        .is_some_and(|e| e.starts_with("test_"))
+                })
                 .collect()
         }
     }
@@ -205,12 +212,12 @@ mod tests {
     fn events_are_written_one_per_line_with_their_fields() {
         let s = Scenario::new("round_trip");
         enable(&s.path).unwrap();
-        data_log!("first", epoch = 3usize, loss = 0.5f64, split = "train");
-        data_log!("second", values = vec![1, 2, 3]);
+        data_log!("test_first", epoch = 3usize, loss = 0.5f64, split = "train");
+        data_log!("test_second", values = vec![1, 2, 3]);
         disable();
         let lines = s.lines();
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0]["event"], "first");
+        assert_eq!(lines[0]["event"], "test_first");
         assert_eq!(lines[0]["epoch"], 3);
         assert_eq!(lines[0]["loss"], 0.5);
         assert_eq!(lines[0]["split"], "train");
@@ -221,7 +228,7 @@ mod tests {
     fn non_finite_floats_are_recorded_as_null() {
         let s = Scenario::new("non_finite");
         enable(&s.path).unwrap();
-        data_log!("loss", value = f64::NAN);
+        data_log!("test_loss", value = f64::NAN);
         disable();
         assert!(s.lines()[0]["value"].is_null());
     }
@@ -231,7 +238,7 @@ mod tests {
         let _s = Scenario::new("disabled");
         let mut evaluated = false;
         data_log!(
-            "never",
+            "test_never",
             flag = {
                 evaluated = true;
                 1
@@ -249,7 +256,7 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
         assert!(err.to_string().contains("already being written"), "{err}");
         assert!(!other.exists(), "the refused log must not be created");
-        data_log!("still_first", n = 1);
+        data_log!("test_still_first", n = 1);
         disable();
         assert_eq!(s.lines().len(), 1);
         // Closing makes it possible to open another one.
@@ -288,9 +295,9 @@ mod tests {
     fn a_write_error_closes_the_sink_instead_of_failing_the_run() {
         let _s = Scenario::new("full");
         enable(Path::new("/dev/full")).unwrap();
-        data_log!("lost", n = 1);
+        data_log!("test_lost", n = 1);
         assert!(!is_enabled(), "the first failed write must close the sink");
         // Later events are ignored without further errors.
-        data_log!("also_lost", n = 2);
+        data_log!("test_also_lost", n = 2);
     }
 }

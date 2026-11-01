@@ -458,8 +458,7 @@ mod tests {
         for engine in engines(&problems[..1]) {
             let error = engine
                 .run(&problems, Budget::default(), 0, None)
-                .err()
-                .expect("the problems cannot be searched together");
+                .expect_err("the problems cannot be searched together");
             assert!(error.contains("same number of variables"), "{error}");
         }
     }

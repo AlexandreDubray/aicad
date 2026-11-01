@@ -380,9 +380,9 @@ mod tests {
 
     #[test]
     fn a_row_without_free_position_is_kept_and_needs_no_compiled_state() {
-        let problems = vec![clique_problem(3, 3)];
+        let problem = clique_problem(3, 3);
         let next = repairer(3).repair(
-            &problems[0],
+            &problem,
             None,
             &[2, 1, 0],
             &[],

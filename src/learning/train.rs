@@ -509,32 +509,24 @@ mod tests {
     #[test]
     #[should_panic(expected = "validation interval is 0")]
     fn panic_on_zero_validation_interval() {
-        use crate::neural::consformer::ConsFormerBatch;
-        use burn::tensor::{Int, Tensor};
-
         let (problems, network_config, out_dir) = setup("tmp");
-        let device = NdArrayDevice::default();
         let training = TrainingConfig::new()
             .with_num_epochs(3)
             .with_validation_interval(0)
             .with_batch_size(1);
         std::fs::remove_dir_all(&out_dir).ok();
-        let returned = train(&problems, network_config, training, &out_dir).unwrap();
+        train(&problems, network_config, training, &out_dir).unwrap();
     }
 
     #[test]
     #[should_panic(expected = "validation interval is 4")]
     fn panic_on_out_of_bound_validation_interval() {
-        use crate::neural::consformer::ConsFormerBatch;
-        use burn::tensor::{Int, Tensor};
-
         let (problems, network_config, out_dir) = setup("tmp");
-        let device = NdArrayDevice::default();
         let training = TrainingConfig::new()
             .with_num_epochs(3)
             .with_validation_interval(4)
             .with_batch_size(1);
         std::fs::remove_dir_all(&out_dir).ok();
-        let returned = train(&problems, network_config, training, &out_dir).unwrap();
+        train(&problems, network_config, training, &out_dir).unwrap();
     }
 }
