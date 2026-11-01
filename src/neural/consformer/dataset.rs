@@ -11,8 +11,8 @@ use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
 
 use crate::destroy::DestroyOperator;
-use crate::learning::Batch;
 use crate::modelling::{Problem, VariableIndex};
+use crate::neural::Batch;
 
 use super::ConsFormerInputs;
 
@@ -149,13 +149,35 @@ impl<B: Backend> Dataset<ConsFormerSample<B>> for ConsFormerDataset<B> {
     }
 }
 
-/// Used by `ConsFormerBatcher`: stacks the per-sample attention masks, builds the variable mask
-/// (randomly thinned by `mask_fraction`, or chosen by `destroy`), and samples each problem's
-/// initial assignment.
+/// ConsFormer reads a batch as rectangular tensors and builds its positional embedding once, from
+/// the variables of the first problem, so every problem it handles must have the same variables
+/// (the same count, in the same order). Their domains and constraints may differ.
 ///
-/// `attention_mask_tensors` is consumed (moved into `Tensor::stack`); `var_mask_tensors` and
-/// `problems` are only read. All of them are expected to be in the same sample order and the
-/// same length.
+/// Returns an error when `problems` is empty or its problems do not all have the same number of
+/// variables.
+pub(crate) fn try_shared_number_variables(problems: &[Arc<Problem>]) -> Result<usize, String> {
+    let n = problems
+        .first()
+        .ok_or("a ConsFormer batch needs at least one problem")?
+        .number_variables();
+    if problems.iter().any(|p| p.number_variables() != n) {
+        return Err(
+            "ConsFormer needs every problem of a batch to have the same number of variables"
+                .to_string(),
+        );
+    }
+    Ok(n)
+}
+
+/// [`try_shared_number_variables`] for the callers that cannot recover from a mismatch.
+///
+/// # Panics
+///
+/// If `problems` is empty or its problems do not all have the same number of variables.
+pub(super) fn shared_number_variables(problems: &[Arc<Problem>]) -> usize {
+    try_shared_number_variables(problems).unwrap_or_else(|e| panic!("{e}"))
+}
+
 fn stack_masks_and_sample_assignments<B: Backend>(
     attention_mask_tensors: Vec<Tensor<B, 2, Bool>>,
     var_mask_tensors: &[Tensor<B, 1, Bool>],
@@ -166,7 +188,7 @@ fn stack_masks_and_sample_assignments<B: Backend>(
 ) -> (Tensor<B, 3, Bool>, Tensor<B, 2, Bool>, Tensor<B, 2, Int>) {
     let attention_masks = Tensor::stack(attention_mask_tensors, 0);
 
-    let n = problems[0].number_variables();
+    let n = shared_number_variables(problems);
     let (var_masks_data, init) = match destroy {
         None => {
             let masks = random_var_masks::<B>(var_mask_tensors, mask_fraction);
@@ -335,12 +357,44 @@ impl<B: Backend> Batch<B> for ConsFormerBatch<B> {
         self.var_masks.clone()
     }
 
+    fn check_problems(problems: &[Arc<Problem>]) -> Result<(), String> {
+        try_shared_number_variables(problems).map(|_| ())
+    }
+
+    /// Mirrors how local search turns logits into an assignment: only the
+    /// variables this sample actually masked (destroyed) take the network's argmax. Without
+    /// this, a raw `logits.argmax(2)` asks the network to also reproduce every kept or given
+    /// value (every Sudoku hint, for instance), which it has no training signal for
+    /// (`ConsFormerLoss` and `DecomposedMddLoss` only score masked positions), so the
+    /// satisfaction rate would stay near 0% even once training works.
+    fn decode(&self, logits: Tensor<B, 3>) -> Vec<Vec<isize>> {
+        let proposed: Tensor<B, 2, Int> = logits.argmax(2).squeeze_dim(2);
+        let assignment: Tensor<B, 2, Int> = self
+            .assignments
+            .clone()
+            .mask_where(self.var_masks.clone(), proposed);
+        let row_width = assignment.dims()[1];
+        let values: Vec<isize> = assignment
+            .into_data()
+            .to_vec::<B::IntElem>()
+            .expect("decoded assignment should be an integer tensor")
+            .into_iter()
+            .map(|v| v.elem::<i64>() as isize)
+            .collect();
+        values
+            .chunks(row_width)
+            .zip(&self.problems)
+            .map(|(row, problem)| row[..problem.number_variables()].to_vec())
+            .collect()
+    }
+
     fn for_assignments(
         problems: &[Arc<Problem>],
         assignments: Tensor<B, 2, Int>,
         destroy_mask: Tensor<B, 2, Int>,
         device: &B::Device,
     ) -> Self {
+        shared_number_variables(problems);
         let attention_masks = Tensor::cat(
             problems
                 .iter()
@@ -411,5 +465,31 @@ mod destroy_tests {
         let batch = batch_with(None);
         let masks: Vec<bool> = batch.var_masks.into_data().to_vec().unwrap();
         assert!(masks.iter().all(|&m| m));
+    }
+
+    #[test]
+    fn decode_takes_the_network_choice_only_where_variables_are_masked() {
+        let device = NdArrayDevice::default();
+        let batch = batch_with(Some(Arc::new(OnlyFirst)));
+        // Every variable's logits favour value 2.
+        let logits = Tensor::<NdArray, 3>::from_data(
+            burn::tensor::TensorData::new([0.0f32, 0.0, 1.0].repeat(12), [4, 3, 3]),
+            &device,
+        );
+        let current: Vec<i64> = batch
+            .assignments()
+            .into_data()
+            .to_vec()
+            .expect("integer assignments");
+        let rows = batch.decode(logits);
+        assert_eq!(rows.len(), 4);
+        for (i, row) in rows.iter().enumerate() {
+            // Only the first variable is masked.
+            assert_eq!(row[0], 2);
+            assert_eq!(
+                row[1..],
+                [current[i * 3 + 1] as isize, current[i * 3 + 2] as isize]
+            );
+        }
     }
 }

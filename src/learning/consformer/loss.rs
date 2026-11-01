@@ -15,10 +15,11 @@ use burn::tensor::backend::Backend;
 use burn::tensor::{Int, Tensor};
 
 use crate::constraints::{AllDifferent, Constraint, NotEquals};
-use crate::learning::{Batch, Loss};
+use crate::learning::Loss;
+use crate::neural::Batch;
 
-use super::dataset::ConsFormerBatch;
 use super::utils::{blend_with_current, gumbel_softmax};
+use crate::neural::consformer::ConsFormerBatch;
 
 /// The differentiable penalty ConsFormer uses for a constraint. Constraints with the same penalty
 /// and the same scope size are scored together, as one tensor operation.
@@ -143,8 +144,8 @@ mod tests {
     use crate::constraints::{all_different, not_equals, sum};
     use crate::modelling::Problem;
 
-    use super::super::dataset::{ConsFormerBatcher, ConsFormerDataset};
     use super::*;
+    use crate::neural::consformer::{ConsFormerBatcher, ConsFormerDataset};
 
     type Plain = NdArray;
     type Ad = Autodiff<NdArray>;

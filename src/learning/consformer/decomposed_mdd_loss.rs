@@ -27,8 +27,8 @@ use crate::mdd::wmc::log_wmc_and_gradient;
 use crate::mdd::{CompiledConstraint, MddArena};
 use crate::modelling::Problem;
 
-use super::dataset::ConsFormerBatch;
 use super::utils::{blend_with_current, gumbel_softmax};
+use crate::neural::consformer::ConsFormerBatch;
 
 const WMC_EPS: f64 = 1e-6;
 
@@ -607,8 +607,8 @@ mod loss_tests {
 
     use burn::tensor::Int;
 
-    use super::super::dataset::{ConsFormerBatcher, ConsFormerDataset};
     use super::*;
+    use crate::neural::consformer::{ConsFormerBatcher, ConsFormerDataset};
 
     /// Every problem is 3 variables, domain `{0,1,2}`, with an `AllDifferent` over all three and
     /// a `NotEquals` over the first two. Generic over the backend so the same builder can be used

@@ -68,52 +68,72 @@ def test_limits_validation():
 
 def test_argument_types():
     with pytest.raises(TypeError):
-        ac.solve(latin(), method="nls")
+        ac.solve(latin(), method="bp")
     with pytest.raises(TypeError):
         ac.solve([latin(), 3])
 
 
-def test_nls_option_validation():
+def test_search_option_validation(tmp_path):
     with pytest.raises(ValueError):
-        ac.NLS(destroy="nope")
+        ac.BeliefPropagationSearch(destroy="nope")
     with pytest.raises(ValueError):
-        ac.NLS(prior="uniform")  # needs decode="mdd"
+        ac.BeliefPropagationSearch(destroy_fraction=0)
     with pytest.raises(ValueError):
-        ac.NLS(destroy_fraction=0)
+        ac.BeliefPropagationSearch(bp_iterations=0)
     with pytest.raises(ValueError):
-        ac.NLS.preset("nope")
-    assert ac.NLS.preset("consformer-mdd", decode="logits").decode == "logits"
+        ac.BeliefPropagationSearch(batch_size=0)
+    with pytest.raises(ValueError):
+        ac.NeuralPriorSearch(tmp_path, destroy="nope")
+    with pytest.raises(ValueError):
+        ac.NeuralPriorBPSearch(tmp_path, bp_iterations=0)
+    # A search has the settings of its architecture and no other.
+    with pytest.raises(TypeError):
+        ac.BeliefPropagationSearch(checkpoint=tmp_path)
+    with pytest.raises(TypeError):
+        ac.NeuralPriorSearch(tmp_path, bp_iterations=2)
+    with pytest.raises(TypeError):
+        ac.NeuralPriorBPSearch(tmp_path, temperature=2.0)
+    assert ac.NeuralPriorBPSearch(tmp_path).destroy == "related"
+    assert ac.BeliefPropagationSearch().with_(bp_iterations=3).bp_iterations == 3
 
 
-def test_nls_needs_a_checkpoint_with_a_network_prior(tmp_path):
+def test_a_consformer_search_needs_a_checkpoint(tmp_path):
+    with pytest.raises(TypeError):
+        ac.NeuralPriorSearch()
     with pytest.raises(CheckpointError):
-        ac.solve(latin(), ac.NLS())
+        ac.solve(latin(), ac.NeuralPriorSearch(tmp_path))  # not a checkpoint
     with pytest.raises(CheckpointError):
-        ac.solve(latin(), ac.NLS(tmp_path))  # not a checkpoint
+        ac.solve(latin(), ac.NeuralPriorBPSearch(tmp_path))
 
 
-def test_nls_with_uniform_prior_and_mdd_decoding_solves():
+def test_belief_propagation_search_solves():
     models = [latin(4) for _ in range(3)]
-    method = ac.NLS(
-        prior="uniform",
-        decode="mdd",
+    method = ac.BeliefPropagationSearch(
         destroy="related",
         destroy_fraction=0.5,
         stochastic=True,
         bp_iterations=3,
     )
     results = ac.solve(models, method, Limits(iterations=500), seed=0)
-    again = ac.solve(models, method, Limits(iterations=500), seed=0)
-    assert [r.iterations for r in results] == [r.iterations for r in again]
     assert len(results) == 3
     for m, r in zip(models, results):
-        assert r.method == "nls" and r.iterations is not None and r.iterations >= 0
+        assert r.method == "bp" and r.iterations is not None and r.iterations >= 0
         if r.found:
             assert m.check(r.assignment)
     assert any(r.found for r in results)
     assert all(r.compile_time <= r.runtime for r in results)
 
 
-def test_nls_single_model_gives_a_single_result():
-    r = ac.solve(latin(4), ac.NLS(prior="uniform", decode="mdd"), Limits(iterations=20), seed=1)
+def test_belief_propagation_search_batches_problems_of_different_sizes():
+    models = [latin(3), latin(4), impossible()]
+    results = ac.solve(models, ac.BeliefPropagationSearch(), Limits(iterations=500), seed=0)
+    assert len(results) == 3
+    assert results[2].status is Status.UNKNOWN  # a search cannot prove infeasibility
+    for m, r in zip(models, results):
+        if r.found:
+            assert m.check(r.assignment)
+
+
+def test_belief_propagation_search_single_model_gives_a_single_result():
+    r = ac.solve(latin(4), ac.BeliefPropagationSearch(), Limits(iterations=20), seed=1)
     assert isinstance(r, ac.Result)

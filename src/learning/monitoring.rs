@@ -1,10 +1,8 @@
 use std::collections::HashMap;
 
-use burn::prelude::ElementConversion;
-use burn::tensor::backend::Backend;
-use burn::tensor::{Int, Tensor};
+use std::sync::Arc;
 
-use crate::learning::Batch;
+use crate::modelling::Problem;
 
 struct ConstraintStats {
     count: usize,
@@ -59,40 +57,23 @@ pub(crate) struct SatisfactionReport {
 }
 
 impl SatisfactionReport {
-    /// Builds a report for the current batch. Mirrors how `local_search::decode::Argmax` turns logits
-    /// into an assignment -- only the variables this sample actually masked (destroyed) take the
-    /// network's argmax; every other position keeps `batch`'s current/given value regardless of
-    /// what the network predicted there. Without this, a raw `logits.argmax(2)` asks the network
-    /// to also correctly reproduce every kept/given value (e.g. every Sudoku hint, every
-    /// non-masked cell) on top of actually solving the masked ones, which it has no training
-    /// signal to do (`ConsFormerLoss`/`DecomposedMddLoss` only score masked positions -- see
-    /// `blend_with_current` in `consformer::loss`) -- so the printed satisfaction rate stays
-    /// near-permanently at 0% even once training is actually working.
-    pub(crate) fn build<B: Backend, Ba: Batch<B>>(logits: Tensor<B, 3>, batch: &Ba) -> Self {
-        let problems = batch.problems();
-        let batch_size = problems.len();
-
-        let proposed: Tensor<B, 2, Int> = logits.argmax(2).squeeze_dim(2);
-        let assignment: Tensor<B, 2, Int> =
-            batch.assignments().mask_where(batch.var_masks(), proposed);
-        let assignment: Vec<i64> = assignment
-            .into_data()
-            .to_vec::<B::IntElem>()
-            .expect("decoded assignment should be an integer tensor")
-            .into_iter()
-            .map(|v| v.elem::<i64>())
-            .collect();
+    /// Builds a report for `assignments`, one per problem of `problems`, in the same order. Each
+    /// assignment holds one value per variable of its problem; assignments need not have the same
+    /// length.
+    ///
+    /// # Panics
+    ///
+    /// If there are not as many assignments as problems.
+    pub(crate) fn build(problems: &[Arc<Problem>], assignments: &[Vec<isize>]) -> Self {
+        assert_eq!(
+            problems.len(),
+            assignments.len(),
+            "a report needs one assignment per problem"
+        );
 
         let mut by_constraint: HashMap<&'static str, ConstraintStats> = HashMap::new();
 
-        for (i, problem) in problems.iter().enumerate().take(batch_size) {
-            let number_vars = problem.number_variables();
-            let start = i * number_vars;
-            let sample_assignment: Vec<isize> = assignment[start..start + number_vars]
-                .iter()
-                .map(|&v| v as isize)
-                .collect();
-
+        for (problem, sample_assignment) in problems.iter().zip(assignments) {
             // First tally (satisfied, total) per constraint type, within
             // this problem only.
             let mut per_type: HashMap<&'static str, (usize, usize)> = HashMap::new();
@@ -100,7 +81,7 @@ impl SatisfactionReport {
                 let c = &problem[constraint];
                 let entry = per_type.entry(c.name()).or_insert((0, 0));
                 entry.1 += 1;
-                if c.is_satisfied(&sample_assignment) {
+                if c.is_satisfied(sample_assignment) {
                     entry.0 += 1;
                 }
             }
@@ -170,5 +151,39 @@ impl SatisfactionReport {
                 stats.stddev() * 100.0,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constraints::not_equals;
+
+    fn chain(variables: usize) -> Arc<Problem> {
+        let mut problem = Problem::default();
+        let vars: Vec<_> = (0..variables)
+            .map(|_| problem.add_variable(vec![0, 1], None))
+            .collect();
+        for pair in vars.windows(2) {
+            not_equals(&mut problem, pair[0], pair[1]);
+        }
+        Arc::new(problem)
+    }
+
+    #[test]
+    fn problems_of_different_sizes_are_scored_each_on_its_own_assignment() {
+        let problems = vec![chain(2), chain(4)];
+        // The first satisfies its constraint, the second violates two of its three.
+        let report = SatisfactionReport::build(&problems, &[vec![0, 1], vec![0, 0, 0, 1]]);
+        let stats = &report.by_constraint["Not Equals"];
+        assert_eq!(stats.count, 2);
+        assert!((stats.max() - 1.0).abs() < 1e-12);
+        assert!((stats.min() - 1.0 / 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    #[should_panic(expected = "one assignment per problem")]
+    fn every_problem_needs_an_assignment() {
+        SatisfactionReport::build(&[chain(2)], &[]);
     }
 }

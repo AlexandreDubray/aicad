@@ -6,7 +6,7 @@ use burn::nn::{
 use burn::tensor::{Bool, Int, Tensor, backend::Backend};
 
 use super::ConsFormerInputs;
-use crate::learning::*;
+use crate::neural::*;
 
 // --- Embedding --- //
 

@@ -139,7 +139,7 @@ def test_fit_then_solve_with_the_checkpoint(tmp_path, recipe):
     assert ckpt.domain_size == 3  # 'auto': covers the values 0..2
     assert learning.load(ckpt.path).config == ckpt.config
     test = problems(3)
-    for method in (ac.NLS(ckpt), ac.NLS.preset(recipe, ckpt.path)):
+    for method in (ac.NeuralPriorSearch(ckpt), ac.NeuralPriorBPSearch(ckpt.path)):
         results = ac.solve(test, method, ac.Limits(iterations=30), seed=0)
         assert len(results) == 3
         for m, r in zip(test, results):

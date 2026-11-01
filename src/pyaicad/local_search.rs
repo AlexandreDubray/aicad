@@ -1,29 +1,27 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 
 use burn::backend::cuda::{Cuda, CudaDevice};
 use burn::backend::ndarray::{NdArray, NdArrayDevice};
-use burn::config::Config;
 use burn::tensor::backend::Backend;
 
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::RngExt;
 
 use crate::destroy::{DestroyKind, DestroyOperator};
-use crate::learning::consformer::{ConsFormer, ConsFormerBatch, ConsFormerConfig};
-use crate::local_search::decode::{Decoder, DecomposedMddSampling};
 use crate::local_search::{
-    Budget, DecodeKind, NetworkKind, NetworkPrior, NeuralLocalSearch, PriorHeuristic, PriorKind,
-    SolveConfig, UniformPrior, load_network,
+    BeliefPropagationSearch, BeliefPropagationSearchConfig, Budget, LocalSearch,
+    NeuralPriorBpSearch, NeuralPriorBpSearchConfig, NeuralPriorSearch, NeuralPriorSearchConfig,
+    SearchConfig, SolveConfig,
 };
-use crate::mdd::arena::MddCompilationConfig;
 use crate::modelling::{Problem, Solution, Status};
-use crate::utils::DecodeMode;
+use crate::neural::consformer::{ConsFormer, ConsFormerBatch, ConsFormerConfig};
+use crate::neural::{Batch, load_network};
 
 use super::learn::cuda_available;
 use super::problem::PyProblem;
@@ -82,20 +80,6 @@ impl From<Status> for PyStatus {
 
 #[pyclass(from_py_object)]
 #[derive(Clone)]
-pub enum PyNetworkKind {
-    ConsFormer,
-}
-
-impl From<&PyNetworkKind> for NetworkKind {
-    fn from(kind: &PyNetworkKind) -> Self {
-        match kind {
-            PyNetworkKind::ConsFormer => NetworkKind::ConsFormer,
-        }
-    }
-}
-
-#[pyclass(from_py_object)]
-#[derive(Clone)]
 pub enum PyDestroyKind {
     Random,
     Worst,
@@ -122,77 +106,8 @@ impl PyDestroyKind {
     }
 }
 
-/// Where each step's prior over values comes from -- see `local_search::prior::PriorHeuristic`.
-#[pyclass(from_py_object)]
-#[derive(Clone)]
-pub enum PyPriorKind {
-    Network,
-    Uniform,
-}
-
-impl From<&PyPriorKind> for PriorKind {
-    fn from(kind: &PyPriorKind) -> Self {
-        match kind {
-            PyPriorKind::Network => PriorKind::Network,
-            PyPriorKind::Uniform => PriorKind::Uniform,
-        }
-    }
-}
-
-/// Which decoding operator to build -- see `local_search::DecodeKind`.
-#[pyclass(from_py_object)]
-#[derive(Clone)]
-pub enum PyDecodeKind {
-    Logits,
-    MddSampling,
-}
-
-impl From<&PyDecodeKind> for DecodeKind {
-    fn from(kind: &PyDecodeKind) -> Self {
-        match kind {
-            PyDecodeKind::Logits => DecodeKind::Logits,
-            PyDecodeKind::MddSampling => DecodeKind::MddSampling,
-        }
-    }
-}
-
-/// Builds the decoder of neural local search. `DecodeKind::Logits` picks greedy (`Argmax`)
-/// vs. stochastic (`Sampling`) decoding of the network's raw logits, per `stochastic_decode`;
-/// `DecodeKind::MddSampling` instead refines those same logits through belief propagation
-/// over the problem's compiled MDDs before decoding -- see `DecomposedMddSampling`'s doc.
-fn build_decoder(
-    decode_kind: DecodeKind,
-    stochastic_decode: bool,
-    temperature: f64,
-    bp_iterations: usize,
-    domain_size: usize,
-) -> Decoder {
-    match decode_kind {
-        DecodeKind::Logits => {
-            if stochastic_decode {
-                Decoder::Sampling { temperature }
-            } else {
-                Decoder::Argmax
-            }
-        }
-        DecodeKind::MddSampling => {
-            let mode = if stochastic_decode {
-                DecodeMode::Sample
-            } else {
-                DecodeMode::Greedy
-            };
-            Decoder::DecomposedMddSampling(DecomposedMddSampling::new(
-                MddCompilationConfig::default(),
-                domain_size,
-                mode,
-                bp_iterations,
-            ))
-        }
-    }
-}
-
 /// Accepts either a single `PyProblem` or a list of them, so
-/// `neural_local_search` can solve one problem or a whole batch through the
+/// `local_search` can solve one problem or a whole batch through the
 /// same entry point.
 #[derive(FromPyObject)]
 pub(crate) enum PyProblemsArg<'py> {
@@ -200,32 +115,86 @@ pub(crate) enum PyProblemsArg<'py> {
     Single(PyRef<'py, PyProblem>),
 }
 
+/// The architecture of a local search and its settings, one variant per architecture.
+///
+/// Every variant holds every setting, so that the Python side picks an architecture by building
+/// the matching variant; the defaults live in Python (the classes of `pyaicad.solve`).
+#[pyclass(from_py_object)]
+#[derive(Clone)]
+pub enum PySearch {
+    /// A trained network, decoding its logits. `temperature` only matters when `stochastic`.
+    NeuralPrior {
+        destroy_kind: PyDestroyKind,
+        destroy_fraction: f64,
+        stochastic: bool,
+        temperature: f64,
+    },
+    /// A trained network whose probabilities are the prior of belief propagation over the MDDs of
+    /// the constraints.
+    NeuralPriorBp {
+        destroy_kind: PyDestroyKind,
+        destroy_fraction: f64,
+        stochastic: bool,
+        bp_iterations: usize,
+    },
+    /// Belief propagation over the MDDs of the constraints from uniform probabilities, on the CPU
+    /// only: no network and no checkpoint.
+    BeliefPropagation {
+        destroy_kind: PyDestroyKind,
+        destroy_fraction: f64,
+        stochastic: bool,
+        bp_iterations: usize,
+    },
+}
+
+impl From<&PySearch> for SearchConfig {
+    fn from(search: &PySearch) -> Self {
+        match search {
+            PySearch::NeuralPrior {
+                destroy_kind,
+                destroy_fraction,
+                stochastic,
+                temperature,
+            } => SearchConfig::NeuralPrior(NeuralPriorSearchConfig {
+                destroy_kind: destroy_kind.into(),
+                destroy_fraction: *destroy_fraction,
+                stochastic: *stochastic,
+                temperature: *temperature,
+            }),
+            PySearch::NeuralPriorBp {
+                destroy_kind,
+                destroy_fraction,
+                stochastic,
+                bp_iterations,
+            } => SearchConfig::NeuralPriorBp(NeuralPriorBpSearchConfig {
+                destroy_kind: destroy_kind.into(),
+                destroy_fraction: *destroy_fraction,
+                stochastic: *stochastic,
+                bp_iterations: *bp_iterations,
+            }),
+            PySearch::BeliefPropagation {
+                destroy_kind,
+                destroy_fraction,
+                stochastic,
+                bp_iterations,
+            } => SearchConfig::BeliefPropagation(BeliefPropagationSearchConfig {
+                destroy_kind: destroy_kind.into(),
+                destroy_fraction: *destroy_fraction,
+                stochastic: *stochastic,
+                bp_iterations: *bp_iterations,
+            }),
+        }
+    }
+}
+
+/// What a run takes beyond its search: the batching, the limits and the seed.
 #[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct PySolveConfig {
     #[pyo3(get, set)]
-    pub network_kind: PyNetworkKind,
+    pub search: PySearch,
     #[pyo3(get, set)]
     pub batch_size: Option<usize>,
-    #[pyo3(get, set)]
-    pub destroy_kind: PyDestroyKind,
-    #[pyo3(get, set)]
-    pub destroy_fraction: f64,
-    #[pyo3(get, set)]
-    pub stochastic_decode: bool,
-    #[pyo3(get, set)]
-    pub temperature: f64,
-    /// Which decode operator to use
-    #[pyo3(get, set)]
-    pub decode_kind: PyDecodeKind,
-    /// Number of loopy belief propagation rounds `DecomposedMddSampling` runs over the problem's
-    /// compiled MDDs before decoding -- see `belief_propagation`'s doc.
-    #[pyo3(get, set)]
-    pub bp_iterations: usize,
-    /// Where each step's prior comes from: `Network` (the checkpoint's network) or `Uniform`
-    /// (no network evaluated; needs `decode_kind=MddSampling`).
-    #[pyo3(get, set)]
-    pub prior_kind: PyPriorKind,
     #[pyo3(get, set)]
     pub time_limit: Option<u64>,
     #[pyo3(get, set)]
@@ -237,45 +206,17 @@ pub struct PySolveConfig {
 #[pymethods]
 impl PySolveConfig {
     #[new]
-    #[pyo3(signature = (
-        network_kind=PyNetworkKind::ConsFormer,
-        batch_size=None,
-        destroy_kind=PyDestroyKind::Random,
-        destroy_fraction=1.0,
-        stochastic_decode=false,
-        temperature=1.0,
-        decode_kind=PyDecodeKind::Logits,
-        bp_iterations=1,
-        prior_kind=PyPriorKind::Network,
-        time_limit=None,
-        iteration_limit=None,
-        seed=None,
-    ))]
-    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (search, batch_size=None, time_limit=None, iteration_limit=None, seed=None))]
     fn new(
-        network_kind: PyNetworkKind,
+        search: PySearch,
         batch_size: Option<usize>,
-        destroy_kind: PyDestroyKind,
-        destroy_fraction: f64,
-        stochastic_decode: bool,
-        temperature: f64,
-        decode_kind: PyDecodeKind,
-        bp_iterations: usize,
-        prior_kind: PyPriorKind,
         time_limit: Option<u64>,
         iteration_limit: Option<usize>,
         seed: Option<u64>,
     ) -> Self {
         PySolveConfig {
-            network_kind,
+            search,
             batch_size,
-            destroy_kind,
-            destroy_fraction,
-            stochastic_decode,
-            temperature,
-            decode_kind,
-            bp_iterations,
-            prior_kind,
             time_limit,
             iteration_limit,
             seed,
@@ -285,50 +226,48 @@ impl PySolveConfig {
 
 impl From<&PySolveConfig> for SolveConfig {
     fn from(c: &PySolveConfig) -> Self {
-        SolveConfig {
-            network_kind: (&c.network_kind).into(),
-            batch_size: c.batch_size,
-            destroy_kind: (&c.destroy_kind).into(),
-            destroy_fraction: c.destroy_fraction,
-            stochastic_decode: c.stochastic_decode,
-            temperature: c.temperature,
-            decode_kind: (&c.decode_kind).into(),
-            bp_iterations: c.bp_iterations,
-            prior_kind: (&c.prior_kind).into(),
-            time_limit: c.time_limit,
-            iteration_limit: c.iteration_limit,
-            seed: c.seed,
+        let mut config = SolveConfig::default().with_search((&c.search).into());
+        if let Some(seconds) = c.time_limit {
+            config = config.with_runtime_limit(seconds);
         }
+        if let Some(iterations) = c.iteration_limit {
+            config = config.with_iteration_limit(iterations);
+        }
+        if let Some(batch_size) = c.batch_size {
+            config = config.with_batch_size(batch_size);
+        }
+        if let Some(seed) = c.seed {
+            config = config.with_seed(seed);
+        }
+        config
     }
 }
 
-/// Runs neural local search on `problems` (a single `Problem` or a list of
-/// them, batched together into one search) using a network loaded from
-/// `checkpoint_dir` (the `config.json` + `weights` produced by
-/// `train_consformer`). Returns a single `PySolution` when given a single
-/// problem, or a list of `PySolution` (in the same order as `problems`) when
-/// given a list. Every problem in a batch must have the same number of
-/// variables.
+/// Runs a local search on `problems` (a single `Problem` or a list of them, batched together into
+/// one search). Returns a single `PySolution` when given a single problem, or a list of
+/// `PySolution` (in the same order as `problems`) when given a list.
 ///
-/// `batch_size` caps how many problems are stepped together on the device; the list is processed
-/// in batches of at most that size, one after the other, reusing the same loaded network. Left
-/// unset, every problem is in a single batch. `time_limit` and `iteration_limit` apply per
-/// batch, matching the classical-CP convention of a private timeout per instance when
-/// `batch_size=1`: `time_limit=10` gives each batch up to 10 seconds, not 10 seconds in total
-/// across the call.
+/// `config` holds the architecture of the search with its settings (see `PySearch`), the
+/// batching, the limits and the seed. The neural architectures use the network of
+/// `checkpoint_dir` (the `config.json` + `weights` produced by `train_consformer`) and need it;
+/// the belief-propagation one uses none and refuses it.
 ///
-/// `checkpoint_dir` may be omitted only with `prior_kind=Uniform`, which evaluates no network at
-/// all; if given alongside it, only its `config.json` is read (for the value alphabet).
+/// `batch_size` caps how many problems are stepped together; the list is processed in batches of
+/// at most that size, one after the other, reusing the same loaded network. Left unset, every
+/// problem is in a single batch. `time_limit` and `iteration_limit` apply per batch, matching the
+/// classical-CP convention of a private timeout per instance when `batch_size=1`:
+/// `time_limit=10` gives each batch up to 10 seconds, not 10 seconds in total across the call.
 ///
-/// `config` gathers every knob unrelated to `problems`/`checkpoint_dir` (see `PySolveConfig`);
-/// left unset, it's `PySolveConfig()` -- today's zero-config defaults.
+/// Releases the GIL for the whole search: everything it needs is extracted into plain, `Send`
+/// Rust values *before* the release, so nothing inside the closure touches Python (see
+/// `train_consformer`'s doc for why that matters for progressive logging).
 #[pyfunction]
-#[pyo3(signature = (problems, checkpoint_dir=None, config=None))]
-pub(crate) fn neural_local_search(
+#[pyo3(name = "local_search", signature = (problems, config, checkpoint_dir=None))]
+pub(crate) fn run_local_search(
     py: Python<'_>,
     problems: PyProblemsArg<'_>,
+    config: PySolveConfig,
     checkpoint_dir: Option<String>,
-    config: Option<PySolveConfig>,
 ) -> PyResult<Py<PyAny>> {
     let is_single = matches!(problems, PyProblemsArg::Single(_));
     let problems: Vec<Arc<Problem>> = match problems {
@@ -337,25 +276,11 @@ pub(crate) fn neural_local_search(
     };
     if problems.is_empty() {
         return Err(PyValueError::new_err(
-            "neural_local_search: `problems` must be non-empty",
+            "local_search: `problems` must be non-empty",
         ));
     }
-    let n = problems[0].number_variables();
-    if problems.iter().any(|p| p.number_variables() != n) {
-        return Err(PyValueError::new_err(
-            "neural_local_search: all problems in a batch must have the same number of variables",
-        ));
-    }
-
     let checkpoint_dir = checkpoint_dir.map(PathBuf::from);
-    let config: SolveConfig = config.as_ref().map(SolveConfig::from).unwrap_or_default();
-    let budget = Budget {
-        time_limit: config
-            .time_limit
-            .map(Duration::from_secs)
-            .unwrap_or(Duration::MAX),
-        iteration_limit: config.iteration_limit.unwrap_or(usize::MAX),
-    };
+    let config = SolveConfig::from(&config);
     // Drawn from the process-wide RNG (see `crate::utils::rng`) so that, when `set_seed` has been
     // called, even a caller that leaves `seed` unset gets a reproducible destroy sequence instead
     // of a fresh OS-entropy one each time.
@@ -363,30 +288,31 @@ pub(crate) fn neural_local_search(
         .seed
         .unwrap_or_else(|| crate::utils::with_rng(|rng| rng.random_range(0..u64::MAX)));
 
-    // Releases the GIL for the actual search -- see `train_consformer`'s doc for why. Everything
-    // captured here (`problems: Vec<Arc<Problem>>`, `config`, `checkpoint_dir`, `budget`, `seed`)
-    // is already a Python-free, `Send` Rust value by this point, so the closure doesn't touch
-    // anything GIL-bound.
-    let solutions = py.detach(move || {
-        if cuda_available() {
-            run::<Cuda>(
-                CudaDevice::default(),
-                problems,
-                checkpoint_dir.as_deref(),
-                &config,
-                budget,
-                seed,
-            )
-        } else {
-            run::<NdArray>(
-                NdArrayDevice::default(),
-                problems,
-                checkpoint_dir.as_deref(),
-                &config,
-                budget,
-                seed,
-            )
+    let solutions = py.detach(move || match &config.search {
+        // No device is involved, so none is probed.
+        SearchConfig::BeliefPropagation(search) => {
+            if checkpoint_dir.is_some() {
+                return Err(PyValueError::new_err(
+                    "the belief-propagation search uses no network: do not give a checkpoint",
+                ));
+            }
+            let engine = LocalSearch::new(Box::new(BeliefPropagationSearch::new(search)));
+            batched_run(&engine, &problems, config.batch_size, config.budget, seed)
         }
+        _ if cuda_available() => run::<Cuda>(
+            CudaDevice::default(),
+            problems,
+            checkpoint_dir.as_deref(),
+            &config,
+            seed,
+        ),
+        _ => run::<NdArray>(
+            NdArrayDevice::default(),
+            problems,
+            checkpoint_dir.as_deref(),
+            &config,
+            seed,
+        ),
     })?;
 
     if is_single {
@@ -404,97 +330,58 @@ pub(crate) fn neural_local_search(
     }
 }
 
+/// Runs the neural search of `config` on the device `B`, with the ConsFormer network of the
+/// checkpoint.
 fn run<B: Backend>(
     device: B::Device,
     problems: Vec<Arc<Problem>>,
     checkpoint_dir: Option<&Path>,
     config: &SolveConfig,
-    budget: Budget,
     seed: u64,
 ) -> PyResult<Vec<Solution>> {
-    let SolveConfig {
-        network_kind,
-        prior_kind,
-        decode_kind,
-        ..
-    } = *config;
-
-    if prior_kind == PriorKind::Uniform && decode_kind != DecodeKind::MddSampling {
-        return Err(PyValueError::new_err(
-            "prior_kind=uniform needs decode_kind=mdd_sampling: decoding flat logits directly \
-             carries no information",
-        ));
-    }
-
-    let load_error = |dir: &Path, e: &dyn std::fmt::Display| {
-        PyRuntimeError::new_err(format!(
-            "failed to load network from checkpoint {}: {e}",
-            dir.display()
-        ))
+    let dir = checkpoint_dir
+        .ok_or_else(|| PyValueError::new_err("a neural search needs a checkpoint_dir"))?;
+    // Building the network reads the variables of the problems, so they are checked first.
+    ConsFormerBatch::<B>::check_problems(&problems).map_err(PyValueError::new_err)?;
+    let (_, network) =
+        load_network::<B, ConsFormerConfig>(dir, &problems, &device).map_err(|e| {
+            PyValueError::new_err(format!(
+                "failed to load network from checkpoint {}: {e}",
+                dir.display()
+            ))
+        })?;
+    let engine = match &config.search {
+        SearchConfig::NeuralPrior(c) => {
+            LocalSearch::new(Box::new(NeuralPriorSearch::<
+                B,
+                ConsFormerBatch<B>,
+                ConsFormer<B>,
+            >::new(network, c, device)))
+        }
+        SearchConfig::NeuralPriorBp(c) => {
+            LocalSearch::new(Box::new(NeuralPriorBpSearch::<
+                B,
+                ConsFormerBatch<B>,
+                ConsFormer<B>,
+            >::new(network, c, device)))
+        }
+        SearchConfig::BeliefPropagation(_) => {
+            unreachable!("the belief-propagation search runs without a device")
+        }
     };
-
-    let (prior, domain_size): (Box<dyn PriorHeuristic<B>>, usize) = match network_kind {
-        NetworkKind::ConsFormer => match prior_kind {
-            PriorKind::Network => {
-                let dir = checkpoint_dir.ok_or_else(|| {
-                    PyValueError::new_err("prior_kind=network needs a checkpoint_dir")
-                })?;
-                let (network_config, network) =
-                    load_network::<B, ConsFormerConfig>(dir, &problems, &device)
-                        .map_err(|e| load_error(dir, &e))?;
-                (
-                    Box::new(NetworkPrior::<ConsFormer<B>, ConsFormerBatch<B>>::new(
-                        network,
-                    )),
-                    network_config.domain_size,
-                )
-            }
-            PriorKind::Uniform => {
-                // The alphabet the MDDs are compiled over has to match the one the network
-                // variant would use, so take it from the checkpoint's config when one is given
-                // (its weights are not loaded); otherwise cover the problems' own values.
-                let domain_size = match checkpoint_dir {
-                    Some(dir) => {
-                        ConsFormerConfig::load(dir.join("config.json"))
-                            .map_err(|e| load_error(dir, &e))?
-                            .domain_size
-                    }
-                    None => UniformPrior::domain_size_covering(&problems),
-                };
-                (Box::new(UniformPrior::new(domain_size)), domain_size)
-            }
-        },
-    };
-
-    let destroy_op = config.destroy_kind.build(config.destroy_fraction);
-    let decoder = build_decoder(
-        decode_kind,
-        config.stochastic_decode,
-        config.temperature,
-        config.bp_iterations,
-        domain_size,
-    );
-
-    let nls = NeuralLocalSearch::<B>::new(prior, destroy_op, decoder, device);
-    Ok(batched_run(
-        &nls,
-        &problems,
-        config.batch_size,
-        budget,
-        seed,
-    ))
+    batched_run(&engine, &problems, config.batch_size, config.budget, seed)
 }
 
 /// Solves `problems` in batches of at most `batch_size` (all of them in one batch if unset), one
 /// batch after the other. The seed of a batch is `seed` plus its index, so that the batches do not
 /// replay the same destroy sequence. Every batch gets the full `budget`.
-fn batched_run<B: Backend>(
-    nls: &NeuralLocalSearch<B>,
+fn batched_run(
+    nls: &LocalSearch,
     problems: &[Arc<Problem>],
     batch_size: Option<usize>,
     budget: Budget,
     seed: u64,
-) -> Vec<Solution> {
+) -> PyResult<Vec<Solution>> {
     let batch_size = batch_size.unwrap_or(problems.len()).max(1);
     let batches: Vec<&[Arc<Problem>]> = problems.chunks(batch_size).collect();
     log::info!(
@@ -516,12 +403,14 @@ fn batched_run<B: Backend>(
     let mut solutions = Vec::with_capacity(problems.len());
     for (batch_idx, batch) in batches.iter().enumerate() {
         let batch_start = Instant::now();
-        let batch_solutions = nls.run(
-            batch,
-            budget,
-            seed.wrapping_add(batch_idx as u64),
-            Some(&progress),
-        );
+        let batch_solutions = nls
+            .run(
+                batch,
+                budget,
+                seed.wrapping_add(batch_idx as u64),
+                Some(&progress),
+            )
+            .map_err(PyValueError::new_err)?;
         log_status_counts(
             &format!(
                 "batch {}/{} done in {:.1}s",
@@ -543,7 +432,7 @@ fn batched_run<B: Backend>(
     progress.finish_and_clear();
     log_status_counts("Done", &solutions);
 
-    solutions
+    Ok(solutions)
 }
 
 fn log_status_counts(label: &str, solutions: &[Solution]) {

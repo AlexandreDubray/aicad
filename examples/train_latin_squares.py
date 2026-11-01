@@ -48,8 +48,9 @@ with tempfile.TemporaryDirectory() as directory:
         expand_size=32,
     )
 
-    # Neural local search repairs an assignment with the network; many problems run as one batch.
-    method = ac.NLS.preset("consformer-mdd", checkpoint)
+    # Local search repairs an assignment with the network, refined by belief propagation on the
+    # MDDs; many problems run as one batch.
+    method = ac.NeuralPriorBPSearch(checkpoint)
     results = ac.solve(data.test, method, ac.Limits(time=10, iterations=500), seed=0)
 
 solved = [r for r in results if r.found]

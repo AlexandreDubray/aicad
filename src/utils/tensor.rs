@@ -2,7 +2,7 @@
 //!
 //! # Meaning
 //!
-//! The neural local search keeps a batch as a `[rows, n]` integer tensor with one row per
+//! The ConsFormer local search keeps a batch as a `[rows, n]` integer tensor with one row per
 //! (problem, population member) pair, and does its bookkeeping (constraint checks, destroy
 //! operators, MDD conditioning) on plain `Vec<Vec<isize>>` rows on the CPU. [`rows_to_tensor`]
 //! and [`to_rows`] move between the two.

@@ -28,10 +28,11 @@ ac.solve(model).assignment                                # solve by compilation
   `gcc`, `regular`.
 - **Compile**: `compile(model, width=None)` returns an `MDD` that can be counted, sampled and
   inspected. This function is useful to integrate MDD-based reasoning inside other project.
-- **Solve**: `solve(model_or_models, method, limits)` with `Compilation(...)` or `NLS(...)`, giving
+- **Solve**: `solve(model_or_models, method, limits)` with `Compilation(...)` or a local search, `NeuralPriorSearch(...)`, `NeuralPriorBPSearch(...)` or
+  `BeliefPropagationSearch(...)` (the last needs no network), giving
   a `Result` (status, assignment, runtimes). Status is `FEASIBLE` or `INFEASIBLE` if the search find
   a solution or proves the problem has no solution. In case of timeout, status is `UNKNOWN`.
-- **Learn**: `pyaicad.learning` trains the networks used by `NLS`: `Dataset`, `fit` with a named
+- **Learn**: `pyaicad.learning` trains the networks used by the neural searches: `Dataset`, `fit` with a named
   recipe (`"consformer"`, `"consformer-mdd"`), `load`.
 
 `examples/` has a quick start and a complete train-then-solve script. The models and experiments of

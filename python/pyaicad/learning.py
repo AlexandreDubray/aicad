@@ -2,13 +2,14 @@
 
 A training set is a list of problems: one problem per training example. :class:`Dataset` splits a
 list into training, validation and test sets; :func:`fit` trains a network on it with a named
-recipe; the trained network is a :class:`Checkpoint` that :class:`pyaicad.NLS` solves with.
+recipe; the trained network is a :class:`Checkpoint` that the neural searches (:class:`pyaicad.NeuralPriorSearch`,
+:class:`pyaicad.NeuralPriorBPSearch`) solve with.
 
 >>> import pyaicad as ac
 >>> from pyaicad import learning
 >>> data = learning.Dataset.split(problems, seed=0)                  # doctest: +SKIP
 >>> ckpt = learning.fit(data, "consformer-mdd", checkpoint_dir="ckpt", epochs=50)  # doctest: +SKIP
->>> results = ac.solve(data.test, ac.NLS.preset("consformer-mdd", ckpt))  # doctest: +SKIP
+>>> results = ac.solve(data.test, ac.NeuralPriorBPSearch(ckpt))  # doctest: +SKIP
 """
 
 from __future__ import annotations

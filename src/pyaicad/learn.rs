@@ -13,16 +13,16 @@ use burn::tensor::backend::{AutodiffBackend, Backend};
 use rand::seq::SliceRandom;
 
 use crate::destroy::DestroyOperator;
-use crate::learning::consformer::architecture::MaskingKind;
-use crate::learning::consformer::{
-    ConsFormerBatch, ConsFormerBatcher, ConsFormerConfig, ConsFormerDataset, ConsFormerLoss,
-    ConsFormerSample, DecomposedMddLoss,
-};
+use crate::learning::consformer::{ConsFormerLoss, DecomposedMddLoss};
 use crate::learning::optimiser::OptimiserConfig;
 use crate::learning::train::{TrainingConfig, train_model};
 use crate::mdd::arena::MddCompilationConfig;
 use crate::mdd::heuristics::MergeHeuristic;
 use crate::modelling::Problem;
+use crate::neural::consformer::architecture::MaskingKind;
+use crate::neural::consformer::{
+    ConsFormerBatch, ConsFormerBatcher, ConsFormerConfig, ConsFormerDataset, ConsFormerSample,
+};
 use crate::utils::with_rng;
 
 use super::heuristics::{PyMergeHeuristic, PyOrderingHeuristic, PySelectHeuristic};
@@ -212,7 +212,7 @@ pub(super) fn cuda_available() -> bool {
 /// Seeds *both* backends' RNGs unconditionally (`NdArray` always; `Cuda` only if
 /// `cuda_available()`, since touching an absent GPU would itself panic) rather than just whichever
 /// one the next call happens to dispatch to: `set_seed` has no way to know in advance which
-/// backend a later `train_consformer`/`neural_local_search` call will pick, and seeding the one
+/// backend a later `train_consformer`/`local_search` call will pick, and seeding the one
 /// that won't be used is harmless.
 #[pyfunction]
 pub(crate) fn set_seed(seed: u64) {

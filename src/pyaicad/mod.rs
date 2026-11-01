@@ -15,8 +15,7 @@ pub(crate) use learn::{
     PyConsFormerConfig, PyTrainingConfig, set_seed, train_consformer, train_consformer_mdd,
 };
 pub(crate) use local_search::{
-    PyDecodeKind, PyDestroyKind, PyNetworkKind, PyPriorKind, PySolution, PySolveConfig, PyStatus,
-    neural_local_search,
+    PyDestroyKind, PySearch, PySolution, PySolveConfig, PyStatus, run_local_search,
 };
 pub(crate) use logging::{
     disable_data_log, enable_data_log, set_verbosity_debug, set_verbosity_error,
@@ -58,10 +57,8 @@ fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyConsFormerConfig>()?;
     m.add_class::<PyOptimiser>()?;
     m.add_class::<PyTrainingConfig>()?;
-    m.add_class::<PyNetworkKind>()?;
     m.add_class::<PyDestroyKind>()?;
-    m.add_class::<PyDecodeKind>()?;
-    m.add_class::<PyPriorKind>()?;
+    m.add_class::<PySearch>()?;
     m.add_class::<PySolveConfig>()?;
     m.add_class::<PySolution>()?;
     m.add_class::<PyStatus>()?;
@@ -70,7 +67,7 @@ fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_num_threads, m)?)?;
     m.add_function(wrap_pyfunction!(train_consformer, m)?)?;
     m.add_function(wrap_pyfunction!(train_consformer_mdd, m)?)?;
-    m.add_function(wrap_pyfunction!(neural_local_search, m)?)?;
+    m.add_function(wrap_pyfunction!(run_local_search, m)?)?;
     m.add_function(wrap_pyfunction!(set_verbosity_off, m)?)?;
     m.add_function(wrap_pyfunction!(set_verbosity_error, m)?)?;
     m.add_function(wrap_pyfunction!(set_verbosity_warning, m)?)?;

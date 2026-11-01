@@ -1,84 +1,121 @@
-//! Configuration of a neural-local-search run.
+//! Configuration of a local search run.
+//!
+//! [`SolveConfig`] holds what every local search takes: the budget, the seed and the batching.
+//! What a search is made of is the business of its architecture, and the settings of each live in
+//! a [`SearchConfig`] variant.
 
-use crate::destroy::DestroyKind;
+use std::time::Duration;
 
-/// Architecture of the network producing the priors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum NetworkKind {
-    /// The ConsFormer transformer.
-    #[default]
-    ConsFormer,
+use super::bp_search::BeliefPropagationSearchConfig;
+use super::neural_prior::{NeuralPriorBpSearchConfig, NeuralPriorSearchConfig};
+
+/// Stopping criterion for the search; whichever limit is first reached stops it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Budget {
+    /// Limit on the runtime.
+    pub time_limit: Duration,
+    /// Limit on the number of iterations.
+    pub iteration_limit: usize,
 }
 
-/// Where the priors of each step come from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum PriorKind {
-    /// The checkpoint's network is evaluated at each step.
-    #[default]
-    Network,
-    /// Every value gets the same score and no network is evaluated. Only informative with a
-    /// decoder that uses the constraints, such as [`DecodeKind::MddSampling`].
-    Uniform,
+impl Default for Budget {
+    fn default() -> Self {
+        Budget {
+            time_limit: Duration::MAX,
+            iteration_limit: usize::MAX,
+        }
+    }
 }
 
-/// How the priors become the next assignment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum DecodeKind {
-    /// Decode the priors directly: greedily, or by sampling when `stochastic_decode` is set.
-    #[default]
-    Logits,
-    /// Refine the priors with belief propagation over the problem's decomposed MDDs, then decode.
-    MddSampling,
-}
-
-/// Every knob of a neural-local-search run that is not the problems or the checkpoint.
+/// The architecture of the search and its settings: one variant per
+/// [`SearchArchitecture`](super::SearchArchitecture).
 #[derive(Debug, Clone)]
+pub(crate) enum SearchConfig {
+    /// A trained network, decoding its logits.
+    NeuralPrior(NeuralPriorSearchConfig),
+    /// A trained network whose probabilities are the prior of belief propagation on the MDDs.
+    NeuralPriorBp(NeuralPriorBpSearchConfig),
+    /// Belief propagation on the MDDs from uniform probabilities, on the CPU only.
+    BeliefPropagation(BeliefPropagationSearchConfig),
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        SearchConfig::NeuralPrior(NeuralPriorSearchConfig::default())
+    }
+}
+
+/// Every parameter shared across all possible local searches.
+///
+/// Built from the default, no limit and a single batch, with the `with_*` methods:
+/// `SolveConfig::default().with_runtime_limit(100).with_iteration_limit(2000)`.
+#[derive(Debug, Clone, Default)]
 pub(crate) struct SolveConfig {
-    /// Time limit in seconds, applied to each batch separately; `None` means no time limit.
-    pub time_limit: Option<u64>,
-    /// Maximum number of search iterations per batch; `None` means no iteration limit.
-    pub iteration_limit: Option<usize>,
-    /// Seed of the destroy sequence. `None` draws one from the process-wide generator, so it is
+    /// When the search of a batch stops. It applies to each batch separately.
+    pub budget: Budget,
+    /// Seed of the search. `None` draws one from the process-wide generator, so it is
     /// reproducible when that generator was seeded.
     pub seed: Option<u64>,
-    /// Architecture of the network producing the priors.
-    pub network_kind: NetworkKind,
-    /// Number of problems stepped together on the device; batches run one after the other.
-    /// `None` puts every problem in a single batch. All problems of a batch must have the same
-    /// number of variables.
+    /// Number of problems stepped together; batches run one after the other. `None` puts every
+    /// problem in a single batch. The architecture may restrict which problems can share a batch.
     pub batch_size: Option<usize>,
-    /// Destroy operator choosing the variables to free at each iteration.
-    pub destroy_kind: DestroyKind,
-    /// Fraction of the variables the destroy operator frees at each iteration, in `[0, 1]`.
-    pub destroy_fraction: f64,
-    /// Sample values from the decoder's distribution instead of taking the most likely one.
-    pub stochastic_decode: bool,
-    /// Softmax temperature of the [`DecodeKind::Logits`] decoder when sampling; unused by greedy
-    /// decoding and by [`DecodeKind::MddSampling`].
-    pub temperature: f64,
-    /// How the priors become the next assignment.
-    pub decode_kind: DecodeKind,
-    /// Number of belief-propagation rounds of [`DecodeKind::MddSampling`]; unused otherwise.
-    pub bp_iterations: usize,
-    /// Source of the priors.
-    pub prior_kind: PriorKind,
+    /// The architecture of the search and its settings.
+    pub search: SearchConfig,
 }
 
-impl Default for SolveConfig {
-    fn default() -> Self {
-        Self {
-            time_limit: None,
-            iteration_limit: None,
-            seed: None,
-            network_kind: NetworkKind::default(),
-            batch_size: None,
-            destroy_kind: DestroyKind::default(),
-            destroy_fraction: 1.0,
-            stochastic_decode: false,
-            temperature: 1.0,
-            decode_kind: DecodeKind::default(),
-            bp_iterations: 1,
-            prior_kind: PriorKind::default(),
-        }
+impl SolveConfig {
+    /// Stops the search of each batch after `seconds` seconds.
+    pub(crate) fn with_runtime_limit(mut self, seconds: u64) -> Self {
+        self.budget.time_limit = Duration::from_secs(seconds);
+        self
+    }
+
+    /// Stops the search of each batch after `iterations` iterations.
+    pub(crate) fn with_iteration_limit(mut self, iterations: usize) -> Self {
+        self.budget.iteration_limit = iterations;
+        self
+    }
+
+    /// Steps at most `batch_size` problems together.
+    pub(crate) fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = Some(batch_size);
+        self
+    }
+
+    /// Seeds the search.
+    pub(crate) fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
+        self
+    }
+
+    /// Sets the architecture of the search and its settings.
+    pub(crate) fn with_search(mut self, search: SearchConfig) -> Self {
+        self.search = search;
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_limits_are_set_one_by_one() {
+        let config = SolveConfig::default()
+            .with_runtime_limit(100)
+            .with_iteration_limit(2000)
+            .with_batch_size(400);
+        assert_eq!(config.budget.time_limit, Duration::from_secs(100));
+        assert_eq!(config.budget.iteration_limit, 2000);
+        assert_eq!(config.batch_size, Some(400));
+        assert_eq!(config.seed, None);
+    }
+
+    #[test]
+    fn nothing_is_limited_by_default() {
+        let config = SolveConfig::default();
+        assert_eq!(config.budget.time_limit, Duration::MAX);
+        assert_eq!(config.budget.iteration_limit, usize::MAX);
+        assert_eq!(config.batch_size, None);
     }
 }

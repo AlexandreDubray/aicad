@@ -86,26 +86,23 @@ class PyOptimiser:
 class PyTrainingConfig:
     def __init__(self, **kwargs: Any) -> None: ...
 
-class PyNetworkKind:
-    ConsFormer: "PyNetworkKind"
-
 class PyDestroyKind:
     Random: "PyDestroyKind"
     Worst: "PyDestroyKind"
     Related: "PyDestroyKind"
 
-class PyPriorKind:
-    Network: "PyPriorKind"
-    Uniform: "PyPriorKind"
-
-class PyDecodeKind:
-    Logits: "PyDecodeKind"
-    MddSampling: "PyDecodeKind"
-
 class PyStatus:
     Satisfiable: "PyStatus"
     Unsatisfiable: "PyStatus"
     Unknown: "PyStatus"
+
+class PySearch:
+    @staticmethod
+    def NeuralPrior(**kwargs: Any) -> "PySearch": ...
+    @staticmethod
+    def NeuralPriorBp(**kwargs: Any) -> "PySearch": ...
+    @staticmethod
+    def BeliefPropagation(**kwargs: Any) -> "PySearch": ...
 
 class PySolveConfig:
     def __init__(self, **kwargs: Any) -> None: ...
@@ -134,6 +131,6 @@ def train_consformer_mdd(
     pyselect: PySelectHeuristic = ...,
     validation: Optional[List[PyProblem]] = ...,
 ) -> None: ...
-def neural_local_search(
-    problems: Any, checkpoint_dir: Optional[str] = ..., config: Optional[PySolveConfig] = ...
+def local_search(
+    problems: Any, config: PySolveConfig, checkpoint_dir: Optional[str] = ...
 ) -> Any: ...

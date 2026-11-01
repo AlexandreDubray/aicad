@@ -35,6 +35,7 @@ mod destroy;
 mod diagnostics;
 mod learning;
 mod local_search;
+mod neural;
 mod pyaicad;
 mod utils;
 

@@ -1,6 +1,6 @@
 use burn::config::Config;
-use burn::data::dataloader::batcher::Batcher;
 use burn::data::dataloader::DataLoaderBuilder;
+use burn::data::dataloader::batcher::Batcher;
 use burn::data::dataset::Dataset;
 use burn::module::{AutodiffModule, Module};
 use burn::optim::GradientsParams;
@@ -12,10 +12,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::learning::Loss;
 use crate::learning::monitoring::SatisfactionReport;
 use crate::learning::optimiser::OptimiserConfig;
-use crate::learning::{Batch, Loss, Network, NetworkConfig};
 use crate::modelling::Problem;
+use crate::neural::{Batch, Network, NetworkConfig};
 
 /// Configuration of the training loop
 #[derive(Config, Debug)]
@@ -166,7 +167,8 @@ where
             B::sync(device).ok();
             t_forward += t.elapsed().as_secs_f64();
 
-            let batch_report = SatisfactionReport::build(logits.clone(), &batch);
+            let batch_report =
+                SatisfactionReport::build(batch.problems(), &batch.decode(logits.clone()));
             match &mut epoch_report {
                 Some(report) => report.merge(batch_report),
                 None => epoch_report = Some(batch_report),
@@ -322,11 +324,10 @@ mod tests {
     use burn::backend::{Autodiff, NdArray};
 
     use crate::constraints::not_equals;
-    use crate::learning::consformer::{
-        ConsFormerBatcher, ConsFormerConfig, ConsFormerDataset, ConsFormerLoss,
-    };
-    use crate::local_search::load_network;
+    use crate::learning::consformer::ConsFormerLoss;
     use crate::modelling::Problem;
+    use crate::neural::consformer::{ConsFormerBatcher, ConsFormerConfig, ConsFormerDataset};
+    use crate::neural::load_network;
 
     #[test]
     fn early_stopping_stops_before_num_epochs_once_the_score_stops_improving() {
@@ -429,7 +430,7 @@ mod tests {
 
     #[test]
     fn initial_weights_initialise_the_network_before_training() {
-        use crate::learning::consformer::ConsFormerBatch;
+        use crate::neural::consformer::ConsFormerBatch;
         use burn::tensor::{Int, Tensor};
 
         let device = NdArrayDevice::default();
@@ -467,7 +468,7 @@ mod tests {
 
     #[test]
     fn the_returned_network_is_the_best_one_saved_in_the_checkpoint() {
-        use crate::learning::consformer::ConsFormerBatch;
+        use crate::neural::consformer::ConsFormerBatch;
         use burn::tensor::{Int, Tensor};
 
         let device = NdArrayDevice::default();
@@ -508,7 +509,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "validation interval is 0")]
     fn panic_on_zero_validation_interval() {
-        use crate::learning::consformer::ConsFormerBatch;
+        use crate::neural::consformer::ConsFormerBatch;
         use burn::tensor::{Int, Tensor};
 
         let (problems, network_config, out_dir) = setup("tmp");
@@ -524,7 +525,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "validation interval is 4")]
     fn panic_on_out_of_bound_validation_interval() {
-        use crate::learning::consformer::ConsFormerBatch;
+        use crate::neural::consformer::ConsFormerBatch;
         use burn::tensor::{Int, Tensor};
 
         let (problems, network_config, out_dir) = setup("tmp");

@@ -6,9 +6,10 @@ The three things you do with it:
   :func:`not_equal`, :func:`equal`, :func:`among`, :func:`at_least`, :func:`sum_equals`,
   :func:`gcc` and :func:`regular`.
 * **Compile** it into a decision diagram, :func:`compile`, and query the :class:`MDD`.
-* **Solve** it, :func:`solve`, by :class:`Compilation` or by neural local search, :class:`NLS`.
+* **Solve** it, :func:`solve`, by :class:`Compilation` or by local search: :class:`NeuralPriorSearch`,
+  :class:`NeuralPriorBPSearch` or :class:`BeliefPropagationSearch`.
 
-Networks for :class:`NLS` are trained with :mod:`pyaicad.learning`.
+Networks for the neural searches are trained with :mod:`pyaicad.learning`.
 
 >>> import pyaicad as ac
 >>> m = ac.Model()
@@ -35,7 +36,16 @@ from .model import (
     regular,
     sum_equals,
 )
-from .solve import NLS, Compilation, Limits, Result, Status, solve
+from .solve import (
+    BeliefPropagationSearch,
+    Compilation,
+    NeuralPriorBPSearch,
+    NeuralPriorSearch,
+    Limits,
+    Result,
+    Status,
+    solve,
+)
 
 __version__ = "0.0.1"
 
@@ -58,7 +68,9 @@ __all__ = [
     # solving
     "solve",
     "Compilation",
-    "NLS",
+    "NeuralPriorSearch",
+    "NeuralPriorBPSearch",
+    "BeliefPropagationSearch",
     "Limits",
     "Result",
     "Status",

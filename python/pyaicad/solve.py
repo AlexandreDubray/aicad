@@ -1,7 +1,10 @@
 """Solving models.
 
 :func:`solve` takes a model, or a list of them, and a *method*: :class:`Compilation` compiles an
-MDD and reads a solution off it; :class:`NLS` runs neural local search with a trained network.
+MDD and reads a solution off it; the local searches destroy and repair an assignment repeatedly,
+guided by a trained network (:class:`NeuralPriorSearch`), by a network used as the prior of belief
+propagation on the MDDs (:class:`NeuralPriorBPSearch`) or by belief propagation alone
+(:class:`BeliefPropagationSearch`).
 
 >>> import pyaicad as ac
 >>> m = ac.Model()
@@ -23,12 +26,20 @@ from typing import Any, List, Optional, Sequence, Union, overload
 
 from . import _core
 from ._runtime import set_seed
-from .errors import CheckpointError
 from .learning import Checkpoint
 from .mdd import compile as compile_mdd
 from .model import Model
 
-__all__ = ["solve", "Limits", "Result", "Status", "Compilation", "NLS"]
+__all__ = [
+    "solve",
+    "Limits",
+    "Result",
+    "Status",
+    "Compilation",
+    "NeuralPriorSearch",
+    "NeuralPriorBPSearch",
+    "BeliefPropagationSearch",
+]
 
 
 class Status(str, enum.Enum):
@@ -130,8 +141,6 @@ _DESTROY = {
     "worst": _core.PyDestroyKind.Worst,
     "related": _core.PyDestroyKind.Related,
 }
-_PRIOR = {"network": _core.PyPriorKind.Network, "uniform": _core.PyPriorKind.Uniform}
-_DECODE = {"logits": _core.PyDecodeKind.Logits, "mdd": _core.PyDecodeKind.MddSampling}
 _STATUS = {
     "Satisfiable": Status.FEASIBLE,
     "Unsatisfiable": Status.INFEASIBLE,
@@ -139,113 +148,52 @@ _STATUS = {
 }
 
 
-def _choice(name: str, value: str, options: Any) -> None:
-    if value not in options:
-        raise ValueError(f"{name} must be one of {sorted(options)}, got {value!r}")
+def _check_search(destroy: str, destroy_fraction: float, batch_size: Optional[int]) -> None:
+    """The checks shared by the local searches."""
+    if destroy not in _DESTROY:
+        raise ValueError(f"destroy must be one of {sorted(_DESTROY)}, got {destroy!r}")
+    if not 0 < destroy_fraction <= 1:
+        raise ValueError(f"destroy_fraction must be in (0, 1], got {destroy_fraction!r}")
+    if batch_size is not None and batch_size < 1:
+        raise ValueError(f"batch_size must be at least 1, got {batch_size!r}")
 
 
-@dataclass(frozen=True)
-class NLS:
-    """Solves by neural local search: repeatedly destroy part of the current assignment and
-    repair it using the predictions of a trained network.
+class _LocalSearch:
+    """What the local-search methods share: they repeatedly destroy part of the current
+    assignment and repair it, many problems of a :func:`solve` call running together as batches.
 
-    Many problems in one :func:`solve` call run together as a batch, which is what makes it fast.
-    Every problem of a batch needs the same number of variables.
-
-    Args:
-        checkpoint: The trained network (a :class:`~pyaicad.learning.Checkpoint` or the path of
-            one). Only ``prior="uniform"`` can go without.
-        destroy: Which variables are repaired at each iteration: ``"random"`` ones, the ``"worst"``
-            ones (those in the most violated constraints) or ``"related"`` ones (sharing
-            constraints with a first one).
-        destroy_fraction: The fraction of the variables repaired at each iteration.
-        prior: Where the predictions come from: the ``"network"``, or ``"uniform"`` (no network;
-            needs ``decode="mdd"``).
-        decode: How a prediction becomes values: ``"logits"`` reads the network's output directly,
-            ``"mdd"`` first refines it by belief propagation on the constraints' MDDs.
-        bp_iterations: Rounds of belief propagation; only for ``decode="mdd"``.
-        stochastic: Sample the values from the prediction instead of taking the most likely ones.
-        temperature: Softens (above 1) or sharpens (below 1) the prediction when ``stochastic``.
-        batch_size: How many problems are stepped together on the device; ``None`` puts them all in
-            one batch. Batches run one after the other, each with the full limits. The problems of a
-            batch must have the same number of variables. Use 1 to solve problems one at a time,
-            as a deployment would.
+    A subclass is one search architecture, with the settings of that architecture and nothing
+    else; it says which native search it is (``_search``) and whether it uses a network
+    (``_checkpoint``).
     """
 
-    checkpoint: Optional[Union[Checkpoint, str, "os.PathLike[str]"]] = None
-    destroy: str = "random"
-    destroy_fraction: float = 1.0
-    prior: str = "network"
-    decode: str = "logits"
-    bp_iterations: int = 1
-    stochastic: bool = False
-    temperature: float = 1.0
-    batch_size: Optional[int] = None
+    name: str
+    batch_size: Optional[int]
 
-    name = "nls"
-
-    def __post_init__(self) -> None:
-        _choice("destroy", self.destroy, _DESTROY)
-        _choice("prior", self.prior, _PRIOR)
-        _choice("decode", self.decode, _DECODE)
-        if self.prior == "uniform" and self.decode != "mdd":
-            raise ValueError("prior='uniform' needs decode='mdd': raw logits would carry no information")
-        if not 0 < self.destroy_fraction <= 1:
-            raise ValueError(f"destroy_fraction must be in (0, 1], got {self.destroy_fraction!r}")
-        if self.bp_iterations < 1:
-            raise ValueError("bp_iterations must be at least 1")
-        if self.batch_size is not None and self.batch_size < 1:
-            raise ValueError(f"batch_size must be at least 1, got {self.batch_size!r}")
-
-    @staticmethod
-    def preset(name: str, checkpoint: Optional[Any] = None, **changes: Any) -> "NLS":
-        """A configuration under a name, optionally with changes.
-
-        ``"consformer"`` repairs from the network's logits; ``"consformer-mdd"`` refines them with
-        belief propagation on the MDDs and chooses the variables to repair by relatedness.
-        """
-        presets = {
-            "consformer": {},
-            "consformer-mdd": {"decode": "mdd", "destroy": "related"},
-        }
-        if name not in presets:
-            raise ValueError(f"unknown preset {name!r}; choose from {sorted(presets)}")
-        return NLS(checkpoint, **{**presets[name], **changes})
-
-    def with_(self, **changes: Any) -> "NLS":
+    def with_(self, **changes: Any) -> Any:
         """A copy with some options changed."""
-        return replace(self, **changes)
+        return replace(self, **changes)  # type: ignore[type-var]
+
+    def _search(self) -> Any:
+        raise NotImplementedError
 
     def _checkpoint(self) -> Optional[Checkpoint]:
-        if self.checkpoint is None:
-            if self.prior == "network":
-                raise CheckpointError("NLS needs a checkpoint when prior='network'")
-            return None
-        if isinstance(self.checkpoint, Checkpoint):
-            return self.checkpoint
-        return Checkpoint.load(self.checkpoint)
+        return None
 
     def _solve(self, models: List[Model], limits: Limits, seed: Optional[int]) -> List[Result]:
         checkpoint = self._checkpoint()
         config = _core.PySolveConfig(
-            network_kind=_core.PyNetworkKind.ConsFormer,
+            search=self._search(),
             batch_size=self.batch_size,
-            destroy_kind=_DESTROY[self.destroy],
-            destroy_fraction=self.destroy_fraction,
-            stochastic_decode=self.stochastic,
-            temperature=self.temperature,
-            decode_kind=_DECODE[self.decode],
-            bp_iterations=self.bp_iterations,
-            prior_kind=_PRIOR[self.prior],
             # The search takes whole seconds; a limit is rounded up so it is never cut short.
             time_limit=None if limits.time is None else math.ceil(limits.time),
             iteration_limit=limits.iterations,
             seed=seed,
         )
-        solutions = _core.neural_local_search(
+        solutions = _core.local_search(
             [m._native_problem() for m in models],
-            None if checkpoint is None else str(checkpoint.path),
             config,
+            None if checkpoint is None else str(checkpoint.path),
         )
         return [
             Result(
@@ -260,7 +208,144 @@ class NLS:
         ]
 
 
-Method = Union[Compilation, NLS]
+def _load(checkpoint: Union[Checkpoint, str, "os.PathLike[str]"]) -> Checkpoint:
+    return checkpoint if isinstance(checkpoint, Checkpoint) else Checkpoint.load(checkpoint)
+
+
+@dataclass(frozen=True)
+class NeuralPriorSearch(_LocalSearch):
+    """Solves by local search guided by a trained network: at each iteration, part of the current
+    assignment is destroyed and repaired from the network's predictions (its prior over the
+    values).
+
+    The networks that can be trained are ConsFormer ones, which need every problem of a batch to
+    have the same number of variables.
+
+    Args:
+        checkpoint: The trained network, a :class:`~pyaicad.learning.Checkpoint` or the path of
+            one.
+        destroy: Which variables are repaired at each iteration: ``"random"`` ones, the ``"worst"``
+            ones (those in the most violated constraints) or ``"related"`` ones (sharing
+            constraints with a first one).
+        destroy_fraction: The fraction of the variables repaired at each iteration.
+        stochastic: Sample the values from the network's prediction instead of taking the most
+            likely ones.
+        temperature: Softens (above 1) or sharpens (below 1) the prediction when ``stochastic``.
+        batch_size: How many problems are stepped together on the device; ``None`` puts them all in
+            one batch. Batches run one after the other, each with the full limits. Use 1 to solve
+            problems one at a time, as a deployment would.
+    """
+
+    checkpoint: Union[Checkpoint, str, "os.PathLike[str]"]
+    destroy: str = "random"
+    destroy_fraction: float = 1.0
+    stochastic: bool = False
+    temperature: float = 1.0
+    batch_size: Optional[int] = None
+
+    name = "neural-prior"
+
+    def __post_init__(self) -> None:
+        _check_search(self.destroy, self.destroy_fraction, self.batch_size)
+
+    def _checkpoint(self) -> Optional[Checkpoint]:
+        return _load(self.checkpoint)
+
+    def _search(self) -> Any:
+        return _core.PySearch.NeuralPrior(
+            destroy_kind=_DESTROY[self.destroy],
+            destroy_fraction=self.destroy_fraction,
+            stochastic=self.stochastic,
+            temperature=self.temperature,
+        )
+
+
+@dataclass(frozen=True)
+class NeuralPriorBPSearch(_LocalSearch):
+    """Solves by local search guided by a trained network whose predictions are the prior of
+    belief propagation on the MDDs of the constraints, which chooses the values.
+
+    The networks that can be trained are ConsFormer ones, which need every problem of a batch to
+    have the same number of variables.
+
+    Args:
+        checkpoint: The trained network, a :class:`~pyaicad.learning.Checkpoint` or the path of
+            one.
+        destroy: Which variables are repaired at each iteration; see :class:`NeuralPriorSearch`.
+            ``"related"`` by default, which suits the refinement.
+        destroy_fraction: The fraction of the variables repaired at each iteration.
+        stochastic: Sample the values from the refined marginals instead of taking the most likely
+            ones.
+        bp_iterations: Rounds of belief propagation per iteration.
+        batch_size: How many problems are stepped together on the device; see
+            :class:`NeuralPriorSearch`.
+    """
+
+    checkpoint: Union[Checkpoint, str, "os.PathLike[str]"]
+    destroy: str = "related"
+    destroy_fraction: float = 1.0
+    stochastic: bool = False
+    bp_iterations: int = 1
+    batch_size: Optional[int] = None
+
+    name = "neural-prior-bp"
+
+    def __post_init__(self) -> None:
+        _check_search(self.destroy, self.destroy_fraction, self.batch_size)
+        if self.bp_iterations < 1:
+            raise ValueError("bp_iterations must be at least 1")
+
+    def _checkpoint(self) -> Optional[Checkpoint]:
+        return _load(self.checkpoint)
+
+    def _search(self) -> Any:
+        return _core.PySearch.NeuralPriorBp(
+            destroy_kind=_DESTROY[self.destroy],
+            destroy_fraction=self.destroy_fraction,
+            stochastic=self.stochastic,
+            bp_iterations=self.bp_iterations,
+        )
+
+
+@dataclass(frozen=True)
+class BeliefPropagationSearch(_LocalSearch):
+    """Solves by local search that repairs with belief propagation on the MDDs of the constraints,
+    starting from uniform probabilities. It needs no network and runs on the CPU only, and the
+    problems of a batch may have different sizes.
+
+    Args:
+        destroy: Which variables are repaired at each iteration; see :class:`NeuralPriorSearch`.
+        destroy_fraction: The fraction of the variables repaired at each iteration.
+        stochastic: Sample the values from the marginals instead of taking the most likely ones.
+            Uniform probabilities tie everywhere, so this is what lets the search move.
+        bp_iterations: Rounds of belief propagation per iteration.
+        batch_size: How many problems are stepped together; see :class:`NeuralPriorSearch`.
+    """
+
+    destroy: str = "random"
+    destroy_fraction: float = 1.0
+    stochastic: bool = True
+    bp_iterations: int = 1
+    batch_size: Optional[int] = None
+
+    name = "bp"
+
+    def __post_init__(self) -> None:
+        _check_search(self.destroy, self.destroy_fraction, self.batch_size)
+        if self.bp_iterations < 1:
+            raise ValueError("bp_iterations must be at least 1")
+
+    def _search(self) -> Any:
+        return _core.PySearch.BeliefPropagation(
+            destroy_kind=_DESTROY[self.destroy],
+            destroy_fraction=self.destroy_fraction,
+            stochastic=self.stochastic,
+            bp_iterations=self.bp_iterations,
+        )
+
+
+Method = Union[Compilation, NeuralPriorSearch, NeuralPriorBPSearch, BeliefPropagationSearch]
+_METHODS = (Compilation, NeuralPriorSearch, NeuralPriorBPSearch, BeliefPropagationSearch)
 
 
 @overload
@@ -295,14 +380,17 @@ def solve(
     Args:
         problems: A model, giving one result, or a list of models, giving a list of results in the
             same order.
-        method: How to solve: :class:`Compilation` (the default, exact) or :class:`NLS`.
+        method: How to solve: :class:`Compilation` (the default, exact) or one of the local searches.
         limits: When to stop, per problem. No limit by default.
         seed: Makes the run reproducible: it seeds the search and every other source of randomness
             (as :func:`pyaicad.set_seed` does). Unset, the run follows the current state of those.
     """
     method = Compilation() if method is None else method
-    if not isinstance(method, (Compilation, NLS)):
-        raise TypeError(f"method must be a Compilation or an NLS, got {method!r}")
+    if not isinstance(method, _METHODS):
+        raise TypeError(
+            "method must be a Compilation, a NeuralPriorSearch, a NeuralPriorBPSearch or a "
+            f"BeliefPropagationSearch, got {method!r}"
+        )
     limits = Limits() if limits is None else limits
     single = isinstance(problems, Model)
     models = [problems] if isinstance(problems, Model) else list(problems)
@@ -312,8 +400,8 @@ def solve(
     if not models:
         return []
     if seed is not None:
-        # The destroy choices follow `seed` directly; sampling and the network use the process-wide
-        # generators, which this seeds too, so that the same call gives the same results.
+        # The destroy choices and the sampling follow `seed` directly; the network uses the
+        # process-wide generators, which this seeds too.
         set_seed(seed)
     results = method._solve(models, limits, seed)
     return results[0] if single else results
