@@ -244,6 +244,10 @@ class Training:
     ``optimiser`` is the optimiser with its learning rate and settings (Adam by default). The
     network is evaluated on the validation set every ``validation_interval`` epochs, and the best
     one so far is kept; so ``validation_interval`` must not exceed ``epochs``.
+
+    ``initial_weights`` is the checkpoint directory of an earlier run: its weights initialise the
+    network before the first epoch, to continue or fine-tune that run. The network settings must
+    be the ones the weights were trained with. By default the network starts from scratch.
     """
 
     optimiser: Optimiser = field(default_factory=Adam)
@@ -252,6 +256,7 @@ class Training:
     validation_interval: int = 10
     early_stopping_patience: Optional[int] = None
     early_stopping_min_delta: float = 1e-4
+    initial_weights: Optional[PathLike] = None
     destroy: str = "random"  # which variables are re-predicted in a training step; "consformer" only
 
     def __post_init__(self) -> None:
@@ -471,6 +476,7 @@ def _native_training(t: Training) -> Any:
         early_stopping_patience=t.early_stopping_patience,
         early_stopping_min_delta=t.early_stopping_min_delta,
         destroy_kind=_DESTROY[t.destroy],
+        initial_weights=None if t.initial_weights is None else str(Path(t.initial_weights)),
     )
 
 

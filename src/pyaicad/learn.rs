@@ -136,13 +136,16 @@ pub struct PyTrainingConfig {
     /// stagnation. Only used when `early_stopping_patience` is set.
     pub early_stopping_min_delta: f64,
     pub destroy_kind: PyDestroyKind,
+    /// A checkpoint directory whose weights initialise the network before training.
+    pub initial_weights: Option<String>,
 }
 
 #[pymethods]
 impl PyTrainingConfig {
     #[new]
     #[pyo3(signature = (optimiser, num_epochs=10, batch_size=32, validation_interval=10,
-            early_stopping_patience=None, early_stopping_min_delta=1e-4, destroy_kind=PyDestroyKind::Random))]
+            early_stopping_patience=None, early_stopping_min_delta=1e-4, destroy_kind=PyDestroyKind::Random,
+            initial_weights=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         optimiser: PyOptimiser,
@@ -152,6 +155,7 @@ impl PyTrainingConfig {
         early_stopping_patience: Option<usize>,
         early_stopping_min_delta: f64,
         destroy_kind: PyDestroyKind,
+        initial_weights: Option<String>,
     ) -> Self {
         PyTrainingConfig {
             optimiser,
@@ -161,6 +165,7 @@ impl PyTrainingConfig {
             early_stopping_patience,
             early_stopping_min_delta,
             destroy_kind,
+            initial_weights,
         }
     }
 }
@@ -174,6 +179,7 @@ impl From<&PyTrainingConfig> for TrainingConfig {
             validation_interval: c.validation_interval,
             early_stopping_patience: c.early_stopping_patience,
             early_stopping_min_delta: c.early_stopping_min_delta,
+            initial_weights: c.initial_weights.as_ref().map(PathBuf::from),
         }
     }
 }
@@ -351,7 +357,8 @@ fn run_training<B: AutodiffBackend>(
         training_config,
         checkpoint_dir,
         &device,
-    );
+    )
+    .map_err(PyValueError::new_err)?;
 
     Ok(())
 }
@@ -473,7 +480,8 @@ fn run_training_mdd<B: AutodiffBackend>(
         training_config,
         checkpoint_dir,
         &device,
-    );
+    )
+    .map_err(PyValueError::new_err)?;
 
     Ok(())
 }

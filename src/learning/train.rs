@@ -8,7 +8,7 @@ use burn::prelude::ElementConversion;
 use burn::record::CompactRecorder;
 use burn::tensor::backend::{AutodiffBackend, Backend};
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -42,6 +42,12 @@ pub(crate) struct TrainingConfig {
     /// count as progress rather than stagnation. Only used when `early_stopping_patience` is set.
     #[config(default = 1e-4)]
     pub early_stopping_min_delta: f64,
+    /// A checkpoint directory (as written to `out_dir` by an earlier run) whose weights initialise
+    /// the network before the first epoch, to continue or fine-tune a previous run. `None` (the
+    /// default) starts from a fresh random initialisation. The network configuration must be the
+    /// one the weights were trained with.
+    #[config(default = "None")]
+    pub initial_weights: Option<PathBuf>,
 }
 
 /// Trains a model. Generic over the backend (B), the network configuration (NC), the training
@@ -73,7 +79,7 @@ pub(crate) fn train_model<B, NC, S, TBatch, Ba, L, SValid, VBatch>(
     training: TrainingConfig,
     out_dir: &Path,
     device: &B::Device,
-) -> NC::N
+) -> Result<NC::N, String>
 where
     B: AutodiffBackend,
     NC: NetworkConfig<B>,
@@ -96,6 +102,18 @@ where
 
     // Initialise the network architecture with the given parameters
     let mut network = network_config.init(problems, device);
+    if let Some(checkpoint) = &training.initial_weights {
+        network = network
+            .load_file(checkpoint.join("weights"), &CompactRecorder::new(), device)
+            .map_err(|e| {
+                format!(
+                    "cannot load the initial weights from {}: {e} (expected a checkpoint \
+                     directory holding `weights.mpk`, trained with this network configuration)",
+                    checkpoint.display()
+                )
+            })?;
+        log::info!("initial weights loaded from {}", checkpoint.display());
+    }
 
     // Load the training and validation datasets
     let train_dataloader = DataLoaderBuilder::new(batcher.clone())
@@ -257,7 +275,7 @@ where
 
         log::info!("");
     }
-    network
+    Ok(network)
 }
 
 #[cfg(test)]
@@ -322,7 +340,8 @@ mod tests {
             training,
             &out_dir,
             &device,
-        );
+        )
+        .unwrap();
 
         // The first validation check is the only improvement, so training stops after the second
         // one and the best model is the one saved at the root.
@@ -330,6 +349,94 @@ mod tests {
         let _ = load_network::<NdArray, ConsFormerConfig>(&out_dir, &problems, &device)
             .expect("the best checkpoint should be loadable directly");
 
+        std::fs::remove_dir_all(&out_dir).ok();
+    }
+
+    /// A small ConsFormer problem set plus its checkpoint directory, with `config.json` written.
+    fn setup(name: &str) -> (Vec<Arc<Problem>>, ConsFormerConfig, std::path::PathBuf) {
+        let out_dir =
+            std::env::temp_dir().join(format!("aicad_test_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out_dir);
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1, 2], None);
+        let y = problem.add_variable(vec![0, 1, 2], None);
+        not_equals(&mut problem, x, y);
+        let network_config = ConsFormerConfig::new(3, 4, 4, 1, 4, 0, 0.5, 1.0).with_num_layers(1);
+        std::fs::create_dir_all(&out_dir).unwrap();
+        network_config.save(out_dir.join("config.json")).unwrap();
+        (vec![Arc::new(problem)], network_config, out_dir)
+    }
+
+    fn train(
+        problems: &[Arc<Problem>],
+        network_config: ConsFormerConfig,
+        training: TrainingConfig,
+        out_dir: &Path,
+    ) -> Result<<ConsFormerConfig as NetworkConfig<Autodiff<NdArray>>>::N, String> {
+        type ADBackend = Autodiff<NdArray>;
+        let device = NdArrayDevice::default();
+        train_model::<ADBackend, ConsFormerConfig, _, _, _, ConsFormerLoss, _, _>(
+            network_config,
+            problems,
+            ConsFormerDataset::<ADBackend>::new(problems.to_vec(), &device),
+            ConsFormerDataset::<NdArray>::new(problems.to_vec(), &device),
+            ConsFormerBatcher {
+                mask_fraction: 0.5,
+                destroy: None,
+            },
+            ConsFormerLoss,
+            training,
+            out_dir,
+            &device,
+        )
+    }
+
+    #[test]
+    fn initial_weights_initialise_the_network_before_training() {
+        use crate::learning::consformer::ConsFormerBatch;
+        use burn::tensor::{Int, Tensor};
+
+        let device = NdArrayDevice::default();
+        let (problems, network_config, first_dir) = setup("initial_weights_first");
+        let training = TrainingConfig::new()
+            .with_num_epochs(2)
+            .with_validation_interval(1)
+            .with_batch_size(1);
+        train(&problems, network_config.clone(), training, &first_dir).unwrap();
+
+        // Zero epochs: the returned network is exactly the one the weights initialised.
+        let (_, _, second_dir) = setup("initial_weights_second");
+        let training = TrainingConfig::new()
+            .with_num_epochs(0)
+            .with_batch_size(1)
+            .with_initial_weights(Some(first_dir.clone()));
+        let resumed = train(&problems, network_config, training, &second_dir).unwrap();
+        let (_, saved) =
+            load_network::<Autodiff<NdArray>, ConsFormerConfig>(&first_dir, &problems, &device)
+                .unwrap();
+
+        let batch = ConsFormerBatch::<Autodiff<NdArray>>::for_assignments(
+            &problems,
+            Tensor::<Autodiff<NdArray>, 2, Int>::from_ints([[0, 1]], &device),
+            Tensor::<Autodiff<NdArray>, 2, Int>::from_ints([[1, 1]], &device),
+            &device,
+        );
+        let a = resumed.forward(&batch).into_data();
+        let b = saved.forward(&batch).into_data();
+        assert_eq!(a, b);
+
+        std::fs::remove_dir_all(&first_dir).ok();
+        std::fs::remove_dir_all(&second_dir).ok();
+    }
+
+    #[test]
+    fn missing_initial_weights_are_reported_with_their_path() {
+        let (problems, network_config, out_dir) = setup("missing_initial_weights");
+        let training = TrainingConfig::new()
+            .with_num_epochs(1)
+            .with_initial_weights(Some(out_dir.join("nowhere")));
+        let error = train(&problems, network_config, training, &out_dir).unwrap_err();
+        assert!(error.contains("nowhere"), "{error}");
         std::fs::remove_dir_all(&out_dir).ok();
     }
 }

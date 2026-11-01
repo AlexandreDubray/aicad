@@ -172,3 +172,40 @@ def test_fit_rejects_unknown_settings(tmp_path):
 def test_fit_refuses_a_run_that_would_never_validate(tmp_path):
     with pytest.raises(ValueError, match="never be validated"):
         learning.fit(problems(4), checkpoint_dir=tmp_path, epochs=2, validation_interval=10)
+
+
+def test_training_can_start_from_the_weights_of_an_earlier_checkpoint(tmp_path):
+    settings = dict(
+        epochs=1,
+        validation_interval=1,
+        batch_size=2,
+        embedding_size=8,
+        hidden_size=8,
+        expand_size=8,
+    )
+    first = tmp_path / "first"
+    learning.fit(problems(6), "consformer", checkpoint_dir=first, seed=0, **settings)
+    resumed = learning.fit(
+        problems(6),
+        "consformer",
+        checkpoint_dir=tmp_path / "resumed",
+        seed=0,
+        initial_weights=first,
+        **settings,
+    )
+    assert (resumed.path / "weights.mpk").is_file()
+
+
+def test_missing_initial_weights_are_an_error(tmp_path):
+    with pytest.raises(ValueError, match="nowhere"):
+        learning.fit(
+            problems(6),
+            "consformer",
+            checkpoint_dir=tmp_path / "out",
+            initial_weights=tmp_path / "nowhere",
+            epochs=1,
+            validation_interval=1,
+            embedding_size=8,
+            hidden_size=8,
+            expand_size=8,
+        )
