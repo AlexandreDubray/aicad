@@ -33,20 +33,6 @@ pub(crate) struct TrainingConfig {
     /// The optimiser, with its learning rate and hyper-parameters (Adam by default).
     #[config(default = "OptimiserConfig::default()")]
     pub optimiser: OptimiserConfig,
-    /// If true, also save the best-so-far model at a decaying-density set of training-epoch
-    /// horizons (see `compute_horizons`), so a later sweep can evaluate performance as a function
-    /// of training budget without needing a separate run per budget. Each horizon is its own
-    /// self-contained `out_dir/epoch_<N>/{config.json, weights}` pair, loadable the same way as
-    /// the root checkpoint (`config.json` is just copied from `out_dir`, since it's the same for
-    /// every horizon of a run). Off by default: purely additive to the existing root checkpoint,
-    /// but costs one extra checkpoint directory per horizon on disk.
-    #[config(default = false)]
-    pub save_horizons: bool,
-    /// How many horizon checkpoints to save across `[0, num_epochs]` when `save_horizons` is set.
-    /// Spaced by geometric growth (dense early, sparse late) rather than evenly, since early
-    /// training changes the model much more per epoch than late training does.
-    #[config(default = 15)]
-    pub num_checkpoints: usize,
     /// Stop training once the validation loss hasn't improved by more than
     /// `early_stopping_min_delta` for this many consecutive validation checks. `None` (the
     /// default) disables early stopping, matching the previous always-run-`num_epochs` behavior.
@@ -56,52 +42,6 @@ pub(crate) struct TrainingConfig {
     /// count as progress rather than stagnation. Only used when `early_stopping_patience` is set.
     #[config(default = 1e-4)]
     pub early_stopping_min_delta: f64,
-}
-
-/// Generates a decaying-density set of training-epoch checkpoints: `h_0 = validation_interval`,
-/// `h_{i+1} = h_i * r`, snapped to the nearest validation event (checkpoints can only happen at
-/// validation events) and deduplicated, always ending at the final validation event on or before
-/// `num_epochs`. `r` is solved from `num_checkpoints` so the schedule always spans the full run
-/// regardless of `num_epochs`/`validation_interval`. Front-loaded by construction: consecutive
-/// horizons are a constant multiplicative step apart, so absolute spacing grows over the run
-/// (e.g. num_epochs=5000, validation_interval=10, num_checkpoints=15 gives roughly
-/// `[10, 20, 40, 60, 90, 140, 220, 350, 540, 850, 1320, 2060, 3210, 5000]`).
-fn compute_horizons(
-    num_epochs: usize,
-    validation_interval: usize,
-    num_checkpoints: usize,
-) -> Vec<usize> {
-    if validation_interval == 0 || num_checkpoints == 0 {
-        return Vec::new();
-    }
-    let final_epoch = (num_epochs / validation_interval) * validation_interval;
-    if final_epoch == 0 {
-        return Vec::new();
-    }
-    if num_checkpoints == 1 {
-        return vec![final_epoch];
-    }
-
-    let h0 = validation_interval as f64;
-    let target = final_epoch as f64;
-    if target <= h0 {
-        return vec![final_epoch];
-    }
-
-    let r = (target / h0).powf(1.0 / (num_checkpoints as f64 - 1.0));
-    let mut horizons = Vec::new();
-    let mut h = h0;
-    while h < target {
-        let snapped = ((h / validation_interval as f64).round() as usize) * validation_interval;
-        if snapped >= validation_interval && horizons.last().copied() != Some(snapped) {
-            horizons.push(snapped);
-        }
-        h *= r;
-    }
-    if horizons.last().copied() != Some(final_epoch) {
-        horizons.push(final_epoch);
-    }
-    horizons
 }
 
 /// Trains a model. Generic over the backend (B), the network configuration (NC), the training
@@ -170,19 +110,6 @@ where
 
     let mut best_score = f64::INFINITY;
     let mut stagnant_checks = 0usize;
-
-    let horizons: std::collections::HashSet<usize> = if training.save_horizons {
-        compute_horizons(
-            training.num_epochs,
-            training.validation_interval,
-            training.num_checkpoints,
-        )
-        .into_iter()
-        .collect()
-    } else {
-        std::collections::HashSet::new()
-    };
-    let mut horizon_manifest: Vec<serde_json::Value> = Vec::new();
 
     for epoch in 0..training.num_epochs {
         let mut epoch_loss_sum = 0.0;
@@ -304,41 +231,6 @@ where
                 {
                     log::warn!("warning: failed to save checkpoint at epoch {epoch}: {e}");
                 }
-                if horizons.contains(&(epoch + 1)) {
-                    let epoch_dir = out_dir.join(format!("epoch_{:05}", epoch + 1));
-                    let saved = std::fs::create_dir_all(&epoch_dir)
-                        .and_then(|_| {
-                            std::fs::copy(
-                                out_dir.join("config.json"),
-                                epoch_dir.join("config.json"),
-                            )
-                        })
-                        .map_err(|e| e.to_string())
-                        .and_then(|_| {
-                            network
-                                .clone()
-                                .save_file(epoch_dir.join("weights"), &CompactRecorder::new())
-                                .map_err(|e| e.to_string())
-                        });
-                    match saved {
-                        Ok(_) => {
-                            horizon_manifest.push(serde_json::json!({
-                                "epoch": epoch + 1,
-                                "best_score_so_far": best_score,
-                                "dir": epoch_dir.file_name().and_then(|n| n.to_str()),
-                            }));
-                            if let Err(e) = std::fs::write(
-                                out_dir.join("horizons_manifest.json"),
-                                serde_json::to_string_pretty(&horizon_manifest).unwrap_or_default(),
-                            ) {
-                                log::warn!("warning: failed to write horizons manifest: {e}");
-                            }
-                        }
-                        Err(e) => log::warn!(
-                            "warning: failed to save horizon checkpoint at epoch {epoch}: {e}"
-                        ),
-                    }
-                }
             }
 
             if let Some(patience) = training.early_stopping_patience {
@@ -369,59 +261,7 @@ where
 }
 
 #[cfg(test)]
-mod test_compute_horizons {
-    use super::compute_horizons;
-
-    #[test]
-    fn matches_the_real_nurse_rostering_config() {
-        let horizons = compute_horizons(5000, 10, 15);
-        assert_eq!(
-            horizons,
-            vec![
-                10, 20, 40, 60, 90, 140, 220, 350, 540, 850, 1320, 2060, 3210, 5000
-            ]
-        );
-    }
-
-    #[test]
-    fn is_front_loaded_and_ends_at_the_final_validation_event() {
-        let horizons = compute_horizons(1000, 10, 8);
-        assert!(
-            horizons.windows(2).all(|w| w[0] < w[1]),
-            "must be strictly increasing"
-        );
-        assert_eq!(*horizons.last().unwrap(), 1000);
-        // front-loaded: the gaps should grow monotonically (geometric spacing)
-        let gaps: Vec<i64> = horizons
-            .windows(2)
-            .map(|w| w[1] as i64 - w[0] as i64)
-            .collect();
-        assert!(
-            gaps.windows(2).all(|w| w[0] <= w[1]),
-            "gaps should be non-decreasing: {gaps:?}"
-        );
-    }
-
-    #[test]
-    fn every_horizon_lands_on_a_validation_event() {
-        let horizons = compute_horizons(777, 25, 10);
-        assert!(horizons.iter().all(|h| h % 25 == 0));
-        assert!(horizons.iter().all(|h| *h <= 777));
-    }
-
-    #[test]
-    fn num_epochs_smaller_than_validation_interval_yields_no_horizons() {
-        assert!(compute_horizons(5, 10, 15).is_empty());
-    }
-
-    #[test]
-    fn single_checkpoint_is_just_the_final_validation_event() {
-        assert_eq!(compute_horizons(100, 10, 1), vec![100]);
-    }
-}
-
-#[cfg(test)]
-mod test_horizon_checkpoint_layout {
+mod tests {
     use super::*;
 
     use burn::backend::ndarray::NdArrayDevice;
@@ -433,80 +273,6 @@ mod test_horizon_checkpoint_layout {
     };
     use crate::local_search::load_network;
     use crate::modelling::Problem;
-
-    /// End-to-end: a horizon checkpoint must be its own self-contained, loadable directory --
-    /// `out_dir/epoch_<N>/{config.json, weights.mpk}` -- not just a bare weights file that needs
-    /// the root's `config.json` to load, and the root checkpoint (`out_dir/{config.json,
-    /// weights.mpk}`) must still be the best model directly, with nothing to search for.
-    #[test]
-    fn horizon_and_root_checkpoints_are_both_directly_loadable() {
-        type ADBackend = Autodiff<NdArray>;
-        let device = NdArrayDevice::default();
-
-        let out_dir = std::env::temp_dir().join(format!(
-            "aicad_test_horizon_checkpoint_layout_{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&out_dir);
-
-        let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1, 2], None);
-        let y = problem.add_variable(vec![0, 1, 2], None);
-        not_equals(&mut problem, x, y);
-        let problems = vec![Arc::new(problem)];
-
-        let network_config = ConsFormerConfig::new(3, 4, 4, 1, 4, 0, 0.5, 1.0).with_num_layers(1);
-
-        // Mirrors `pyaicad::learn::prepare_checkpoint_dir`, called before `train_model` in every
-        // real caller -- `train_model` itself only ever reads `out_dir/config.json` (to copy it
-        // into each horizon dir), never writes it.
-        std::fs::create_dir_all(&out_dir).unwrap();
-        network_config.save(out_dir.join("config.json")).unwrap();
-
-        let train_dataset = ConsFormerDataset::<ADBackend>::new(problems.clone(), &device);
-        let valid_dataset = ConsFormerDataset::<NdArray>::new(problems.clone(), &device);
-        let batcher = ConsFormerBatcher {
-            mask_fraction: 0.5,
-            destroy: None,
-        };
-
-        let training = TrainingConfig::new()
-            .with_num_epochs(2)
-            .with_validation_interval(1)
-            .with_batch_size(1)
-            .with_save_horizons(true)
-            .with_num_checkpoints(1);
-
-        train_model::<ADBackend, ConsFormerConfig, _, _, _, ConsFormerLoss, _, _>(
-            network_config,
-            &problems,
-            train_dataset,
-            valid_dataset,
-            batcher,
-            ConsFormerLoss,
-            training,
-            &out_dir,
-            &device,
-        );
-
-        assert!(out_dir.join("config.json").is_file());
-        assert!(out_dir.join("weights.mpk").is_file());
-
-        // `num_checkpoints = 1` means exactly one horizon: the final validation event (epoch 2).
-        let epoch_dir = out_dir.join("epoch_00002");
-        assert!(epoch_dir.join("config.json").is_file());
-        assert!(epoch_dir.join("weights.mpk").is_file());
-        assert!(out_dir.join("horizons_manifest.json").is_file());
-
-        // The whole point: a horizon checkpoint loads on its own, the same way the root does --
-        // no need to reach back into `out_dir` for its `config.json`.
-        let _ = load_network::<NdArray, ConsFormerConfig>(&epoch_dir, &problems, &device)
-            .expect("a horizon checkpoint should be loadable directly, on its own");
-        let _ = load_network::<NdArray, ConsFormerConfig>(&out_dir, &problems, &device)
-            .expect("the root checkpoint should still be loadable directly");
-
-        std::fs::remove_dir_all(&out_dir).ok();
-    }
 
     #[test]
     fn early_stopping_stops_before_num_epochs_once_the_score_stops_improving() {
@@ -544,9 +310,7 @@ mod test_horizon_checkpoint_layout {
             .with_validation_interval(1)
             .with_batch_size(1)
             .with_early_stopping_patience(Some(1))
-            .with_early_stopping_min_delta(1000.0)
-            .with_save_horizons(true)
-            .with_num_checkpoints(1);
+            .with_early_stopping_min_delta(1000.0);
 
         train_model::<ADBackend, ConsFormerConfig, _, _, _, ConsFormerLoss, _, _>(
             network_config,
@@ -560,9 +324,11 @@ mod test_horizon_checkpoint_layout {
             &device,
         );
 
-        // `num_checkpoints = 1` on a 10-epoch run means the only horizon is epoch 10 -- it must
-        // never be reached if early stopping actually cut the run short.
-        assert!(!out_dir.join("epoch_00010").exists());
+        // The first validation check is the only improvement, so training stops after the second
+        // one and the best model is the one saved at the root.
+        assert!(out_dir.join("weights.mpk").is_file());
+        let _ = load_network::<NdArray, ConsFormerConfig>(&out_dir, &problems, &device)
+            .expect("the best checkpoint should be loadable directly");
 
         std::fs::remove_dir_all(&out_dir).ok();
     }

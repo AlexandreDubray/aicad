@@ -250,8 +250,6 @@ class Training:
     epochs: int = 10
     batch_size: int = 32
     validation_interval: int = 10
-    save_horizons: bool = False
-    num_checkpoints: int = 15
     early_stopping_patience: Optional[int] = None
     early_stopping_min_delta: float = 1e-4
     destroy: str = "random"  # which variables are re-predicted in a training step; "consformer" only
@@ -470,8 +468,6 @@ def _native_training(t: Training) -> Any:
         num_epochs=t.epochs,
         batch_size=t.batch_size,
         validation_interval=t.validation_interval,
-        save_horizons=t.save_horizons,
-        num_checkpoints=t.num_checkpoints,
         early_stopping_patience=t.early_stopping_patience,
         early_stopping_min_delta=t.early_stopping_min_delta,
         destroy_kind=_DESTROY[t.destroy],

@@ -128,13 +128,6 @@ pub struct PyTrainingConfig {
     pub num_epochs: usize,
     pub batch_size: usize,
     pub validation_interval: usize,
-    /// If true, also save the best-so-far model at a decaying-density set of training-epoch
-    /// horizons, each as its own `checkpoint_dir/epoch_<N>/{config.json, weights.mpk}` --
-    /// loadable directly, the same way as `checkpoint_dir` itself -- so performance can later be
-    /// swept as a function of training budget. See `train::compute_horizons`.
-    pub save_horizons: bool,
-    /// How many horizon checkpoints to save across `[0, num_epochs]` when `save_horizons` is set.
-    pub num_checkpoints: usize,
     /// Stop training once the validation loss hasn't improved by more than
     /// `early_stopping_min_delta` for this many consecutive validation checks. `None` disables
     /// early stopping.
@@ -149,16 +142,13 @@ pub struct PyTrainingConfig {
 impl PyTrainingConfig {
     #[new]
     #[pyo3(signature = (optimiser, num_epochs=10, batch_size=32, validation_interval=10,
-            save_horizons=false, num_checkpoints=15, early_stopping_patience=None,
-            early_stopping_min_delta=1e-4, destroy_kind=PyDestroyKind::Random))]
+            early_stopping_patience=None, early_stopping_min_delta=1e-4, destroy_kind=PyDestroyKind::Random))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         optimiser: PyOptimiser,
         num_epochs: usize,
         batch_size: usize,
         validation_interval: usize,
-        save_horizons: bool,
-        num_checkpoints: usize,
         early_stopping_patience: Option<usize>,
         early_stopping_min_delta: f64,
         destroy_kind: PyDestroyKind,
@@ -168,8 +158,6 @@ impl PyTrainingConfig {
             num_epochs,
             batch_size,
             validation_interval,
-            save_horizons,
-            num_checkpoints,
             early_stopping_patience,
             early_stopping_min_delta,
             destroy_kind,
@@ -184,8 +172,6 @@ impl From<&PyTrainingConfig> for TrainingConfig {
             num_epochs: c.num_epochs,
             batch_size: c.batch_size,
             validation_interval: c.validation_interval,
-            save_horizons: c.save_horizons,
-            num_checkpoints: c.num_checkpoints,
             early_stopping_patience: c.early_stopping_patience,
             early_stopping_min_delta: c.early_stopping_min_delta,
         }
