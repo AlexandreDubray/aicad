@@ -68,6 +68,10 @@ pub(crate) struct TrainingConfig {
 /// training: Configuration of the training loop
 /// device: Device to launch the training on (cpu or gpu) -- also valid as `B::InnerBackend`'s
 ///         device, since `Autodiff<X>::Device == X::Device`
+///
+/// Returns the best model found, the one with the lowest validation loss, which is also saved in
+/// `out_dir/weights`. When no validation check ran (for instance `num_epochs` is smaller than
+/// `validation_interval`), nothing is saved and the network as it is at the end is returned.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn train_model<B, NC, S, TBatch, Ba, L, SValid, VBatch>(
     network_config: NC,
@@ -127,6 +131,8 @@ where
     let mut optim = training.optimiser.init::<B, NC::N>();
 
     let mut best_score = f64::INFINITY;
+    // Whether `out_dir/weights` holds a best-so-far model (no validation may ever have run)
+    let mut best_saved = false;
     let mut stagnant_checks = 0usize;
 
     for epoch in 0..training.num_epochs {
@@ -243,11 +249,14 @@ where
 
             if score < best_score {
                 best_score = score;
-                if let Err(e) = network
+                match network
                     .clone()
                     .save_file(out_dir.join("weights"), &CompactRecorder::new())
                 {
-                    log::warn!("warning: failed to save checkpoint at epoch {epoch}: {e}");
+                    Ok(()) => best_saved = true,
+                    Err(e) => {
+                        log::warn!("warning: failed to save checkpoint at epoch {epoch}: {e}")
+                    }
                 }
             }
 
@@ -274,6 +283,19 @@ where
         }
 
         log::info!("");
+    }
+
+    // Return the best model rather than the last one. Reading it back from the checkpoint avoids
+    // keeping a second copy of the network in memory during training.
+    if best_saved {
+        network = network
+            .load_file(out_dir.join("weights"), &CompactRecorder::new(), device)
+            .map_err(|e| {
+                format!(
+                    "cannot reload the best model from {}: {e}",
+                    out_dir.display()
+                )
+            })?;
     }
     Ok(network)
 }
@@ -427,6 +449,35 @@ mod tests {
 
         std::fs::remove_dir_all(&first_dir).ok();
         std::fs::remove_dir_all(&second_dir).ok();
+    }
+
+    #[test]
+    fn the_returned_network_is_the_best_one_saved_in_the_checkpoint() {
+        use crate::learning::consformer::ConsFormerBatch;
+        use burn::tensor::{Int, Tensor};
+
+        let device = NdArrayDevice::default();
+        let (problems, network_config, out_dir) = setup("returns_best");
+        let training = TrainingConfig::new()
+            .with_num_epochs(3)
+            .with_validation_interval(1)
+            .with_batch_size(1);
+        let returned = train(&problems, network_config, training, &out_dir).unwrap();
+        let (_, saved) =
+            load_network::<Autodiff<NdArray>, ConsFormerConfig>(&out_dir, &problems, &device)
+                .unwrap();
+
+        let batch = ConsFormerBatch::<Autodiff<NdArray>>::for_assignments(
+            &problems,
+            Tensor::<Autodiff<NdArray>, 2, Int>::from_ints([[0, 1]], &device),
+            Tensor::<Autodiff<NdArray>, 2, Int>::from_ints([[1, 1]], &device),
+            &device,
+        );
+        assert_eq!(
+            returned.forward(&batch).into_data(),
+            saved.forward(&batch).into_data()
+        );
+        std::fs::remove_dir_all(&out_dir).ok();
     }
 
     #[test]
