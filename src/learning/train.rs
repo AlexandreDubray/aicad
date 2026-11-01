@@ -101,7 +101,9 @@ where
         + 'static,
     L: Loss<B, TBatch> + Loss<B::InnerBackend, VBatch>,
 {
-    if training.validation_interval == 0 || training.validation_interval > training.num_epochs {
+    if training.num_epochs > 0
+        && (training.validation_interval == 0 || training.validation_interval > training.num_epochs)
+    {
         panic!(
             "Training over {} epochs and validation interval is {} (should be in [1, {}]",
             training.num_epochs, training.validation_interval, training.num_epochs
@@ -490,10 +492,42 @@ mod tests {
     fn missing_initial_weights_are_reported_with_their_path() {
         let (problems, network_config, out_dir) = setup("missing_initial_weights");
         let training = TrainingConfig::new()
-            .with_num_epochs(1)
+            .with_num_epochs(10)
             .with_initial_weights(Some(out_dir.join("nowhere")));
         let error = train(&problems, network_config, training, &out_dir).unwrap_err();
         assert!(error.contains("nowhere"), "{error}");
         std::fs::remove_dir_all(&out_dir).ok();
+    }
+
+    #[test]
+    #[should_panic(expected = "validation interval is 0")]
+    fn panic_on_zero_validation_interval() {
+        use crate::learning::consformer::ConsFormerBatch;
+        use burn::tensor::{Int, Tensor};
+
+        let (problems, network_config, out_dir) = setup("tmp");
+        let device = NdArrayDevice::default();
+        let training = TrainingConfig::new()
+            .with_num_epochs(3)
+            .with_validation_interval(0)
+            .with_batch_size(1);
+        std::fs::remove_dir_all(&out_dir).ok();
+        let returned = train(&problems, network_config, training, &out_dir).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "validation interval is 4")]
+    fn panic_on_out_of_bound_validation_interval() {
+        use crate::learning::consformer::ConsFormerBatch;
+        use burn::tensor::{Int, Tensor};
+
+        let (problems, network_config, out_dir) = setup("tmp");
+        let device = NdArrayDevice::default();
+        let training = TrainingConfig::new()
+            .with_num_epochs(3)
+            .with_validation_interval(4)
+            .with_batch_size(1);
+        std::fs::remove_dir_all(&out_dir).ok();
+        let returned = train(&problems, network_config, training, &out_dir).unwrap();
     }
 }
