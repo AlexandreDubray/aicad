@@ -215,6 +215,9 @@ where
             "epoch {epoch}: forward={t_forward:.3}s loss={t_loss:.3}s backward+step={t_backward:.3}s"
         );
         let epoch_loss = epoch_loss_sum / epoch_batches as f32;
+        if !epoch_loss.is_finite() {
+            log::warn!("Non-finite train loss at epoch {epoch}");
+        }
         log::info!("epoch {epoch}: loss = {epoch_loss} ({epoch_rt} seconds)");
         crate::diagnostics::data_log!(
             "train_epoch",
@@ -250,6 +253,9 @@ where
             }
 
             let score = valid_loss_sum / valid_batches as f64;
+            if !score.is_finite() {
+                log::warn!("Non-finite validation score at epoch {epoch}");
+            }
             log::info!("epoch {epoch}: validation loss = {score:.4}");
             crate::diagnostics::data_log!("valid_epoch", epoch = epoch, score = score,);
 
