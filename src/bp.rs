@@ -1,8 +1,6 @@
 //! Loopy belief propagation over compiled MDDs: refines the per-variable distributions of a
 //! network with what the constraints say about them.
 //!
-//! # Purpose
-//!
 //! A network gives every variable $x$ a distribution $q_x$ over its domain (`probs`, the softmax
 //! of its scores). Sampling each variable from $q_x$ alone ignores the constraints, and the values
 //! picked together often violate them. This module computes, for every variable, an approximation
@@ -153,7 +151,11 @@ use crate::modelling::ValueIndex;
 const LOG_ZERO: f64 = -745.0;
 
 fn safe_ln(p: f64) -> f64 {
-    if p > 0.0 { p.ln() } else { LOG_ZERO }
+    if p > 0.0 {
+        p.ln()
+    } else {
+        LOG_ZERO
+    }
 }
 
 /// Normalises a categorical probability distribution if at least one element has non-zero weight,
@@ -395,10 +397,10 @@ pub(crate) fn belief_propagation(
 mod tests {
     use super::*;
     use crate::constraints::{all_different, gcc, not_equals, sum};
-    use crate::mdd::Compiler;
     use crate::mdd::heuristics::{
         CompilationHeuristic, MergeHeuristic, OrderingHeuristic, SelectHeuristic,
     };
+    use crate::mdd::Compiler;
     use crate::modelling::{ConstraintIndex, Problem};
     use rand::rngs::StdRng;
     use rand::{RngExt, SeedableRng};
