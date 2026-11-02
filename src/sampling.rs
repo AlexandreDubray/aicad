@@ -1,6 +1,8 @@
 //! Everything that draws or chooses from a distribution: values of a categorical distribution,
 //! random assignments, and solutions sampled from a diagram.
 //!
+//! # Meaning
+//!
 //! A categorical distribution is a slice of non-negative weights, one per value, that need not be
 //! normalised. [`DecodeMode`] says how one becomes a value, [`argmax`] for the largest weight or
 //! [`sample_categorical`] for a draw proportional to the weights. A distribution is always given
@@ -37,18 +39,21 @@ pub(crate) enum DecodeMode {
     Greedy,
 }
 
-/// The index of the largest weight; on ties, the last of the largest ones (that of `Iterator::max_by`).
+/// The index of the largest weight; on ties, the first of the largest ones.
 ///
 /// # Panics
 ///
 /// Panics if `weights` is empty or holds a NaN.
 pub(crate) fn argmax(weights: &[f64]) -> usize {
-    weights
-        .iter()
-        .enumerate()
-        .max_by(|a, b| a.1.partial_cmp(b.1).expect("weights should never be NaN"))
-        .map(|(index, _)| index)
-        .expect("weights should not be empty")
+    assert!(!weights.is_empty(), "weights should not be empty");
+    let mut best = 0;
+    for (index, weight) in weights.iter().enumerate() {
+        assert!(!weight.is_nan(), "weights should never be NaN");
+        if *weight > weights[best] {
+            best = index;
+        }
+    }
+    best
 }
 
 /// Draws an index with probability proportional to its weight, from the generator `rng`. The
@@ -271,6 +276,12 @@ mod tests {
     fn argmax_picks_the_largest_weight() {
         assert_eq!(argmax(&[0.1, 0.7, 0.2]), 1);
         assert_eq!(argmax(&[0.9, 0.05, 0.05]), 0);
+    }
+
+    #[test]
+    fn argmax_takes_the_first_of_equal_weights() {
+        assert_eq!(argmax(&[0.2, 0.4, 0.4]), 1);
+        assert_eq!(argmax(&[0.5, 0.5]), 0);
     }
 
     #[test]
