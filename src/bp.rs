@@ -144,12 +144,17 @@
 //! \[2\] "Constrained Sequential Inference in Machine Learning using Constraint Programming" - V.
 //! Manibod et al., IJCAI 2025
 
+#![deny(missing_docs)]
+#![warn(clippy::missing_docs_in_private_items)]
+
 use crate::mdd::wmc::log_wmc_and_gradient;
 use crate::mdd::{CompiledConstraint, Mdd};
 use crate::modelling::ValueIndex;
 
+/// Stand-in for `ln(0)`: about the smallest log of a positive `f64`, so sums of logs stay finite.
 const LOG_ZERO: f64 = -745.0;
 
+/// `ln(p)`, or `LOG_ZERO` when `p` is not positive.
 fn safe_ln(p: f64) -> f64 {
     if p > 0.0 { p.ln() } else { LOG_ZERO }
 }
@@ -237,6 +242,7 @@ fn build_var_to_mdds(mdds: &[CompiledConstraint], num_vars: usize) -> Vec<Vec<(u
     var_to_mdds
 }
 
+/// Turns log-weights into a probability distribution (a stable softmax).
 fn log_combine_and_normalize(log_combined: Vec<f64>) -> Vec<f64> {
     let max_log = log_combined
         .iter()
