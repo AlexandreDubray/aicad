@@ -90,7 +90,7 @@
 //! use aicad::modelling::*;
 //!
 //! let mut problem = Problem::default();
-//! let vars = problem.add_variables(4, vec![0, 1, 2], None);
+//! let vars = problem.add_variables(4, vec![0, 1, 2]);
 //! // The value 1 occurs exactly once, the value 2 occurs at most once; the value 0 is free.
 //! let gcc = Gcc::new(vars, vec![(1, 1, 1), (2, 0, 1)]);
 //!
@@ -491,7 +491,7 @@ mod test_gcc {
         let mut problem = Problem::default();
         let vars: Vec<VariableIndex> = domains
             .iter()
-            .map(|d| problem.add_variable(d.clone(), None))
+            .map(|d| problem.add_variable(d.clone()))
             .collect();
         gcc(
             &mut problem,
@@ -512,7 +512,7 @@ mod test_gcc {
     /// The constraint over variables `0..n` with the identity ordering already set.
     fn gcc_of(n: usize, bounds: &[(isize, usize, usize)]) -> Gcc {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(n, dom(3), None);
+        let vars = problem.add_variables(n, dom(3));
         let mut constraint = Gcc::new(vars.clone(), bounds.to_vec());
         constraint.update_variable_ordering(&vars);
         constraint
@@ -670,7 +670,7 @@ mod test_gcc {
 
     fn foreign() -> Box<dyn ConstraintProperty> {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(2, dom(2), None);
+        let vars = problem.add_variables(2, dom(2));
         AllDifferent::new(vars, &problem).identity_property()
     }
 
@@ -775,7 +775,7 @@ mod test_gcc {
     fn is_satisfied_ignores_out_of_scope_variables() {
         // Only variables 0 and 2 are in scope.
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, dom(2), None);
+        let vars = problem.add_variables(3, dom(2));
         let constraint = Gcc::new(vec![vars[0], vars[2]], vec![(1, 2, 2)]);
         assert!(constraint.is_satisfied(&[1, 0, 1]));
         assert!(!constraint.is_satisfied(&[1, 1, 0]));
@@ -791,8 +791,8 @@ mod test_gcc {
     #[should_panic(expected = "repeated")]
     fn a_repeated_variable_is_rejected() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(dom(3), None);
-        let y = problem.add_variable(dom(3), None);
+        let x = problem.add_variable(dom(3));
+        let y = problem.add_variable(dom(3));
         Gcc::new(vec![x, y, x], vec![(1, 0, 2)]);
     }
 
@@ -800,7 +800,7 @@ mod test_gcc {
     #[should_panic(expected = "two bounds")]
     fn two_bounds_for_one_value_are_rejected() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, dom(3), None);
+        let vars = problem.add_variables(3, dom(3));
         Gcc::new(vars, vec![(1, 0, 2), (2, 0, 1), (1, 1, 3)]);
     }
 
@@ -811,7 +811,7 @@ mod test_gcc {
     #[test]
     fn scope_name_and_structural_key() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, dom(5), None);
+        let vars = problem.add_variables(3, dom(5));
         // Declared out of order: the key sorts them by value.
         let constraint = Gcc::new(vars.clone(), vec![(2, 0, 1), (0, 1, 1)]);
         assert_eq!(constraint.iter_scope().collect::<Vec<_>>(), vars);
@@ -828,7 +828,7 @@ mod test_gcc {
     #[test]
     fn the_structural_key_does_not_depend_on_the_order_of_the_bounds() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, dom(5), None);
+        let vars = problem.add_variables(3, dom(5));
         let a = Gcc::new(vars.clone(), vec![(0, 1, 1), (2, 0, 1), (4, 0, 2)]);
         let b = Gcc::new(vars.clone(), vec![(4, 0, 2), (0, 1, 1), (2, 0, 1)]);
         let different_bound = Gcc::new(vars.clone(), vec![(0, 1, 1), (2, 0, 1), (4, 0, 3)]);
@@ -847,7 +847,7 @@ mod test_gcc {
     #[test]
     fn layers_in_scope_follow_the_variable_ordering() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(4, dom(2), None);
+        let vars = problem.add_variables(4, dom(2));
         let mut constraint = Gcc::new(vec![vars[0], vars[2], vars[3]], vec![(1, 0, 1)]);
         // Layer order: v3, v1, v0, v2.
         constraint.update_variable_ordering(&[vars[3], vars[1], vars[0], vars[2]]);
@@ -861,7 +861,7 @@ mod test_gcc {
     fn layers_beyond_the_first_word_are_tracked() {
         // 130 variables, the scope is at layers 0, 63, 64, 65 and 129.
         let mut problem = Problem::default();
-        let vars = problem.add_variables(130, dom(2), None);
+        let vars = problem.add_variables(130, dom(2));
         let scope_layers = [0usize, 63, 64, 65, 129];
         let scope: Vec<VariableIndex> = scope_layers.iter().map(|&l| vars[l]).collect();
         let mut constraint = Gcc::new(scope, vec![(1, 0, 2)]);
@@ -878,7 +878,7 @@ mod test_gcc {
     #[test]
     fn a_new_ordering_replaces_the_previous_one() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, dom(2), None);
+        let vars = problem.add_variables(3, dom(2));
         let mut constraint = Gcc::new(vec![vars[0], vars[1]], vec![(1, 0, 1)]);
         constraint.update_variable_ordering(&[vars[0], vars[1], vars[2]]);
         assert!(
@@ -899,7 +899,7 @@ mod test_gcc {
     #[should_panic]
     fn is_layer_in_scope_panics_before_the_ordering_is_set() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(2, dom(2), None);
+        let vars = problem.add_variables(2, dom(2));
         Gcc::new(vars, vec![(1, 0, 1)]).is_layer_in_scope(0);
     }
 
@@ -908,7 +908,7 @@ mod test_gcc {
     #[should_panic]
     fn update_variable_ordering_panics_when_a_scope_variable_is_missing() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(2, dom(2), None);
+        let vars = problem.add_variables(2, dom(2));
         let mut constraint = Gcc::new(vars.clone(), vec![(1, 0, 1)]);
         // `vars[1]` does not appear in the order.
         constraint.update_variable_ordering(&[vars[0]]);
@@ -1339,7 +1339,7 @@ mod test_gcc {
             let mut problem = Problem::default();
             let vars: Vec<VariableIndex> = domains
                 .iter()
-                .map(|d| problem.add_variable(d.clone(), None))
+                .map(|d| problem.add_variable(d.clone()))
                 .collect();
             among(&mut problem, vars, vec![value], lo, hi);
             let from_among = accepted(&settled(problem, (0..domains.len()).collect()));
@@ -1358,7 +1358,7 @@ mod test_gcc {
         let mut problem = Problem::default();
         let vars: Vec<VariableIndex> = domains
             .iter()
-            .map(|d| problem.add_variable(d.clone(), None))
+            .map(|d| problem.add_variable(d.clone()))
             .collect();
         all_different(&mut problem, vars);
         let from_all_different = accepted(&settled(problem, vec![0, 1, 2]));
@@ -1464,7 +1464,7 @@ mod test_gcc {
         let mut problem = Problem::default();
         let vars: Vec<VariableIndex> = domains
             .iter()
-            .map(|d| problem.add_variable(d.clone(), None))
+            .map(|d| problem.add_variable(d.clone()))
             .collect();
         // An Among with a lower bound only is a Gcc with that bound, uncapped.
         among(&mut problem, vars, vec![1], 2, 7);

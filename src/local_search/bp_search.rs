@@ -19,7 +19,7 @@ use rand::rngs::StdRng;
 use crate::destroy::{DestroyKind, DestroyOperator};
 use crate::mdd::arena::MddCompilationConfig;
 use crate::modelling::Problem;
-use crate::utils::DecodeMode;
+use crate::sampling::DecodeMode;
 
 use super::repair::{BatchRepair, MddRepair};
 use super::{SearchArchitecture, SearchState, destroy_rows, row_seeds};
@@ -140,7 +140,7 @@ mod tests {
 
     fn clique(size: usize, colours: usize) -> Arc<Problem> {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(size, (0..colours as isize).collect(), None);
+        let vars = problem.add_variables(size, (0..colours as isize).collect());
         all_different(&mut problem, vars);
         Arc::new(problem)
     }

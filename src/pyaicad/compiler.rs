@@ -112,8 +112,8 @@ impl PyMdd {
         self.inner.mdd().is_unsat()
     }
 
-    /// A path of the diagram (the first one of exact nodes, or one drawn with the probabilities of
-    /// the variables if `sample`) as the values taken and the indices of the variables they are
+    /// A path of the diagram (the first one of exact nodes, or one drawn with every value of a
+    /// variable equally likely if `sample`) as the values taken and the indices of the variables they are
     /// the values of, in increasing order of variable: the order of the assignment of a model.
     #[pyo3(signature = (sample=false))]
     fn get_solution(&self, sample: bool) -> Option<(Vec<isize>, Vec<usize>)> {
@@ -122,7 +122,7 @@ impl PyMdd {
             return None;
         }
         let (values, variables) = if sample {
-            let weights = crate::sampling::problem_weights(mdd);
+            let weights = crate::sampling::uniform_weights(mdd);
             let path = crate::sampling::sample_solution(mdd, &weights);
             mdd.solution_from_path(&path)
         } else {

@@ -406,8 +406,8 @@ pub(crate) fn train_consformer_mdd(
     }
     let checkpoint_dir = PathBuf::from(checkpoint_dir);
     // The merge heuristic is not read while the MDDs are compiled with unbounded width, and the
-    // problems of a training set do not share their probabilities: `MostLikely` takes those of
-    // the first problem so that the setting has a value.
+    // problems of a training set do not share their domains: `MostLikely` takes the uniform
+    // probabilities of the first problem so that the setting has a value.
     let merge = problems
         .first()
         .map_or(MergeHeuristic::LessRelaxed, |problem| {

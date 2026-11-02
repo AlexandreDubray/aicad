@@ -63,7 +63,7 @@
 //! use aicad::modelling::*;
 //!
 //! let mut problem = Problem::default();
-//! let vars = problem.add_variables(3, vec![0, 1, 2, 3], None);
+//! let vars = problem.add_variables(3, vec![0, 1, 2, 3]);
 //! let sum = Sum::new(vars, 6, &problem);
 //!
 //! assert!(sum.is_satisfied(&[1, 2, 3]));
@@ -329,7 +329,7 @@ mod test_sum {
         let mut problem = Problem::default();
         let vars: Vec<VariableIndex> = domains
             .iter()
-            .map(|d| problem.add_variable(d.clone(), None))
+            .map(|d| problem.add_variable(d.clone()))
             .collect();
         sum(
             &mut problem,
@@ -549,8 +549,8 @@ mod test_sum {
     #[should_panic(expected = "repeated")]
     fn a_repeated_variable_is_rejected() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(dom(3), None);
-        let y = problem.add_variable(dom(3), None);
+        let x = problem.add_variable(dom(3));
+        let y = problem.add_variable(dom(3));
         Sum::new(vec![x, y, x], 3, &problem);
     }
 
@@ -589,7 +589,7 @@ mod test_sum {
     fn layers_beyond_the_first_word_are_tracked() {
         // 130 variables, the scope is at layers 0, 63, 64, 65 and 129.
         let mut problem = Problem::default();
-        let vars = problem.add_variables(130, dom(2), None);
+        let vars = problem.add_variables(130, dom(2));
         let scope_layers = [0usize, 63, 64, 65, 129];
         let scope: Vec<VariableIndex> = scope_layers.iter().map(|&l| vars[l]).collect();
         let mut sum = Sum::new(scope, 2, &problem);

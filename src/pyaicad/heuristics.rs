@@ -34,12 +34,20 @@ impl From<PyOrderingHeuristic> for OrderingHeuristic {
 }
 
 impl PyMergeHeuristic {
-    /// The heuristic to compile `problem` with; `MostLikely` reads the probabilities of its
-    /// variables.
+    /// The heuristic to compile `problem` with; `MostLikely` takes every value of a variable as
+    /// likely as the others, since the Python side gives no probabilities.
     pub(crate) fn into_heuristic(self, problem: &Problem) -> MergeHeuristic {
         match self {
             PyMergeHeuristic::LessRelaxed => MergeHeuristic::LessRelaxed,
-            PyMergeHeuristic::MostLikely => MergeHeuristic::most_likely(problem),
+            PyMergeHeuristic::MostLikely => MergeHeuristic::MostLikely(
+                problem
+                    .iter_variables()
+                    .map(|variable| {
+                        let size = problem[variable].domain_size();
+                        vec![1.0 / size as f64; size]
+                    })
+                    .collect(),
+            ),
             PyMergeHeuristic::StateSimilarity => MergeHeuristic::StateSimilarity,
         }
     }

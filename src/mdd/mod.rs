@@ -25,7 +25,7 @@
 //! use std::sync::Arc;
 //!
 //! let mut problem = Problem::default();
-//! let vars = problem.add_variables(3, vec![0, 1, 2], None);
+//! let vars = problem.add_variables(3, vec![0, 1, 2]);
 //! let constraint = all_different(&mut problem, vars);
 //!
 //! let mut compiler = Compiler::new(

@@ -23,26 +23,15 @@ pub struct Problem {
 
 impl Problem {
     /// Adds a variable with the given domain to the problem and returns its index.
-    pub fn add_variable(
-        &mut self,
-        domain: Vec<isize>,
-        probabilities: Option<Vec<f64>>,
-    ) -> VariableIndex {
+    pub fn add_variable(&mut self, domain: Vec<isize>) -> VariableIndex {
         let ret = VariableIndex(self.variables.len());
-        self.variables.push(Variable::new(domain, probabilities));
+        self.variables.push(Variable::new(domain));
         ret
     }
 
     /// Adds n variables, with the same domain, to the problem and return their indexes.
-    pub fn add_variables(
-        &mut self,
-        n: usize,
-        domain: Vec<isize>,
-        probabilities: Option<Vec<f64>>,
-    ) -> Vec<VariableIndex> {
-        (0..n)
-            .map(|_| self.add_variable(domain.clone(), probabilities.clone()))
-            .collect()
+    pub fn add_variables(&mut self, n: usize, domain: Vec<isize>) -> Vec<VariableIndex> {
+        (0..n).map(|_| self.add_variable(domain.clone())).collect()
     }
 
     /// Adds a constraint to the problem and returns its index. The variables of its scope must
@@ -183,8 +172,8 @@ mod tests {
     #[test]
     fn variables_and_constraints_are_numbered_in_the_order_they_are_added() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1], None);
-        let y = problem.add_variable(vec![0, 1], None);
+        let x = problem.add_variable(vec![0, 1]);
+        let y = problem.add_variable(vec![0, 1]);
         let c = not_equals(&mut problem, x, y);
         let d = not_equals(&mut problem, y, x);
         assert_eq!((x, y), (VariableIndex(0), VariableIndex(1)));
@@ -198,8 +187,8 @@ mod tests {
     #[test]
     fn add_variables_gives_consecutive_variables_with_the_same_domain() {
         let mut problem = Problem::default();
-        problem.add_variable(vec![9], None);
-        let vars = problem.add_variables(3, vec![1, 2], None);
+        problem.add_variable(vec![9]);
+        let vars = problem.add_variables(3, vec![1, 2]);
         assert_eq!(
             vars,
             vec![VariableIndex(1), VariableIndex(2), VariableIndex(3)]
@@ -212,7 +201,7 @@ mod tests {
     #[test]
     fn a_constraint_is_recorded_on_every_variable_of_its_scope() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(4, vec![0, 1, 2, 3], None);
+        let vars = problem.add_variables(4, vec![0, 1, 2, 3]);
         let c = all_different(&mut problem, vec![vars[0], vars[2], vars[3]]);
         let d = not_equals(&mut problem, vars[2], vars[1]);
         let on = |v: usize| problem[vars[v]].iter_constraints().collect::<Vec<_>>();
@@ -227,9 +216,9 @@ mod tests {
     #[test]
     fn is_solution_matches_a_brute_force_check_of_domains_and_constraints() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1, 2], None);
-        let y = problem.add_variable(vec![1, 2], None);
-        let z = problem.add_variable(vec![0, 2, 3], None);
+        let x = problem.add_variable(vec![0, 1, 2]);
+        let y = problem.add_variable(vec![1, 2]);
+        let z = problem.add_variable(vec![0, 2, 3]);
         all_different(&mut problem, vec![x, y, z]);
         not_equals(&mut problem, x, z);
         let mut accepted = 0;
@@ -251,7 +240,7 @@ mod tests {
     #[test]
     fn an_assignment_of_the_wrong_length_is_not_a_solution() {
         let mut problem = Problem::default();
-        problem.add_variables(2, vec![0, 1], None);
+        problem.add_variables(2, vec![0, 1]);
         assert!(problem.is_solution(&[0, 1]));
         assert!(!problem.is_solution(&[0]));
         assert!(!problem.is_solution(&[0, 1, 0]));
@@ -267,7 +256,7 @@ mod tests {
     #[should_panic(expected = "variable 5 does not exist: the problem has 1 variables")]
     fn reading_a_variable_that_is_not_in_the_problem_panics() {
         let mut problem = Problem::default();
-        problem.add_variable(vec![0], None);
+        problem.add_variable(vec![0]);
         let _ = &problem[VariableIndex(5)];
     }
 
@@ -282,10 +271,10 @@ mod tests {
     #[should_panic(expected = "has variable 3 in its scope, but the problem has only 2 variables")]
     fn a_constraint_over_a_variable_that_is_not_in_the_problem_panics() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1], None);
-        problem.add_variable(vec![0, 1], None);
+        let x = problem.add_variable(vec![0, 1]);
+        problem.add_variable(vec![0, 1]);
         let mut other = Problem::default();
-        other.add_variables(4, vec![0, 1], None);
+        other.add_variables(4, vec![0, 1]);
         let constraint = crate::constraints::NotEquals::new(x, VariableIndex(3), &other);
         problem.add_constraint(constraint);
     }
@@ -294,17 +283,16 @@ mod tests {
     #[should_panic(expected = "cannot fix variable 1 to 5: it is not in its domain of 2 values")]
     fn equal_refuses_a_value_outside_the_domain() {
         let mut problem = Problem::default();
-        problem.add_variables(2, vec![0, 1], None);
+        problem.add_variables(2, vec![0, 1]);
         equal(&mut problem, VariableIndex(1), 5);
     }
 
     #[test]
     fn equal_leaves_a_single_value() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1, 2], Some(vec![0.5, 0.25, 0.25]));
+        let x = problem.add_variable(vec![0, 1, 2]);
         equal(&mut problem, x, 2);
         assert_eq!(problem[x].iter_domain().collect::<Vec<_>>(), vec![2]);
-        assert_eq!(problem[x].probability(ValueIndex(0)), 1.0);
         assert!(problem.is_solution(&[2]));
         assert!(!problem.is_solution(&[1]));
     }

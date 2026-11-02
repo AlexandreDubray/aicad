@@ -28,15 +28,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
+use rand::SeedableRng;
 use rand::rngs::StdRng;
-use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
 
 use crate::bp::belief_propagation;
 use crate::mdd::arena::{MddCompilationConfig, compile_constraints};
 use crate::mdd::{CompiledConstraint, MddArena};
 use crate::modelling::{Problem, ValueIndex, VariableIndex};
-use crate::utils::{DecodeMode, argmax};
+use crate::sampling::{DecodeMode, argmax, sample_categorical_with};
 
 /// The decomposed MDDs of a problem, one compiled constraint per constraint. The `Arc` is shared
 /// by the copies of the same problem in a batch.
@@ -223,7 +223,7 @@ impl MddRepair {
             // translation back through `problem`'s own domain enumeration.
             let chosen = match self.mode {
                 DecodeMode::Greedy => argmax(&marginals[v]),
-                DecodeMode::Sample => sample_weights(&marginals[v], rng),
+                DecodeMode::Sample => sample_categorical_with(&marginals[v], rng),
             };
             next[v] = chosen as isize;
         }
@@ -294,19 +294,6 @@ impl BatchRepair {
     }
 }
 
-/// An index drawn with probability proportional to its weight.
-fn sample_weights(weights: &[f64], rng: &mut StdRng) -> usize {
-    let total: f64 = weights.iter().sum();
-    let mut target = rng.random_range(0.0..total);
-    for (index, &weight) in weights.iter().enumerate() {
-        target -= weight;
-        if target <= 0.0 {
-            return index;
-        }
-    }
-    weights.len() - 1
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,7 +304,7 @@ mod tests {
     /// own diagram.
     fn clique_problem(size: usize, colours: usize) -> Arc<Problem> {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(size, (0..colours as isize).collect(), None);
+        let vars = problem.add_variables(size, (0..colours as isize).collect());
         all_different(&mut problem, vars);
         Arc::new(problem)
     }

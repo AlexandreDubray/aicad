@@ -1280,9 +1280,9 @@ pub mod test_mdd {
     #[test]
     pub fn mdd_creation() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1], None);
-        let y = problem.add_variable(vec![0, 1], None);
-        let z = problem.add_variable(vec![0, 1, 2], None);
+        let x = problem.add_variable(vec![0, 1]);
+        let y = problem.add_variable(vec![0, 1]);
+        let z = problem.add_variable(vec![0, 1, 2]);
         // Mdd::new's scope is the union of the *given* constraints' scopes, so an MDD covering
         // all 3 (otherwise free) variables needs a constraint that pulls them into scope. An
         // unbounded gcc (no value bounds at all) imposes no actual restriction - see
@@ -1327,9 +1327,7 @@ pub mod test_mdd {
     #[test]
     pub fn min_dom_max_linked_repairs_order_for_regular_constraints() {
         let mut problem = Problem::default();
-        let vars: Vec<VariableIndex> = (0..4)
-            .map(|_| problem.add_variable(vec![0, 1], None))
-            .collect();
+        let vars: Vec<VariableIndex> = (0..4).map(|_| problem.add_variable(vec![0, 1])).collect();
         // One state, self-loop on every value, always accepting: imposes no restriction on
         // solutions, only exercises the ordering requirement (vars[0] < vars[1] < vars[2] <
         // vars[3]).
@@ -1341,7 +1339,7 @@ pub mod test_mdd {
             vec![0],
         );
         for _ in 0..3 {
-            let dummy = problem.add_variable(vec![0, 1], None);
+            let dummy = problem.add_variable(vec![0, 1]);
             not_equals(&mut problem, dummy, vars[3]);
         }
 
@@ -1378,8 +1376,8 @@ pub mod test_mdd {
     #[should_panic(expected = "conflicting precedence requirements")]
     pub fn conflicting_regular_orderings_panics_with_a_clear_message() {
         let mut problem = Problem::default();
-        let v0 = problem.add_variable(vec![0, 1], None);
-        let v1 = problem.add_variable(vec![0, 1], None);
+        let v0 = problem.add_variable(vec![0, 1]);
+        let v1 = problem.add_variable(vec![0, 1]);
         let trivial = vec![vec![Some(0), Some(0)]];
         regular(&mut problem, vec![v0, v1], trivial.clone(), 0, vec![0]);
         regular(&mut problem, vec![v1, v0], trivial, 0, vec![0]);
@@ -1400,9 +1398,9 @@ pub mod test_mdd {
     #[test]
     pub fn mdd_refine() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1], None);
-        let y = problem.add_variable(vec![0, 1, 2], None);
-        let z = problem.add_variable(vec![1, 2], None);
+        let x = problem.add_variable(vec![0, 1]);
+        let y = problem.add_variable(vec![0, 1, 2]);
+        let z = problem.add_variable(vec![1, 2]);
 
         not_equals(&mut problem, x, y);
         not_equals(&mut problem, y, z);
@@ -1426,8 +1424,8 @@ pub mod test_mdd {
     #[test]
     pub fn merge_nodes_merges_children_that_collide_on_the_same_label() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1], None);
-        let y = problem.add_variable(vec![0, 1], None);
+        let x = problem.add_variable(vec![0, 1]);
+        let y = problem.add_variable(vec![0, 1]);
         gcc(&mut problem, vec![x, y], vec![]);
 
         let problem = Arc::new(problem);
@@ -1471,7 +1469,7 @@ pub mod test_mdd {
         for n in 3..=7 {
             let mut problem = Problem::default();
             let vars: Vec<_> = (0..n)
-                .map(|_| problem.add_variable((0..n as isize).collect(), None))
+                .map(|_| problem.add_variable((0..n as isize).collect()))
                 .collect();
             all_different(&mut problem, vars);
             let problem = Arc::new(problem);
@@ -1517,7 +1515,7 @@ pub mod test_mdd {
     #[test]
     pub fn merging_follows_nodes_absorbed_earlier_in_the_same_cascade() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(6, (0..6).collect(), None);
+        let vars = problem.add_variables(6, (0..6).collect());
         all_different(&mut problem, vars);
         let problem = Arc::new(problem);
         let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
@@ -1563,7 +1561,7 @@ pub mod test_mdd {
             for max_width in [1usize, 2, 3] {
                 let mut problem = Problem::default();
                 let vars: Vec<_> = (0..n)
-                    .map(|_| problem.add_variable((0..n as isize).collect(), None))
+                    .map(|_| problem.add_variable((0..n as isize).collect()))
                     .collect();
                 all_different(&mut problem, vars.clone());
                 let problem = Arc::new(problem);
@@ -1618,7 +1616,7 @@ pub mod test_mdd {
         for max_width in [1usize, 2, 3] {
             let mut problem = Problem::default();
             let vars: Vec<_> = (0..n)
-                .map(|_| problem.add_variable((0..n as isize).collect(), None))
+                .map(|_| problem.add_variable((0..n as isize).collect()))
                 .collect();
             // Every value can appear at most twice among the 5 variables.
             let bounds: Vec<(isize, usize, usize)> = (0..n as isize).map(|v| (v, 0, 2)).collect();
@@ -1666,7 +1664,7 @@ pub mod test_mdd {
         let candidates = all_assignments(n, n);
         let mut problem = Problem::default();
         let vars: Vec<_> = (0..n)
-            .map(|_| problem.add_variable((0..n as isize).collect(), None))
+            .map(|_| problem.add_variable((0..n as isize).collect()))
             .collect();
         let bounds: Vec<(isize, usize, usize)> = (0..n as isize).map(|v| (v, 0, 2)).collect();
         gcc(&mut problem, vars.clone(), bounds);
@@ -1704,7 +1702,7 @@ pub mod test_mdd {
     #[test]
     pub fn count_solutions_is_zero_when_unsat() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(2, vec![1], None);
+        let vars = problem.add_variables(2, vec![1]);
         gcc(&mut problem, vars, vec![(1, 0, 1)]); // both forced to 1, but at most one allowed
         let problem = Arc::new(problem);
         let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
@@ -1730,7 +1728,7 @@ pub mod test_mdd {
         for max_width in [1usize, 2, 3] {
             let mut problem = Problem::default();
             let vars: Vec<_> = (0..n)
-                .map(|_| problem.add_variable((0..n as isize).collect(), None))
+                .map(|_| problem.add_variable((0..n as isize).collect()))
                 .collect();
             let bounds: Vec<(isize, usize, usize)> = (0..n as isize).map(|v| (v, 0, 2)).collect();
             gcc(&mut problem, vars.clone(), bounds);
@@ -1767,7 +1765,7 @@ pub mod test_mdd {
         // take the edges that a split had removed for live ones of the node it merged into,
         // and the solutions [2, 0, 0] and [2, 0, 1] disappeared from the MDD.
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, vec![0, 1, 2], None);
+        let vars = problem.add_variables(3, vec![0, 1, 2]);
         at_least(&mut problem, vars, vec![0, 1], 2);
         let problem = Arc::new(problem);
         let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
@@ -1800,7 +1798,7 @@ pub mod test_mdd {
     /// An all-different over three variables of two values: no solution.
     fn unsatisfiable() -> Compiler {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, vec![0, 1], None);
+        let vars = problem.add_variables(3, vec![0, 1]);
         all_different(&mut problem, vars);
         let problem = Arc::new(problem);
         let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
@@ -1842,7 +1840,7 @@ pub mod test_mdd {
     #[test]
     fn the_root_and_the_sink_stay_alone_in_their_layer_at_every_width() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(4, vec![0, 1, 2, 3], None);
+        let vars = problem.add_variables(4, vec![0, 1, 2, 3]);
         all_different(&mut problem, vars);
         let problem = Arc::new(problem);
         let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
@@ -1877,7 +1875,7 @@ pub mod test_mdd {
     /// Five variables that must all differ, compiled but not refined.
     fn five_different_variables() -> Compiler {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(5, vec![0, 1, 2, 3, 4], None);
+        let vars = problem.add_variables(5, vec![0, 1, 2, 3, 4]);
         let constraint = crate::constraints::all_different(&mut problem, vars);
         Compiler::new(
             Arc::new(problem),
@@ -1925,7 +1923,7 @@ pub mod test_mdd {
     #[test]
     fn a_solution_names_the_variables_in_the_branching_order() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(4, vec![0, 1, 2], None);
+        let vars = problem.add_variables(4, vec![0, 1, 2]);
         let constraint = not_equals(&mut problem, vars[3], vars[1]);
         let mut compiler = Compiler::new(
             Arc::new(problem),
@@ -2015,7 +2013,7 @@ pub mod test_mdd {
         let domain: Vec<isize> = (0..5).collect();
         for case in 0..5 {
             let mut problem = Problem::default();
-            let vars = problem.add_variables(variables, domain.clone(), None);
+            let vars = problem.add_variables(variables, domain.clone());
             let constraints = match case {
                 0 => vec![gcc(
                     &mut problem,
@@ -2167,8 +2165,8 @@ pub mod test_mdd {
     /// A compiler of two different variables, the merge heuristic being `merge`.
     fn two_variables_with(merge: MergeHeuristic) -> Compiler {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1, 2], None);
-        let y = problem.add_variable(vec![0, 1, 2], None);
+        let x = problem.add_variable(vec![0, 1, 2]);
+        let y = problem.add_variable(vec![0, 1, 2]);
         not_equals(&mut problem, x, y);
         let problem = Arc::new(problem);
         let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
@@ -2221,7 +2219,7 @@ pub mod test_mdd {
         for case in 0..4 {
             let build = || {
                 let mut problem = Problem::default();
-                let vars = problem.add_variables(6, vec![0, 1, 2, 3], None);
+                let vars = problem.add_variables(6, vec![0, 1, 2, 3]);
                 let constraints = match case {
                     0 => vec![gcc(
                         &mut problem,

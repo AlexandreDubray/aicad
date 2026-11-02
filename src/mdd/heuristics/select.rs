@@ -46,7 +46,7 @@ mod tests {
 
     fn all_different_mdd() -> Compiler {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(4, vec![0, 1, 2, 3], None);
+        let vars = problem.add_variables(4, vec![0, 1, 2, 3]);
         let c = all_different(&mut problem, vars);
         Compiler::new(
             Arc::new(problem),

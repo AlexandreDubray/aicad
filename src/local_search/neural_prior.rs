@@ -37,7 +37,7 @@ use crate::destroy::{DestroyKind, DestroyOperator};
 use crate::mdd::arena::MddCompilationConfig;
 use crate::modelling::Problem;
 use crate::neural::{Batch, Network};
-use crate::utils::DecodeMode;
+use crate::sampling::DecodeMode;
 use crate::utils::tensor::{rows_to_tensor, to_rows};
 
 use super::repair::{BatchRepair, MddRepair};
@@ -423,7 +423,7 @@ mod tests {
 
     fn clique(size: usize, colours: usize) -> Arc<Problem> {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(size, (0..colours as isize).collect(), None);
+        let vars = problem.add_variables(size, (0..colours as isize).collect());
         all_different(&mut problem, vars);
         Arc::new(problem)
     }

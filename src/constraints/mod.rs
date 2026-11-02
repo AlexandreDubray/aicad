@@ -168,7 +168,7 @@
 //! use rustc_hash::FxHashSet;
 //!
 //! let mut problem = Problem::default();
-//! let vars = problem.add_variables(3, vec![0, 1], None);
+//! let vars = problem.add_variables(3, vec![0, 1]);
 //! let mut among = Among::new(vars.clone(), FxHashSet::from_iter([1]), 2, 3);
 //! // The layers are in the order of the variables.
 //! among.update_variable_ordering(&vars);
@@ -255,7 +255,7 @@ mod test_contract {
             let mut problem = Problem::default();
             let vars: Vec<VariableIndex> = domains
                 .iter()
-                .map(|d| problem.add_variable(d.clone(), None))
+                .map(|d| problem.add_variable(d.clone()))
                 .collect();
             let mut constraint = make(scope.iter().map(|&i| vars[i]).collect(), &problem);
             constraint.update_variable_ordering(&vars);
@@ -893,7 +893,7 @@ mod test_contract {
             assert_eq!(dyn_clone::clone_box(c).structural_key(&problem), key);
         }
         // `structural_key` receives a problem but these constraints do not need it to be filled.
-        problem.add_variable(vec![0], None);
+        problem.add_variable(vec![0]);
     }
 
     #[test]

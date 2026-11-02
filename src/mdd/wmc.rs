@@ -137,8 +137,8 @@
 //! use std::sync::Arc;
 //!
 //! let mut problem = Problem::default();
-//! let x = problem.add_variable(vec![0, 1, 2], None);
-//! let y = problem.add_variable(vec![0, 1, 2], None);
+//! let x = problem.add_variable(vec![0, 1, 2]);
+//! let y = problem.add_variable(vec![0, 1, 2]);
 //! let constraint = not_equals(&mut problem, x, y);
 //!
 //! let mut compiler = Compiler::new(
@@ -500,8 +500,8 @@ mod tests {
     #[test]
     fn wmc_matches_brute_force_for_not_equals() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1, 2], None);
-        let y = problem.add_variable(vec![0, 1, 2], None);
+        let x = problem.add_variable(vec![0, 1, 2]);
+        let y = problem.add_variable(vec![0, 1, 2]);
         not_equals(&mut problem, x, y);
         let problem = Arc::new(problem);
         let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
@@ -516,7 +516,7 @@ mod tests {
     #[test]
     fn unit_weights_count_the_solutions() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(4, vec![0, 1, 2, 3], None);
+        let vars = problem.add_variables(4, vec![0, 1, 2, 3]);
         all_different(&mut problem, vars);
         let problem = Arc::new(problem);
         let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
@@ -529,7 +529,7 @@ mod tests {
     #[test]
     fn wmc_matches_brute_force_on_several_constraints() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(4, vec![0, 1, 2], None);
+        let vars = problem.add_variables(4, vec![0, 1, 2]);
         all_different(&mut problem, vars[..3].to_vec());
         not_equals(&mut problem, vars[2], vars[3]);
         sum(&mut problem, vars.clone(), 4);
@@ -546,7 +546,7 @@ mod tests {
     #[test]
     fn an_unsatisfiable_diagram_has_no_weight_and_no_gradient() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, vec![0, 1], None);
+        let vars = problem.add_variables(3, vec![0, 1]);
         all_different(&mut problem, vars);
         let problem = Arc::new(problem);
         let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
@@ -563,7 +563,7 @@ mod tests {
     #[test]
     fn weights_that_forbid_every_solution_give_a_zero_count() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(2, vec![0, 1], None);
+        let vars = problem.add_variables(2, vec![0, 1]);
         not_equals(&mut problem, vars[0], vars[1]);
         let problem = Arc::new(problem);
         let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
@@ -580,7 +580,7 @@ mod tests {
     #[test]
     fn the_scaled_passes_meet_at_every_layer() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(4, vec![0, 1, 2], None);
+        let vars = problem.add_variables(4, vec![0, 1, 2]);
         all_different(&mut problem, vars[..3].to_vec());
         sum(&mut problem, vars.clone(), 4);
         let problem = Arc::new(problem);
@@ -606,7 +606,7 @@ mod tests {
     #[test]
     fn gradient_is_the_derivative_of_the_log_count() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, vec![0, 1, 2], None);
+        let vars = problem.add_variables(3, vec![0, 1, 2]);
         all_different(&mut problem, vars.clone());
         not_equals(&mut problem, vars[0], vars[1]);
         let problem = Arc::new(problem);
@@ -640,7 +640,7 @@ mod tests {
     #[test]
     fn gradient_times_the_weight_is_the_probability_of_the_value() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, vec![0, 1, 2], None);
+        let vars = problem.add_variables(3, vec![0, 1, 2]);
         all_different(&mut problem, vars.clone());
         let problem = Arc::new(problem);
         let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
@@ -670,7 +670,7 @@ mod tests {
     #[test]
     fn a_structure_shared_through_the_arena_counts_with_its_own_order() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(4, vec![0, 1, 2], None);
+        let vars = problem.add_variables(4, vec![0, 1, 2]);
         // The scope is given in a different order than the one the diagram will branch in.
         let constraint = sum(&mut problem, vec![vars[3], vars[1], vars[0], vars[2]], 5);
         let problem = Arc::new(problem);
@@ -713,7 +713,7 @@ mod tests {
     #[should_panic(expected = "layer's weights")]
     fn too_few_rows_of_weights_are_reported() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, vec![0, 1, 2], None);
+        let vars = problem.add_variables(3, vec![0, 1, 2]);
         all_different(&mut problem, vars);
         let problem = Arc::new(problem);
         let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();

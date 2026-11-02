@@ -94,7 +94,7 @@
 //! use rustc_hash::FxHashSet;
 //!
 //! let mut problem = Problem::default();
-//! let vars = problem.add_variables(3, vec![0, 1], None);
+//! let vars = problem.add_variables(3, vec![0, 1]);
 //! // "No two consecutive 1": state 1 means that the last value was a 1.
 //! let transitions = vec![
 //!     vec![Some(0), Some(1)],
@@ -566,7 +566,7 @@ mod test_regular {
         let mut problem = Problem::default();
         let vars: Vec<VariableIndex> = domains
             .iter()
-            .map(|d| problem.add_variable(d.clone(), None))
+            .map(|d| problem.add_variable(d.clone()))
             .collect();
         let constraint = Regular::new(
             scope.iter().map(|&i| vars[i]).collect(),
@@ -742,7 +742,7 @@ mod test_regular {
 
     fn foreign() -> Box<dyn ConstraintProperty> {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(2, dom(2), None);
+        let vars = problem.add_variables(2, dom(2));
         AllDifferent::new(vars, &problem).identity_property()
     }
 
@@ -842,7 +842,7 @@ mod test_regular {
         let vars: Vec<VariableIndex> = i
             .domains
             .iter()
-            .map(|d| problem.add_variable(d.clone(), None))
+            .map(|d| problem.add_variable(d.clone()))
             .collect();
         regular(
             &mut problem,
@@ -891,8 +891,8 @@ mod test_regular {
     #[should_panic(expected = "repeated")]
     fn a_repeated_variable_is_rejected() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(dom(2), None);
-        let y = problem.add_variable(dom(2), None);
+        let x = problem.add_variable(dom(2));
+        let y = problem.add_variable(dom(2));
         Regular::new(vec![x, y, x], no_two_ones(), 0, set(&[0]), &problem);
     }
 
@@ -1134,7 +1134,7 @@ mod test_regular {
     fn layers_beyond_the_first_word_are_tracked() {
         // 130 variables, the scope is at layers 0, 63, 64, 65 and 129 and read in layer order.
         let mut problem = Problem::default();
-        let vars = problem.add_variables(130, dom(2), None);
+        let vars = problem.add_variables(130, dom(2));
         let scope_layers = [0usize, 63, 64, 65, 129];
         let scope: Vec<VariableIndex> = scope_layers.iter().map(|&l| vars[l]).collect();
         let mut constraint = Regular::new(scope, no_two_ones(), 0, set(&[0]), &problem);
@@ -1444,7 +1444,7 @@ mod test_regular {
             let domains = vec![dom(3); d];
             let scope: Vec<usize> = (0..d).collect();
             let mut problem = Problem::default();
-            let vars = problem.add_variables(d, dom(3), None);
+            let vars = problem.add_variables(d, dom(3));
             regular(&mut problem, vars, no_one_then_zero(), 0, vec![0, 1, 2, 3]);
             let mdd = settled(problem, (0..d).collect());
             assert_eq!(
@@ -1464,7 +1464,7 @@ mod test_regular {
             let mut problem = Problem::default();
             let vars: Vec<VariableIndex> = domains
                 .iter()
-                .map(|d| problem.add_variable(d.clone(), None))
+                .map(|d| problem.add_variable(d.clone()))
                 .collect();
             regular(&mut problem, vars, no_two_ones(), 0, vec![0, 1]);
             let mdd = settled(problem, (0..n).collect());
@@ -1476,7 +1476,7 @@ mod test_regular {
     fn a_layer_holds_at_most_one_node_per_state() {
         let n = 8;
         let mut problem = Problem::default();
-        let vars = problem.add_variables(n, dom(2), None);
+        let vars = problem.add_variables(n, dom(2));
         regular(&mut problem, vars, no_two_ones(), 0, vec![0, 1]);
         let mdd = settled(problem, (0..n).collect());
         for layer in 0..=n {
@@ -1537,14 +1537,14 @@ mod test_regular {
     fn a_language_without_a_word_of_the_length_is_unsat() {
         // No accepting state.
         let mut problem = Problem::default();
-        let vars = problem.add_variables(2, dom(2), None);
+        let vars = problem.add_variables(2, dom(2));
         regular(&mut problem, vars, no_two_ones(), 0, vec![]);
         assert!(accepted(&settled(problem, vec![0, 1])).is_empty());
 
         // Both variables are forced to 1, which the automaton forbids twice in a row.
         let mut problem = Problem::default();
-        let a = problem.add_variable(vec![0, 1], None);
-        let b = problem.add_variable(vec![0, 1], None);
+        let a = problem.add_variable(vec![0, 1]);
+        let b = problem.add_variable(vec![0, 1]);
         regular(&mut problem, vec![a, b], no_two_ones(), 0, vec![0, 1]);
         problem[a].set_domain(vec![1]);
         problem[b].set_domain(vec![1]);
@@ -1564,7 +1564,7 @@ mod test_regular {
         let mut problem = Problem::default();
         let vars: Vec<VariableIndex> = domains
             .iter()
-            .map(|d| problem.add_variable(d.clone(), None))
+            .map(|d| problem.add_variable(d.clone()))
             .collect();
         regular(
             &mut problem,
@@ -1587,7 +1587,7 @@ mod test_regular {
             vec![None, None],
         ];
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, dom(2), None);
+        let vars = problem.add_variables(3, dom(2));
         regular(
             &mut problem,
             vec![vars[2], vars[0], vars[1]],
@@ -1618,7 +1618,7 @@ mod test_regular {
             let mut problem = Problem::default();
             let vars: Vec<VariableIndex> = domains
                 .iter()
-                .map(|d| problem.add_variable(d.clone(), None))
+                .map(|d| problem.add_variable(d.clone()))
                 .collect();
             regular(
                 &mut problem,
@@ -1644,7 +1644,7 @@ mod test_regular {
         let mut problem = Problem::default();
         let vars: Vec<VariableIndex> = domains
             .iter()
-            .map(|d| problem.add_variable(d.clone(), None))
+            .map(|d| problem.add_variable(d.clone()))
             .collect();
         regular(
             &mut problem,
@@ -1681,7 +1681,7 @@ mod test_regular {
         let mut problem = Problem::default();
         let vars: Vec<VariableIndex> = domains
             .iter()
-            .map(|d| problem.add_variable(d.clone(), None))
+            .map(|d| problem.add_variable(d.clone()))
             .collect();
         regular(&mut problem, vars.clone(), no_two_ones(), 0, vec![0, 1]);
         not_equals(&mut problem, vars[0], vars[2]);
@@ -1708,7 +1708,7 @@ mod test_regular {
         let mut problem = Problem::default();
         let vars: Vec<VariableIndex> = domains
             .iter()
-            .map(|d| problem.add_variable(d.clone(), None))
+            .map(|d| problem.add_variable(d.clone()))
             .collect();
         regular(&mut problem, vars, table.clone(), 0, vec![0, 1, 2]);
         let mdd = settled(problem, vec![0, 1, 2]);
@@ -1721,7 +1721,7 @@ mod test_regular {
     #[test]
     fn a_domain_that_shrinks_after_construction_is_fine() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, dom(2), None);
+        let vars = problem.add_variables(3, dom(2));
         regular(&mut problem, vars.clone(), no_two_ones(), 0, vec![0, 1]);
         problem[vars[1]].set_domain(vec![1]);
         let mdd = settled(problem, vec![0, 1, 2]);
@@ -1732,7 +1732,7 @@ mod test_regular {
     fn a_value_added_to_a_domain_after_construction_is_rejected() {
         // The value 2 is not in the alphabet seen at construction: no word can use it.
         let mut problem = Problem::default();
-        let vars = problem.add_variables(2, dom(2), None);
+        let vars = problem.add_variables(2, dom(2));
         regular(&mut problem, vars.clone(), no_two_ones(), 0, vec![0, 1]);
         problem[vars[0]].set_domain(vec![0, 1, 2]);
         let mdd = settled(problem, vec![0, 1]);
@@ -1747,7 +1747,7 @@ mod test_regular {
             .map(|k| vec![Some(k), Some((k + 1).min(n))])
             .collect();
         let mut problem = Problem::default();
-        let vars = problem.add_variables(n, dom(2), None);
+        let vars = problem.add_variables(n, dom(2));
         regular(&mut problem, vars, table, 0, vec![n]);
         let mdd = settled(problem, (0..n).collect());
         assert_eq!(accepted(&mdd), vec![vec![1; n]]);

@@ -166,7 +166,7 @@ mod tests {
     fn two_pairs() -> Problem {
         let mut problem = Problem::default();
         let vars: Vec<_> = (0..4)
-            .map(|_| problem.add_variable(vec![0, 1, 2], None))
+            .map(|_| problem.add_variable(vec![0, 1, 2]))
             .collect();
         not_equals(&mut problem, vars[0], vars[1]);
         not_equals(&mut problem, vars[2], vars[3]);

@@ -125,8 +125,8 @@ mod tests {
     /// Two variables with the domain `{0, 1}` that must differ.
     fn differ() -> Problem {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1], None);
-        let y = problem.add_variable(vec![0, 1], None);
+        let x = problem.add_variable(vec![0, 1]);
+        let y = problem.add_variable(vec![0, 1]);
         not_equals(&mut problem, x, y);
         problem
     }

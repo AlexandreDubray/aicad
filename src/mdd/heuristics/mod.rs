@@ -29,7 +29,7 @@
 //! use std::sync::Arc;
 //!
 //! let mut problem = Problem::default();
-//! let vars = problem.add_variables(4, vec![0, 1, 2, 3], None);
+//! let vars = problem.add_variables(4, vec![0, 1, 2, 3]);
 //! let constraint = all_different(&mut problem, vars.clone());
 //!
 //! // Branch on the variables in reverse, and keep at most two nodes per layer.

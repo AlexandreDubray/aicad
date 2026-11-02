@@ -79,7 +79,7 @@
 //! use aicad::modelling::*;
 //!
 //! let mut problem = Problem::default();
-//! let vars = problem.add_variables(3, vec![0, 1, 2], None);
+//! let vars = problem.add_variables(3, vec![0, 1, 2]);
 //! let all_diff = AllDifferent::new(vars, &problem);
 //!
 //! assert!(all_diff.is_satisfied(&[2, 0, 1]));
@@ -440,7 +440,7 @@ mod test_all_diff {
         let mut problem = Problem::default();
         let vars: Vec<VariableIndex> = domains
             .iter()
-            .map(|d| problem.add_variable(d.clone(), None))
+            .map(|d| problem.add_variable(d.clone()))
             .collect();
         all_different(&mut problem, scope.iter().map(|&i| vars[i]).collect());
         (problem, vars)
@@ -642,8 +642,8 @@ mod test_all_diff {
     #[test]
     fn a_repeated_variable_is_never_satisfied() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(dom(3), None);
-        let y = problem.add_variable(dom(3), None);
+        let x = problem.add_variable(dom(3));
+        let y = problem.add_variable(dom(3));
         let ad = AllDifferent::new(vec![x, y, x], &problem);
         for a in 0..3 {
             for b in 0..3 {
@@ -702,7 +702,7 @@ mod test_all_diff {
         // 130 variables, the scope is at layers 0, 63, 64, 65 and 129: it crosses the 64 and the
         // 128 bit boundaries of the layer bitset.
         let mut problem = Problem::default();
-        let vars = problem.add_variables(130, dom(2), None);
+        let vars = problem.add_variables(130, dom(2));
         let scope_layers = [0usize, 63, 64, 65, 129];
         let scope: Vec<VariableIndex> = scope_layers.iter().map(|&l| vars[l]).collect();
         let mut ad = AllDifferent::new(scope, &problem);
@@ -1008,8 +1008,8 @@ mod test_all_diff {
     #[test]
     fn a_repeated_variable_invalidates_every_edge() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(dom(3), None);
-        let y = problem.add_variable(dom(3), None);
+        let x = problem.add_variable(dom(3));
+        let y = problem.add_variable(dom(3));
         let mut ad = AllDifferent::new(vec![x, y, x], &problem);
         ad.update_variable_ordering(&[x, y]);
         let empty = ad.empty_property();
@@ -1149,8 +1149,8 @@ mod test_all_diff {
     #[test]
     fn a_repeated_variable_makes_the_problem_unsat() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(dom(2), None);
-        let y = problem.add_variable(dom(3), None);
+        let x = problem.add_variable(dom(2));
+        let y = problem.add_variable(dom(3));
         all_different(&mut problem, vec![x, x, y]);
         let mdd = compile(problem, vec![0, 1], usize::MAX);
         assert!(mdd.is_unsat());

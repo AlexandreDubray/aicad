@@ -62,8 +62,8 @@
 //! use aicad::modelling::*;
 //!
 //! let mut problem = Problem::default();
-//! let x = problem.add_variable(vec![0, 1, 2], None);
-//! let y = problem.add_variable(vec![0, 1, 2], None);
+//! let x = problem.add_variable(vec![0, 1, 2]);
+//! let y = problem.add_variable(vec![0, 1, 2]);
 //! let ne = NotEquals::new(x, y, &problem);
 //!
 //! assert!(ne.is_satisfied(&[0, 1]));
@@ -338,8 +338,8 @@ mod test_not_equals {
     /// Two variables with the given domains, and the constraint between them.
     fn pair(dom_x: Vec<isize>, dom_y: Vec<isize>) -> (Problem, VariableIndex, VariableIndex) {
         let mut problem = Problem::default();
-        let x = problem.add_variable(dom_x, None);
-        let y = problem.add_variable(dom_y, None);
+        let x = problem.add_variable(dom_x);
+        let y = problem.add_variable(dom_y);
         not_equals(&mut problem, x, y);
         (problem, x, y)
     }
@@ -466,9 +466,9 @@ mod test_not_equals {
     fn is_satisfied_reads_the_variables_by_index() {
         // Constraint between the first and the third variable: the middle one must be ignored.
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1, 2], None);
-        let _middle = problem.add_variable(vec![0, 1, 2], None);
-        let y = problem.add_variable(vec![0, 1, 2], None);
+        let x = problem.add_variable(vec![0, 1, 2]);
+        let _middle = problem.add_variable(vec![0, 1, 2]);
+        let y = problem.add_variable(vec![0, 1, 2]);
         let ne = NotEquals::new(x, y, &problem);
         assert!(ne.is_satisfied(&[1, 9, 2]));
         assert!(!ne.is_satisfied(&[1, 9, 1]));
@@ -506,9 +506,9 @@ mod test_not_equals {
     #[test]
     fn layers_in_scope_follow_the_variable_ordering() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1], None);
-        let y = problem.add_variable(vec![0, 1], None);
-        let z = problem.add_variable(vec![0, 1], None);
+        let x = problem.add_variable(vec![0, 1]);
+        let y = problem.add_variable(vec![0, 1]);
+        let z = problem.add_variable(vec![0, 1]);
         let mut ne = NotEquals::new(x, y, &problem);
         // y first, then z (not in scope), then x.
         ne.update_variable_ordering(&[y, z, x]);
@@ -520,8 +520,8 @@ mod test_not_equals {
     #[test]
     fn layers_in_scope_with_a_repeated_variable() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1], None);
-        let z = problem.add_variable(vec![0, 1], None);
+        let x = problem.add_variable(vec![0, 1]);
+        let z = problem.add_variable(vec![0, 1]);
         let mut ne = NotEquals::new(x, x, &problem);
         ne.update_variable_ordering(&[z, x]);
         assert!(!ne.is_layer_in_scope(0));
@@ -681,8 +681,8 @@ mod test_not_equals {
     #[should_panic(expected = "instead of NotEqualsProperty")]
     fn a_property_of_another_constraint_is_rejected() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1], None);
-        let y = problem.add_variable(vec![0, 1], None);
+        let x = problem.add_variable(vec![0, 1]);
+        let y = problem.add_variable(vec![0, 1]);
         let ne = NotEquals::new(x, y, &problem);
         let other = AllDifferent::new(vec![x, y], &problem).identity_property();
         let own = ne.identity_property();
@@ -782,7 +782,7 @@ mod test_not_equals {
     #[test]
     fn x_not_equal_x_is_unsat() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1, 2], None);
+        let x = problem.add_variable(vec![0, 1, 2]);
         let ne = NotEquals::new(x, x, &problem);
         problem.add_constraint(ne);
         let mdd = compile(problem, OrderingHeuristic::Custom(vec![0]), usize::MAX);
@@ -830,9 +830,9 @@ mod test_not_equals {
     fn a_chain_of_inequalities_is_all_different() {
         // x != y, y != z and x != z over three values leave the 3! permutations.
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1, 2], None);
-        let y = problem.add_variable(vec![0, 1, 2], None);
-        let z = problem.add_variable(vec![0, 1, 2], None);
+        let x = problem.add_variable(vec![0, 1, 2]);
+        let y = problem.add_variable(vec![0, 1, 2]);
+        let z = problem.add_variable(vec![0, 1, 2]);
         not_equals(&mut problem, x, y);
         not_equals(&mut problem, y, z);
         not_equals(&mut problem, x, z);

@@ -114,12 +114,7 @@ pub(crate) trait SearchState {
 fn random_assignments(problems: &[Arc<Problem>]) -> Vec<Vec<isize>> {
     problems
         .iter()
-        .map(|problem| {
-            problem
-                .iter_variables()
-                .map(|v| problem[v].sample())
-                .collect()
-        })
+        .map(|problem| crate::sampling::random_assignment(problem))
         .collect()
 }
 
@@ -349,9 +344,7 @@ mod tests {
 
     fn three_binary_variables(unsatisfiable: bool) -> Arc<Problem> {
         let mut problem = Problem::default();
-        let vars: Vec<_> = (0..3)
-            .map(|_| problem.add_variable(vec![0, 1], None))
-            .collect();
+        let vars: Vec<_> = (0..3).map(|_| problem.add_variable(vec![0, 1])).collect();
         if unsatisfiable {
             crate::constraints::all_different(&mut problem, vars);
         }

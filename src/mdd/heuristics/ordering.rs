@@ -135,7 +135,7 @@ mod tests {
     /// Variables 0 and 1 are in two constraints, 2 and 3 in one, 4 in none that is shared.
     fn problem_with_a_hub() -> Problem {
         let mut problem = Problem::default();
-        let v = problem.add_variables(5, vec![0, 1, 2], None);
+        let v = problem.add_variables(5, vec![0, 1, 2]);
         all_different(&mut problem, vec![v[0], v[1], v[2]]);
         all_different(&mut problem, vec![v[0], v[1], v[3]]);
         not_equals(&mut problem, v[3], v[4]);
@@ -170,8 +170,8 @@ mod tests {
     #[test]
     fn the_greedy_order_places_single_valued_variables_first() {
         let mut problem = Problem::default();
-        let wide = problem.add_variables(3, vec![0, 1, 2], None);
-        let fixed = problem.add_variable(vec![7], None);
+        let wide = problem.add_variables(3, vec![0, 1, 2]);
+        let fixed = problem.add_variable(vec![7]);
         all_different(&mut problem, vec![wide[0], wide[1], wide[2], fixed]);
         let order = OrderingHeuristic::MinDomMaxLinked.get_order(&problem, &scope(&problem));
         assert_eq!(order[0], fixed);

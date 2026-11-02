@@ -339,8 +339,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&out_dir);
 
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1, 2], None);
-        let y = problem.add_variable(vec![0, 1, 2], None);
+        let x = problem.add_variable(vec![0, 1, 2]);
+        let y = problem.add_variable(vec![0, 1, 2]);
         not_equals(&mut problem, x, y);
         let problems = vec![Arc::new(problem)];
 
@@ -395,8 +395,8 @@ mod tests {
             std::env::temp_dir().join(format!("aicad_test_{name}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out_dir);
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1, 2], None);
-        let y = problem.add_variable(vec![0, 1, 2], None);
+        let x = problem.add_variable(vec![0, 1, 2]);
+        let y = problem.add_variable(vec![0, 1, 2]);
         not_equals(&mut problem, x, y);
         let network_config = ConsFormerConfig::new(3, 4, 4, 1, 4, 0, 0.5, 1.0).with_num_layers(1);
         std::fs::create_dir_all(&out_dir).unwrap();

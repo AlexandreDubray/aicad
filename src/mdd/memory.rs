@@ -146,7 +146,7 @@ mod tests {
     #[test]
     fn the_report_groups_by_type_and_its_totals_add_up() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(4, vec![0, 1, 2], None);
+        let vars = problem.add_variables(4, vec![0, 1, 2]);
         all_different(&mut problem, vars[0..2].to_vec());
         all_different(&mut problem, vars[2..4].to_vec());
         gcc(&mut problem, vars.clone(), vec![(0, 0, 2)]);

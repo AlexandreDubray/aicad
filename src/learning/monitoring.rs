@@ -162,7 +162,7 @@ mod tests {
     fn chain(variables: usize) -> Arc<Problem> {
         let mut problem = Problem::default();
         let vars: Vec<_> = (0..variables)
-            .map(|_| problem.add_variable(vec![0, 1], None))
+            .map(|_| problem.add_variable(vec![0, 1]))
             .collect();
         for pair in vars.windows(2) {
             not_equals(&mut problem, pair[0], pair[1]);

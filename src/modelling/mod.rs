@@ -13,9 +13,6 @@
 //! variable, and every constraint is satisfied: that is the specification the rest of the crate
 //! is tested against.
 //!
-//! Each [`Variable`] also carries a probability for each value of its domain, uniform unless
-//! given. The compiler and the samplers read them as the prior of the variable.
-//!
 //! The traits that a constraint implements, [`Constraint`] and [`ConstraintProperty`], are
 //! defined here because a problem stores its constraints as trait objects. The constraints
 //! themselves are in [`constraints`](crate::constraints).
@@ -23,15 +20,12 @@
 //! # Design notes
 //!
 //! - **Assignments hold values, not domain positions.** A constraint can then be checked against
-//!   a solution as it is, whatever the domains; the positions only matter where probabilities
-//!   are indexed.
-//! - **Changing a domain resets its probabilities to uniform**, unless they are given with
-//!   [`Variable::set_weighted_domain`]. The probabilities are indexed by position in the domain,
-//!   so they cannot survive a different one.
-//! - **Misuse panics at once, with a message.** An empty domain, a repeated value in a domain,
-//!   probabilities that do not match the domain, a constraint over a variable that is not in the
-//!   problem, or fixing a variable to a value outside its domain stop the program where the
-//!   mistake is made, instead of giving wrong results later.
+//!   a solution as it is, whatever the domains; the positions are what the diagrams and the
+//!   weights over the values are indexed by.
+//! - **Misuse panics at once, with a message.** An empty domain, a repeated value in a domain, a
+//!   constraint over a variable that is not in the problem, or fixing a variable to a value
+//!   outside its domain stop the program where the mistake is made, instead of giving wrong
+//!   results later.
 //! - **Variables carry an optional position.** It places a variable in a structure of the problem
 //!   (for example the row and column of a Sudoku cell) and is read only by the positional
 //!   encoding of the learned models; it plays no part in the compilation.
@@ -43,7 +37,7 @@
 //! use aicad::modelling::*;
 //!
 //! let mut problem = Problem::default();
-//! let x = problem.add_variables(3, vec![1, 2, 3], None);
+//! let x = problem.add_variables(3, vec![1, 2, 3]);
 //! all_different(&mut problem, x.clone());
 //!
 //! assert!(problem.is_solution(&[1, 2, 3]));
@@ -68,7 +62,7 @@ pub use problem::Problem;
 pub use solution::{Solution, Status};
 pub use variable::Variable;
 
-/// Fixes `variable` to `value` by shrinking its domain to that value alone, with probability 1.
+/// Fixes `variable` to `value` by shrinking its domain to that value alone.
 /// Panics if `value` is not in the domain of `variable`.
 pub fn equal(problem: &mut Problem, variable: VariableIndex, value: isize) {
     let domain_size = problem[variable].domain_size();

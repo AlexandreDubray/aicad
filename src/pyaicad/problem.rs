@@ -35,12 +35,12 @@ impl PyProblem {
     }
 
     fn add_int_var(&mut self, domain: Vec<isize>) -> PyResult<usize> {
-        let var = self.mutate()?.add_variable(domain, None);
+        let var = self.mutate()?.add_variable(domain);
         Ok(var.0)
     }
 
     fn add_bool_var(&mut self) -> PyResult<usize> {
-        let var = self.mutate()?.add_variable(vec![0, 1], None);
+        let var = self.mutate()?.add_variable(vec![0, 1]);
         Ok(var.0)
     }
 

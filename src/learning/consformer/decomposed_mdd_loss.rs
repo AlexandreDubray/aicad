@@ -349,8 +349,8 @@ mod compile_tests {
     #[test]
     fn compile_constraints_matches_brute_force_for_not_equals() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1, 2], None);
-        let y = problem.add_variable(vec![0, 1, 2], None);
+        let x = problem.add_variable(vec![0, 1, 2]);
+        let y = problem.add_variable(vec![0, 1, 2]);
         not_equals(&mut problem, x, y);
         let problem = Arc::new(problem);
 
@@ -385,7 +385,7 @@ mod compile_tests {
     #[test]
     fn compile_constraints_matches_brute_force_for_all_different_permutation() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, vec![0, 1, 2], None);
+        let vars = problem.add_variables(3, vec![0, 1, 2]);
         all_different(&mut problem, vars.clone());
         let problem = Arc::new(problem);
 
@@ -423,7 +423,7 @@ mod compile_tests {
     #[test]
     fn compile_constraints_matches_brute_force_for_sum() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, vec![0, 1, 2], None);
+        let vars = problem.add_variables(3, vec![0, 1, 2]);
         sum(&mut problem, vars.clone(), 3);
         let problem = Arc::new(problem);
 
@@ -459,7 +459,7 @@ mod compile_tests {
     #[test]
     fn compile_constraints_matches_brute_force_for_among() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, vec![0, 1, 2], None);
+        let vars = problem.add_variables(3, vec![0, 1, 2]);
         among(&mut problem, vars.clone(), vec![1, 2], 1, 2);
         let problem = Arc::new(problem);
 
@@ -496,7 +496,7 @@ mod compile_tests {
     #[test]
     fn unsat_constraint_gets_zero_wmc() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, vec![0, 1], None);
+        let vars = problem.add_variables(3, vec![0, 1]);
         all_different(&mut problem, vars.clone());
         let problem = Arc::new(problem);
 
@@ -519,8 +519,8 @@ mod compile_tests {
     #[should_panic(expected = "out of the nominal")]
     fn compile_constraints_panics_when_domain_size_is_too_small() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1, 2], None);
-        let y = problem.add_variable(vec![0, 1, 2], None);
+        let x = problem.add_variable(vec![0, 1, 2]);
+        let y = problem.add_variable(vec![0, 1, 2]);
         not_equals(&mut problem, x, y);
         let problem = Arc::new(problem);
 
@@ -534,7 +534,7 @@ mod compile_tests {
         for domain_max in 0isize..40 {
             let mut problem = Problem::default();
             let domain: Vec<isize> = (0..=(domain_max % 5 + 2)).collect();
-            let vars = problem.add_variables(3, domain, None);
+            let vars = problem.add_variables(3, domain);
             all_different(&mut problem, vars.clone());
             not_equals(&mut problem, vars[0], vars[1]);
             problems.push(Arc::new(problem));
@@ -565,7 +565,7 @@ mod compile_tests {
     #[test]
     fn a_problem_given_twice_is_compiled_once() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, vec![0, 1, 2], None);
+        let vars = problem.add_variables(3, vec![0, 1, 2]);
         all_different(&mut problem, vars);
         let problem = Arc::new(problem);
 
@@ -580,8 +580,8 @@ mod compile_tests {
     fn scoring_a_problem_that_was_not_prepared_panics() {
         let build = || {
             let mut problem = Problem::default();
-            let x = problem.add_variable(vec![0, 1, 2], None);
-            let y = problem.add_variable(vec![0, 1, 2], None);
+            let x = problem.add_variable(vec![0, 1, 2]);
+            let y = problem.add_variable(vec![0, 1, 2]);
             not_equals(&mut problem, x, y);
             Arc::new(problem)
         };
@@ -621,7 +621,7 @@ mod loss_tests {
         let mut problems = Vec::new();
         for _ in 0..2 {
             let mut problem = Problem::default();
-            let vars = problem.add_variables(3, vec![0, 1, 2], None);
+            let vars = problem.add_variables(3, vec![0, 1, 2]);
             all_different(&mut problem, vars.clone());
             not_equals(&mut problem, vars[0], vars[1]);
             problems.push(Arc::new(problem));
@@ -678,7 +678,7 @@ mod loss_tests {
     #[test]
     fn sample_loss_and_gradient_matches_brute_force_average() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, vec![0, 1, 2], None);
+        let vars = problem.add_variables(3, vec![0, 1, 2]);
         all_different(&mut problem, vars.clone());
         not_equals(&mut problem, vars[0], vars[1]);
         let problem = Arc::new(problem);
@@ -704,7 +704,7 @@ mod loss_tests {
     #[test]
     fn sample_loss_and_gradient_matches_finite_differences() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, vec![0, 1, 2], None);
+        let vars = problem.add_variables(3, vec![0, 1, 2]);
         all_different(&mut problem, vars.clone());
         not_equals(&mut problem, vars[0], vars[1]);
         let problem = Arc::new(problem);
@@ -887,8 +887,8 @@ mod loss_tests {
         let device = NdArrayDevice::default();
 
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1, 2], None);
-        let y = problem.add_variable(vec![0, 1, 2], None);
+        let x = problem.add_variable(vec![0, 1, 2]);
+        let y = problem.add_variable(vec![0, 1, 2]);
         not_equals(&mut problem, x, y);
         let problem = Arc::new(problem);
 
@@ -953,7 +953,7 @@ mod loss_tests {
     fn layer_weights_from_probs_masks_out_a_given_values_forbidden_domain() {
         let domain_size = 4;
         let mut problem = Problem::default();
-        let vars = problem.add_variables(4, (0..domain_size as isize).collect(), None);
+        let vars = problem.add_variables(4, (0..domain_size as isize).collect());
         all_different(&mut problem, vars.clone());
         // `vars[0]` is a "given": its real domain is narrowed to a single value, but the shared
         // template below is still compiled over the full nominal domain (no hint baked in).

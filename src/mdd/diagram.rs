@@ -271,7 +271,7 @@ mod tests {
     fn compiled(unsat: bool) -> Mdd {
         let mut problem = Problem::default();
         let domain = if unsat { vec![0] } else { vec![0, 1, 2] };
-        let vars = problem.add_variables(3, domain, None);
+        let vars = problem.add_variables(3, domain);
         let c = all_different(&mut problem, vars);
         let mut compiler = Compiler::new(
             Arc::new(problem),

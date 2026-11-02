@@ -238,10 +238,9 @@ fn sample_initial_assignments(problems: &[Arc<Problem>]) -> Vec<i64> {
     problems
         .iter()
         .flat_map(|problem| {
-            problem
-                .iter_variables()
-                .map(|v| problem[v].sample() as i64)
-                .collect::<Vec<i64>>()
+            crate::sampling::random_assignment(problem)
+                .into_iter()
+                .map(|value| value as i64)
         })
         .collect()
 }
@@ -435,7 +434,7 @@ mod destroy_tests {
             .map(|_| {
                 let mut problem = Problem::default();
                 let vars: Vec<_> = (0..3)
-                    .map(|_| problem.add_variable(vec![0, 1, 2], None))
+                    .map(|_| problem.add_variable(vec![0, 1, 2]))
                     .collect();
                 not_equals(&mut problem, vars[0], vars[1]);
                 not_equals(&mut problem, vars[1], vars[2]);

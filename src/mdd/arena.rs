@@ -177,7 +177,7 @@ fn compile_template(key: &ConstraintCompileKey) -> Mdd {
     // can only be compiled from a problem.
     let mut synthetic_problem = Problem::default();
     let synthetic_vars: Vec<VariableIndex> = (0..key.shape.arity())
-        .map(|_| synthetic_problem.add_variable(key.domain.clone(), None))
+        .map(|_| synthetic_problem.add_variable(key.domain.clone()))
         .collect();
 
     let constraint = instantiate_constraint(&key.shape, synthetic_vars, &synthetic_problem);
@@ -458,7 +458,7 @@ mod tests {
     /// problem where the layers of the real constraints are not in the order of the template's.
     fn one_of_each_constraint() -> (Problem, Vec<ConstraintIndex>) {
         let mut problem = Problem::default();
-        let v = problem.add_variables(4, (0..3isize).collect(), None);
+        let v = problem.add_variables(4, (0..3isize).collect());
         // The last variable is in the most constraints, so the heuristic branches on it first,
         // while the synthetic template branches on its first variable first.
         for other in 0..3 {
@@ -570,7 +570,7 @@ mod tests {
     #[test]
     fn the_width_and_the_domain_are_part_of_the_key() {
         let mut problem = Problem::default();
-        let v = problem.add_variables(3, (0..3isize).collect(), None);
+        let v = problem.add_variables(3, (0..3isize).collect());
         let c = all_different(&mut problem, v);
         let arena = MddArena::new();
         let compile = |domain_size: usize, max_width| {
@@ -598,7 +598,7 @@ mod tests {
     #[test]
     fn threads_asking_for_the_same_shape_share_one_structure() {
         let mut problem = Problem::default();
-        let v = problem.add_variables(5, (0..5isize).collect(), None);
+        let v = problem.add_variables(5, (0..5isize).collect());
         let c = all_different(&mut problem, v);
         let arena = MddArena::new();
         let structures: Vec<_> = std::thread::scope(|scope| {
@@ -632,7 +632,7 @@ mod tests {
         // Two constraints of the same shape: same bounds, but disjoint VariableIndex ranges (one
         // problem, 4 variables total -- first 2 form one constraint, last 2 form the other).
         let mut problem = Problem::default();
-        let vars = problem.add_variables(4, (0..3isize).collect(), None);
+        let vars = problem.add_variables(4, (0..3isize).collect());
         let g1 = gcc(
             &mut problem,
             vec![vars[0], vars[1]],
@@ -673,7 +673,7 @@ mod tests {
     #[test]
     fn differently_shaped_constraints_do_not_share() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(4, (0..3isize).collect(), None);
+        let vars = problem.add_variables(4, (0..3isize).collect());
         let g1 = gcc(&mut problem, vec![vars[0], vars[1]], vec![(0, 0, 1)]);
         let g2 = gcc(&mut problem, vec![vars[2], vars[3]], vec![(0, 1, 2)]);
         let problem = Arc::new(problem);
@@ -704,7 +704,7 @@ mod tests {
     #[test]
     fn all_different_constraints_of_different_arity_do_not_share() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(4, (0..4isize).collect(), None);
+        let vars = problem.add_variables(4, (0..4isize).collect());
         let g3 = all_different(&mut problem, vec![vars[0], vars[1], vars[2]]);
         let g4 = all_different(&mut problem, vec![vars[0], vars[1], vars[2], vars[3]]);
         let problem = Arc::new(problem);
@@ -740,7 +740,7 @@ mod tests {
     fn symmetric_graph_coloring_edges_with_different_degree_endpoints_still_dedup() {
         let mut problem = Problem::default();
         let colours: Vec<isize> = (0..3).collect();
-        let vars = problem.add_variables(6, colours, None);
+        let vars = problem.add_variables(6, colours);
         // vars[0] has high degree (linked to vars[2..6]); vars[1] has degree 1 (only the edge
         // below). Real Mdd::new over just {vars[0], vars[1]} would see this asymmetry via
         // `problem[candidate].number_constraints()`/scores, unlike a synthetic 2-variable

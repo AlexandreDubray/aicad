@@ -433,9 +433,9 @@ mod tests {
         // Otherwise identical to `single_not_equals_mdd_with_symmetric_conflicting_prior_becomes_uniform_after_one_iteration`,
         // so the expected result is the same hand-derived [0.5, 0.5] collapse for both x and y.
         let mut problem = Problem::default();
-        let _w = problem.add_variable(vec![0, 1, 2, 3, 4], None);
-        let x = problem.add_variable(vec![0, 1], None);
-        let y = problem.add_variable(vec![0, 1], None);
+        let _w = problem.add_variable(vec![0, 1, 2, 3, 4]);
+        let x = problem.add_variable(vec![0, 1]);
+        let y = problem.add_variable(vec![0, 1]);
         not_equals(&mut problem, x, y);
         let problem = Arc::new(problem);
         let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
@@ -456,8 +456,8 @@ mod tests {
     #[test]
     fn zero_iterations_returns_probs_unchanged() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1], None);
-        let y = problem.add_variable(vec![0, 1], None);
+        let x = problem.add_variable(vec![0, 1]);
+        let y = problem.add_variable(vec![0, 1]);
         not_equals(&mut problem, x, y);
         let problem = Arc::new(problem);
         let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
@@ -483,8 +483,8 @@ mod tests {
         // the constraint's pull away from the shared favourite exactly cancels the prior's pull
         // toward it.
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1], None);
-        let y = problem.add_variable(vec![0, 1], None);
+        let x = problem.add_variable(vec![0, 1]);
+        let y = problem.add_variable(vec![0, 1]);
         not_equals(&mut problem, x, y);
         let problem = Arc::new(problem);
         let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
@@ -514,8 +514,8 @@ mod tests {
         // the local belief's *exact* zero there). x, being `decided`, must come back unchanged at
         // its fixed one-hot regardless of what the MDD believes about it.
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1], None);
-        let y = problem.add_variable(vec![0, 1], None);
+        let x = problem.add_variable(vec![0, 1]);
+        let y = problem.add_variable(vec![0, 1]);
         not_equals(&mut problem, x, y);
         let problem = Arc::new(problem);
         let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
@@ -550,7 +550,7 @@ mod tests {
             let mdds: Vec<CompiledConstraint> = (0..count)
                 .map(|_| {
                     let mut problem = Problem::default();
-                    let x = problem.add_variable(vec![0, 1, 2], None);
+                    let x = problem.add_variable(vec![0, 1, 2]);
                     gcc(&mut problem, vec![x], vec![]);
                     let problem = Arc::new(problem);
                     let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
@@ -579,8 +579,8 @@ mod tests {
     /// `x != y` over `{0, 1}` and the arguments of a valid call on it, for the tests of the checks.
     fn not_equals_inputs() -> (Vec<CompiledConstraint>, Vec<Vec<f64>>) {
         let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1], None);
-        let y = problem.add_variable(vec![0, 1], None);
+        let x = problem.add_variable(vec![0, 1]);
+        let y = problem.add_variable(vec![0, 1]);
         not_equals(&mut problem, x, y);
         let problem = Arc::new(problem);
         let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
@@ -714,17 +714,17 @@ mod tests {
         type Build = fn(&mut Problem) -> Vec<crate::modelling::VariableIndex>;
         let cases: [(&str, Build); 3] = [
             ("all_different", |problem| {
-                let vars = problem.add_variables(4, vec![0, 1, 2], None);
+                let vars = problem.add_variables(4, vec![0, 1, 2]);
                 all_different(problem, vars[..3].to_vec());
                 vars
             }),
             ("sum", |problem| {
-                let vars = problem.add_variables(4, vec![0, 1, 2], None);
+                let vars = problem.add_variables(4, vec![0, 1, 2]);
                 sum(problem, vars[..3].to_vec(), 3);
                 vars
             }),
             ("gcc", |problem| {
-                let vars = problem.add_variables(4, vec![0, 1, 2], None);
+                let vars = problem.add_variables(4, vec![0, 1, 2]);
                 gcc(problem, vars.clone(), vec![(0, 1, 2), (1, 0, 1), (2, 1, 3)]);
                 vars
             }),

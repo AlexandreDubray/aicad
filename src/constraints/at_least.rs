@@ -85,7 +85,7 @@
 //! use rustc_hash::FxHashSet;
 //!
 //! let mut problem = Problem::default();
-//! let vars = problem.add_variables(3, vec![0, 1, 2], None);
+//! let vars = problem.add_variables(3, vec![0, 1, 2]);
 //! // At least two variables take a value in {1, 2}.
 //! let at_least = AtLeast::new(vars, FxHashSet::from_iter([1, 2]), 2);
 //!
@@ -393,7 +393,7 @@ mod test_at_least {
         let mut problem = Problem::default();
         let vars: Vec<VariableIndex> = domains
             .iter()
-            .map(|d| problem.add_variable(d.clone(), None))
+            .map(|d| problem.add_variable(d.clone()))
             .collect();
         at_least(
             &mut problem,
@@ -412,7 +412,7 @@ mod test_at_least {
     /// The constraint over variables `0..n` with the identity ordering already set.
     fn at_least_of(n: usize, values: &[isize], lb: usize) -> AtLeast {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(n, dom(3), None);
+        let vars = problem.add_variables(n, dom(3));
         let mut constraint = AtLeast::new(vars.clone(), set(values), lb);
         constraint.update_variable_ordering(&vars);
         constraint
@@ -555,7 +555,7 @@ mod test_at_least {
 
     fn foreign() -> Box<dyn ConstraintProperty> {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(2, dom(2), None);
+        let vars = problem.add_variables(2, dom(2));
         AllDifferent::new(vars, &problem).identity_property()
     }
 
@@ -615,7 +615,7 @@ mod test_at_least {
     fn is_satisfied_ignores_out_of_scope_variables() {
         // Only variables 0 and 2 are in scope.
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, dom(2), None);
+        let vars = problem.add_variables(3, dom(2));
         let constraint = AtLeast::new(vec![vars[0], vars[2]], set(&[1]), 2);
         assert!(constraint.is_satisfied(&[1, 0, 1]));
         assert!(!constraint.is_satisfied(&[1, 1, 0]));
@@ -649,8 +649,8 @@ mod test_at_least {
     #[should_panic(expected = "repeated")]
     fn a_repeated_variable_is_rejected() {
         let mut problem = Problem::default();
-        let x = problem.add_variable(dom(3), None);
-        let y = problem.add_variable(dom(3), None);
+        let x = problem.add_variable(dom(3));
+        let y = problem.add_variable(dom(3));
         AtLeast::new(vec![x, y, x], set(&[1]), 1);
     }
 
@@ -661,7 +661,7 @@ mod test_at_least {
     #[test]
     fn scope_name_and_structural_key() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, dom(5), None);
+        let vars = problem.add_variables(3, dom(5));
         let constraint = AtLeast::new(vars.clone(), set(&[4, 1, 3]), 2);
         assert_eq!(constraint.iter_scope().collect::<Vec<_>>(), vars);
         assert_eq!(constraint.name(), "AtLeast");
@@ -678,7 +678,7 @@ mod test_at_least {
     #[test]
     fn the_structural_key_does_not_depend_on_the_order_of_the_values() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(2, dom(5), None);
+        let vars = problem.add_variables(2, dom(5));
         let a = AtLeast::new(vars.clone(), set(&[1, 2, 3]), 1);
         let b = AtLeast::new(vars.clone(), set(&[3, 1, 2]), 1);
         let different_bound = AtLeast::new(vars.clone(), set(&[1, 2, 3]), 2);
@@ -697,7 +697,7 @@ mod test_at_least {
     #[test]
     fn layers_in_scope_follow_the_variable_ordering() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(4, dom(2), None);
+        let vars = problem.add_variables(4, dom(2));
         let mut constraint = AtLeast::new(vec![vars[0], vars[2], vars[3]], set(&[1]), 1);
         // Layer order: v3, v1, v0, v2.
         constraint.update_variable_ordering(&[vars[3], vars[1], vars[0], vars[2]]);
@@ -711,7 +711,7 @@ mod test_at_least {
     fn layers_beyond_the_first_word_are_tracked() {
         // 130 variables, the scope is at layers 0, 63, 64, 65 and 129.
         let mut problem = Problem::default();
-        let vars = problem.add_variables(130, dom(2), None);
+        let vars = problem.add_variables(130, dom(2));
         let scope_layers = [0usize, 63, 64, 65, 129];
         let scope: Vec<VariableIndex> = scope_layers.iter().map(|&l| vars[l]).collect();
         let mut constraint = AtLeast::new(scope, set(&[1]), 1);
@@ -728,7 +728,7 @@ mod test_at_least {
     #[test]
     fn a_new_ordering_replaces_the_previous_one() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, dom(2), None);
+        let vars = problem.add_variables(3, dom(2));
         let mut constraint = AtLeast::new(vec![vars[0], vars[1]], set(&[1]), 1);
         constraint.update_variable_ordering(&[vars[0], vars[1], vars[2]]);
         assert!(
@@ -749,7 +749,7 @@ mod test_at_least {
     #[should_panic]
     fn is_layer_in_scope_panics_before_the_ordering_is_set() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(2, dom(2), None);
+        let vars = problem.add_variables(2, dom(2));
         AtLeast::new(vars, set(&[1]), 1).is_layer_in_scope(0);
     }
 
@@ -758,7 +758,7 @@ mod test_at_least {
     #[should_panic]
     fn update_variable_ordering_panics_when_a_scope_variable_is_missing() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(2, dom(2), None);
+        let vars = problem.add_variables(2, dom(2));
         let mut constraint = AtLeast::new(vars.clone(), set(&[1]), 1);
         // `vars[1]` does not appear in the order.
         constraint.update_variable_ordering(&[vars[0]]);
@@ -1205,7 +1205,7 @@ mod test_at_least {
         let mut problem = Problem::default();
         let vars_among: Vec<VariableIndex> = domains
             .iter()
-            .map(|d| problem.add_variable(d.clone(), None))
+            .map(|d| problem.add_variable(d.clone()))
             .collect();
         among(&mut problem, vars_among, vec![1], 2, vars.len());
         let verbose = settled(problem, (0..6).collect());

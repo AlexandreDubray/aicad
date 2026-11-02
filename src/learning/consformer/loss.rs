@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn the_penalty_depends_on_the_constraint_and_on_the_scope_size() {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(4, vec![0, 1, 2], None);
+        let vars = problem.add_variables(4, vec![0, 1, 2]);
         not_equals(&mut problem, vars[0], vars[1]);
         all_different(&mut problem, vars[..3].to_vec());
         all_different(&mut problem, vars.clone());
@@ -225,7 +225,7 @@ mod tests {
 
     fn colouring_problem() -> Arc<Problem> {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, vec![0, 1, 2], None);
+        let vars = problem.add_variables(3, vec![0, 1, 2]);
         not_equals(&mut problem, vars[0], vars[1]);
         not_equals(&mut problem, vars[1], vars[2]);
         all_different(&mut problem, vars);
@@ -259,7 +259,7 @@ mod tests {
     fn a_constraint_without_a_penalty_is_refused() {
         let device = NdArrayDevice::default();
         let mut problem = Problem::default();
-        let vars = problem.add_variables(3, vec![0, 1, 2], None);
+        let vars = problem.add_variables(3, vec![0, 1, 2]);
         sum(&mut problem, vars, 3);
         let batch = batch_of::<Plain>(vec![Arc::new(problem)], &device);
         let logits: Tensor<Plain, 3> = Tensor::zeros([1, 3, 3], &device);

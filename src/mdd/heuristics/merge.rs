@@ -18,7 +18,7 @@
 //! instead of piled into a single node.
 
 use crate::mdd::{Compiler, EdgeIndex, NodeIndex};
-use crate::modelling::{Problem, ValueIndex, Variable, VariableIndex};
+use crate::modelling::{Problem, VariableIndex};
 
 /// The probability, in `probabilities`, of the value that `edge` assigns to the variable of its
 /// layer in `compiler`.
@@ -44,24 +44,36 @@ pub enum MergeHeuristic {
     StateSimilarity,
 }
 
-impl MergeHeuristic {
-    /// [`MergeHeuristic::MostLikely`] with the probabilities of the variables of `problem`.
-    pub fn most_likely(problem: &Problem) -> Self {
-        Self::MostLikely(
-            problem
-                .iter_variables()
-                .map(|variable| {
-                    (0..problem[variable].domain_size())
-                        .map(|value| problem[variable].probability(ValueIndex(value)))
-                        .collect()
-                })
-                .collect(),
-        )
-    }
+/// How far from 1 the sum of a probability distribution may be. It absorbs the rounding of
+/// distributions computed in single precision, and nothing more.
+const PROBABILITY_SUM_TOLERANCE: f64 = 1e-6;
 
+/// Panics unless `probabilities` has one entry per value of a domain of `domain_size` values, each
+/// finite and non-negative, and they sum to 1 within `PROBABILITY_SUM_TOLERANCE`.
+fn check_probabilities(domain_size: usize, probabilities: &[f64]) {
+    if probabilities.len() != domain_size {
+        panic!(
+            "invalid probabilities: {} probabilities were given for a domain of {domain_size} values",
+            probabilities.len()
+        );
+    }
+    for (index, &p) in probabilities.iter().enumerate() {
+        if !p.is_finite() || p < 0.0 {
+            panic!(
+                "invalid probabilities: the probability of the value at index {index} is {p}, but probabilities must be finite and non-negative"
+            );
+        }
+    }
+    let sum: f64 = probabilities.iter().sum();
+    if (sum - 1.0).abs() > PROBABILITY_SUM_TOLERANCE {
+        panic!("invalid probabilities: they sum to {sum}, but they must sum to 1");
+    }
+}
+
+impl MergeHeuristic {
     /// Panics unless the heuristic can be used on `problem`: the probabilities of
     /// [`MergeHeuristic::MostLikely`] need one row per variable of the problem, each a
-    /// distribution (the rules of `Variable::set_probabilities`) over its domain.
+    /// distribution over its domain.
     pub(crate) fn check(&self, problem: &Problem) {
         let Self::MostLikely(probabilities) = self else {
             return;
@@ -72,12 +84,7 @@ impl MergeHeuristic {
             "MostLikely needs one row of probabilities per variable of the problem"
         );
         for (variable, row) in probabilities.iter().enumerate() {
-            // `Variable` owns the rules of a valid distribution: ask a copy of it.
-            Variable::new(
-                problem[VariableIndex(variable)].iter_domain().collect(),
-                None,
-            )
-            .set_probabilities(row);
+            check_probabilities(problem[VariableIndex(variable)].domain_size(), row);
         }
     }
 
@@ -281,7 +288,7 @@ mod tests {
     /// A diagram that has not been refined yet.
     fn exact_mdd_unrefined(heuristic: MergeHeuristic) -> Compiler {
         let mut problem = Problem::default();
-        let vars = problem.add_variables(5, vec![0, 1, 2, 3, 4], None);
+        let vars = problem.add_variables(5, vec![0, 1, 2, 3, 4]);
         let all_different = all_different(&mut problem, vars.clone());
         let counted = gcc(&mut problem, vars, vec![(0, 0, 2), (1, 0, 2)]);
         Compiler::new(
