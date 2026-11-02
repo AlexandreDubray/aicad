@@ -6,6 +6,9 @@
 //! ([`optimiser`]) and a monitor of how often the proposed assignments satisfy the problems
 //! ([`monitoring`]). [`consformer`] holds the losses of ConsFormer.
 
+#![deny(missing_docs)]
+#![warn(clippy::missing_docs_in_private_items)]
+
 pub(crate) mod consformer;
 pub(crate) mod monitoring;
 pub(crate) mod optimiser;
@@ -26,5 +29,6 @@ pub(crate) trait Loss<B: Backend, Ba: Batch<B>> {
     /// default.
     fn prepare(&mut self, _problems: &[Arc<Problem>]) {}
 
+    /// The loss of `batch` for the network output `logits`, a scalar.
     fn loss(&self, logits: Tensor<B, 3>, batch: &Ba) -> Tensor<B, 1>;
 }

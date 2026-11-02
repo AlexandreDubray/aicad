@@ -1,6 +1,16 @@
+//! The training loop of the neural networks.
+//!
+//! [`train_model`] fits a network on a set of problems with a [`Loss`](crate::learning::Loss): each
+//! epoch it goes through the training batches, takes an optimiser step per batch, and every
+//! `validation_interval` epochs scores the validation set. The weights with the lowest validation
+//! loss are saved in the output directory, so that a run can be loaded back (see
+//! [`crate::neural::load_network`], which also reads the network configuration from there) or
+//! continued. Training stops early if the validation loss
+//! stops improving, when asked to.
+
 use burn::config::Config;
-use burn::data::dataloader::batcher::Batcher;
 use burn::data::dataloader::DataLoaderBuilder;
+use burn::data::dataloader::batcher::Batcher;
 use burn::data::dataset::Dataset;
 use burn::module::{AutodiffModule, Module};
 use burn::optim::GradientsParams;
@@ -12,9 +22,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::learning::Loss;
 use crate::learning::monitoring::SatisfactionReport;
 use crate::learning::optimiser::OptimiserConfig;
-use crate::learning::Loss;
 use crate::modelling::Problem;
 use crate::neural::{Batch, Network, NetworkConfig};
 

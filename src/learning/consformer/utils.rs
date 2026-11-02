@@ -22,6 +22,8 @@ pub(super) fn gumbel_softmax<B: Backend>(logits: Tensor<B, 3>) -> Tensor<B, 3> {
     softmax(logits + gumbel, 2)
 }
 
+/// Keeps the variables that are not re-predicted at their current value: their probabilities
+/// become one-hot on `assignments`, those of the re-predicted variables (`var_masks`) are kept.
 pub(super) fn blend_with_current<B: Backend>(
     probs: Tensor<B, 3>,
     assignments: Tensor<B, 2, Int>,

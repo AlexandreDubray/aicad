@@ -30,6 +30,7 @@ use crate::modelling::Problem;
 use super::utils::{blend_with_current, gumbel_softmax};
 use crate::neural::consformer::ConsFormerBatch;
 
+/// Added to a weighted model count before its log, to avoid `ln(0)`.
 const WMC_EPS: f64 = 1e-6;
 
 /// `ln(exp(a) + exp(b))` without overflow or underflow; `a` may be `-inf`, `b` must be finite.
@@ -212,6 +213,7 @@ impl DecomposedMddLoss {
         self.problems = unique;
     }
 
+    /// Identifies a problem by the address of its `Arc`.
     fn key(problem: &Arc<Problem>) -> usize {
         Arc::as_ptr(problem) as usize
     }

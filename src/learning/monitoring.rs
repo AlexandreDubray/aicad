@@ -1,14 +1,26 @@
+//! Monitoring of training: how well the proposed assignments satisfy the constraints.
+//!
+//! [`SatisfactionReport`] collects, per type of constraint, the rate of satisfied constraints of
+//! each problem, and prints the minimum, maximum, mean and standard deviation over the problems. It
+//! is a rough indication of how learning behaves, not a measure of it.
+
 use std::collections::HashMap;
 
 use std::sync::Arc;
 
 use crate::modelling::Problem;
 
+/// Statistics of the satisfaction rate of one type of constraint, over the problems seen.
 struct ConstraintStats {
+    /// Number of problems seen.
     count: usize,
+    /// Sum of the rates.
     sum_rate: f64,
+    /// Sum of the squares of the rates.
     sum_rate_sq: f64,
+    /// Smallest rate.
     min: f64,
+    /// Largest rate.
     max: f64,
 }
 
@@ -25,6 +37,7 @@ impl Default for ConstraintStats {
 }
 
 impl ConstraintStats {
+    /// Mean rate, 0 if no problem was seen.
     fn mean(&self) -> f64 {
         if self.count == 0 {
             0.0
@@ -33,6 +46,7 @@ impl ConstraintStats {
         }
     }
 
+    /// Standard deviation of the rates, 0 if no problem was seen.
     fn stddev(&self) -> f64 {
         if self.count == 0 {
             0.0
@@ -43,10 +57,12 @@ impl ConstraintStats {
         }
     }
 
+    /// Smallest rate.
     fn min(&self) -> f64 {
         self.min
     }
 
+    /// Largest rate.
     fn max(&self) -> f64 {
         self.max
     }
@@ -106,6 +122,8 @@ impl SatisfactionReport {
         }
     }
 
+    /// Logs the table of the statistics, the least satisfied type of constraint first. `width` is
+    /// the width of the separator line, beyond the name column.
     pub(crate) fn print(&self, width: usize) {
         if self.by_constraint.is_empty() {
             log::warn!("Can not show constraint satisfaction: no constraints recorded.");

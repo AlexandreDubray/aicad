@@ -75,13 +75,19 @@ impl OptimiserConfig {
 
 /// The optimiser of [`OptimiserConfig`] that was chosen, with its state.
 pub(crate) struct Optimiser<B: AutodiffBackend, M: AutodiffModule<B>> {
+    /// Learning rate.
     lr: f64,
+    /// The optimiser behind it.
     algorithm: Algorithm<B, M>,
 }
 
+/// The optimisers that [`Optimiser`] can run.
 enum Algorithm<B: AutodiffBackend, M: AutodiffModule<B>> {
+    /// Adam.
     Adam(OptimizerAdaptor<Adam, M, B>),
+    /// Adam with decoupled weight decay.
     AdamW(OptimizerAdaptor<AdamW, M, B>),
+    /// Stochastic gradient descent.
     Sgd(OptimizerAdaptor<Sgd<B::InnerBackend>, M, B>),
 }
 
