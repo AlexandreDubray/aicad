@@ -37,7 +37,7 @@ use burn::module::{Module, Param};
 use burn::nn::{
     Dropout, DropoutConfig, EmbeddingConfig, Gelu, LayerNorm, LayerNormConfig, Linear, LinearConfig,
 };
-use burn::tensor::{backend::Backend, Bool, Int, Tensor};
+use burn::tensor::{Bool, Int, Tensor, backend::Backend};
 
 use super::ConsFormerInputs;
 use crate::neural::*;

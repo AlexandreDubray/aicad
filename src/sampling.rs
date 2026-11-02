@@ -24,6 +24,9 @@
 //!   [`sample_categorical_with`] takes the generator of the caller, for work done in parallel,
 //!   where the process-wide one would make the result depend on the thread schedule.
 
+#![deny(missing_docs)]
+#![warn(clippy::missing_docs_in_private_items)]
+
 use rand::{Rng, RngExt};
 
 use crate::mdd::{Mdd, NodeIndex};
