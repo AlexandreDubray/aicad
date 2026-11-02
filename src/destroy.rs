@@ -3,6 +3,9 @@
 //! They are shared by the training of the learned models, which masks the variables it asks the
 //! network to predict, and by the local searches, which free them to repair the assignment.
 
+#![deny(missing_docs)]
+#![warn(clippy::missing_docs_in_private_items)]
+
 use std::collections::HashSet;
 
 use rand::RngExt;
@@ -11,7 +14,7 @@ use rand::seq::SliceRandom;
 
 use crate::modelling::Problem;
 
-// Flooring factor for scoring to avoid division by zero
+/// Floor of the scores, to avoid dividing by zero.
 const SCORE_EPS: f64 = 1e-8;
 
 /// Trait to implement for a new destroy operator.
@@ -46,6 +49,7 @@ impl DestroyKind {
 
 /// Uniformly destroys a `fraction` of the free (domain size > 1) variables.
 pub(crate) struct RandomDestroy {
+    /// Fraction of the free variables to destroy.
     pub fraction: f64,
 }
 
@@ -66,6 +70,7 @@ impl DestroyOperator for RandomDestroy {
 /// sigmoid of its standardised count of currently-violated constraints, rescaled so the mean
 /// probability matches `fraction`. Every free variable keeps a non-zero probability.
 pub(crate) struct WorstDestroy {
+    /// Mean fraction of the free variables to destroy.
     pub fraction: f64,
 }
 
@@ -112,6 +117,7 @@ impl DestroyOperator for WorstDestroy {
 /// destroyed variables tracks `fraction * n`, regardless of how many
 /// constraints the problem has relative to its variables
 pub(crate) struct RelatedDestroy {
+    /// Expected fraction of the free variables to destroy.
     pub fraction: f64,
 }
 
