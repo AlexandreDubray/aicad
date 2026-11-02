@@ -345,7 +345,7 @@ impl Default for MddCompilationConfig {
     fn default() -> Self {
         Self {
             ordering: OrderingHeuristic::MinDomMaxLinked,
-            merge: MergeHeuristic::LessRelaxed,
+            merge: MergeHeuristic::default(),
             select: SelectHeuristic::Greedy,
             max_width: usize::MAX,
         }

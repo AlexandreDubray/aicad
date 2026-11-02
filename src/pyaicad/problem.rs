@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyIndexError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 use crate::constraints::*;
@@ -132,17 +132,21 @@ impl PyProblem {
         self.inner.is_solution(&solution)
     }
 
-    fn satisfied_fraction(&self, solution: Vec<isize>) -> f64 {
-        let total = self.inner.number_constraints();
-        if total == 0 {
-            return 1.0;
+    fn is_constraint_satisfied(&self, constraint: usize, solution: Vec<isize>) -> PyResult<bool> {
+        if constraint >= self.inner.number_constraints() {
+            return Err(PyIndexError::new_err(format!(
+                "constraint {constraint} out of range: the problem has {} constraints",
+                self.inner.number_constraints()
+            )));
         }
-        let satisfied = self
-            .inner
-            .iter_constraints()
-            .filter(|&c| self.inner[c].is_satisfied(&solution))
-            .count();
-        satisfied as f64 / total as f64
+        if solution.len() != self.inner.number_variables() {
+            return Err(PyValueError::new_err(format!(
+                "assignment has {} values for {} variables",
+                solution.len(),
+                self.inner.number_variables()
+            )));
+        }
+        Ok(self.inner[ConstraintIndex(constraint)].is_satisfied(&solution))
     }
 
     // --- introspection: read-only, always available regardless of sharing --- //

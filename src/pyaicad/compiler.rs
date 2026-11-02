@@ -30,7 +30,7 @@ impl PyCompiler {
     /// as the universe MDD with constraint propagation applied
     #[pyo3(signature = (constraints=None, max_width=None,
             pyordering=PyOrderingHeuristic::MinDomMaxLinked(),
-            pymerge=PyMergeHeuristic::LessRelaxed,
+            pymerge=PyMergeHeuristic::StateSimilarity,
             pyselect=PySelectHeuristic::Greedy))]
     fn compile(
         &self,

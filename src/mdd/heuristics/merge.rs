@@ -44,6 +44,13 @@ pub enum MergeHeuristic {
     StateSimilarity,
 }
 
+impl Default for MergeHeuristic {
+    /// [`MergeHeuristic::StateSimilarity`], the heuristic every default configuration uses.
+    fn default() -> Self {
+        Self::StateSimilarity
+    }
+}
+
 /// How far from 1 the sum of a probability distribution may be. It absorbs the rounding of
 /// distributions computed in single precision, and nothing more.
 const PROBABILITY_SUM_TOLERANCE: f64 = 1e-6;

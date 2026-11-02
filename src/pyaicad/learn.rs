@@ -379,7 +379,7 @@ fn run_training<B: AutodiffBackend>(
 #[pyfunction]
 #[pyo3(signature = (problems, config, training, checkpoint_dir,
         pyordering=PyOrderingHeuristic::MinDomMaxLinked(),
-        pymerge=PyMergeHeuristic::LessRelaxed,
+        pymerge=PyMergeHeuristic::StateSimilarity,
         pyselect=PySelectHeuristic::Greedy,
         validation=None))]
 #[allow(clippy::too_many_arguments)]
@@ -410,7 +410,7 @@ pub(crate) fn train_consformer_mdd(
     // probabilities of the first problem so that the setting has a value.
     let merge = problems
         .first()
-        .map_or(MergeHeuristic::LessRelaxed, |problem| {
+        .map_or(MergeHeuristic::default(), |problem| {
             pymerge.into_heuristic(problem)
         });
     let compilation = MddCompilationConfig {
