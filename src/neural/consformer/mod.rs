@@ -48,12 +48,7 @@ pub(crate) struct ConsFormerConfig {
     pub mask_fraction: f64,
     /// Logit scaling factor
     pub tau: f64,
-    /// How the multi-head attention blocks apply the primal-graph attention mask -- hard -inf
-    /// masking (ConsFormer's default, matching the official Sudoku/graph-colouring benchmarks)
-    /// or a learned per-head bias (see `architecture::MaskingKind`). The latter is useful when
-    /// the primal graph has large cliques (e.g. nurse rostering's per-day coverage constraints,
-    /// which link all N nurses) where hard masking still leaves each row attending near-
-    /// uniformly over many neighbours.
+    /// How the multi-head attention blocks apply the primal-graph attention mask.
     #[config(default = "MaskingKind::Hard")]
     pub masking_kind: MaskingKind,
 }
@@ -62,6 +57,16 @@ impl<B: Backend> NetworkConfig<B> for ConsFormerConfig {
     type N = ConsFormer<B>;
 
     fn init(&self, problems: &[Arc<Problem>], device: &B::Device) -> Self::N {
+        // Note: in the ConsFormer architecture it is assumed that hidden_size == embedding_size.
+        //       It is unclear to me that we need this and how it affects learning. Especially
+        //       since it seems to not be the norm when using transformers.
+        if self.hidden_size != self.embedding_size {
+            panic!(
+                "ConsFormer architecture initialised with hidden size different than embedding size ({} != {}). Currently, it is not supported.",
+                self.hidden_size, self.embedding_size
+            );
+        }
+
         // Constructs the num_layers transformer blocks with the given parameters
         let transformer_blocks = (0..self.num_layers)
             .map(|_| {

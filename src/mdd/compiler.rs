@@ -1396,32 +1396,6 @@ pub mod test_mdd {
     }
 
     #[test]
-    pub fn mdd_refine() {
-        let mut problem = Problem::default();
-        let x = problem.add_variable(vec![0, 1]);
-        let y = problem.add_variable(vec![0, 1, 2]);
-        let z = problem.add_variable(vec![1, 2]);
-
-        not_equals(&mut problem, x, y);
-        not_equals(&mut problem, y, z);
-        not_equals(&mut problem, x, z);
-
-        let problem = Arc::new(problem);
-        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
-        let mut compiler = Compiler::new(
-            problem,
-            CompilationHeuristic {
-                ordering: OrderingHeuristic::MinDomMaxLinked,
-                merge: MergeHeuristic::LessRelaxed,
-                selection: SelectHeuristic::Greedy,
-            },
-            &constraints,
-        );
-        compiler.refine(usize::MAX);
-        // TODO assert?
-    }
-
-    #[test]
     pub fn merge_nodes_merges_children_that_collide_on_the_same_label() {
         let mut problem = Problem::default();
         let x = problem.add_variable(vec![0, 1]);

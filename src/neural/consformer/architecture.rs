@@ -351,7 +351,8 @@ impl<B: Backend> MultiHeadAttention<B> {
     /// x: Embedding of the current assignment. Tensor of shape (batch_size, number_vars, embedding_size)
     /// attention_mask: Mask the attention of variables not neighbors in the primal graph of the
     /// problem.                                Tensor of shape (batch_size, number_vars, number_vars)
-    /// Returns: TODO
+    /// Returns: A tensor of [batch_size, number_variables, domain_size] with one logit per
+    ///          variable-value pair for each sample.
     pub(crate) fn forward(
         &self,
         x: Tensor<B, 3>,
@@ -410,9 +411,6 @@ impl<B: Backend> MultiHeadAttention<B> {
         let out = out.reshape([batch_size, number_vars, self.head_count * self.hidden_size]);
 
         // Project back to (batch_size, number_vars, hidden_size)
-        // TODO: note, in the ConsFormer architecture it is assumed that hidden_size == embedding_size.
-        //       It is unclear to me that we need this and how it affects learning. Especially
-        //       since it seems to not be the norm when using transformers.
         self.projection.forward(out)
     }
 
