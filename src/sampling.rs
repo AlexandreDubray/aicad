@@ -9,7 +9,7 @@
 //! and value, and [`uniform_weights`] gives the weights that make every value of a layer equally
 //! likely.
 //!
-//! # How samplign works
+//! # How it works
 //!
 //! A draw adds the weights up, picks a number uniformly in the total and returns the value whose
 //! share of the total contains it. [`sample_solution`] does so at each node of the diagram on the
@@ -102,11 +102,11 @@ pub fn uniform_weights(mdd: &Mdd) -> Vec<Vec<f64>> {
 /// Sample a root-to-sink path in the MDD according to the given weights. Returns the path of
 /// labels followed.
 ///
-/// At each node, the weights of the values of its edges are added up, a number is drawn uniformly
-/// in that total, and the edge whose share of the total contains it is taken.
-/// The weights are not renormalised by what lies below a node, so the draw follows the weights
-/// restricted to the values the diagram still allows, and not the distribution of the solutions
-/// conditioned on the constraints (that is what the weighted model count and its gradient give).
+/// `weights[layer][value]` is the weight of the value at index `value` of the variable branched
+/// on at `layer`, as for [`log_wmc`](crate::mdd::wmc::log_wmc): one row per layer but the sink's,
+/// and a weight for every value an edge of the layer can carry. At each node, the weights of the
+/// values of its edges are added up, a number is drawn uniformly in that total, and the edge whose
+/// share of the total contains it is taken.
 ///
 /// The path is a solution if `mdd` is exact; a relaxed diagram can yield an assignment that
 /// violates a constraint. The random generator is the thread's own (see `crate::utils`).
