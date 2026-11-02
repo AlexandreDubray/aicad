@@ -14,6 +14,9 @@
 //!   the requirement (ConsFormer needs the same variables in every problem) next to the code that
 //!   relies on it, and every caller asks the batch type instead of assuming it.
 
+#![deny(missing_docs)]
+#![warn(clippy::missing_docs_in_private_items)]
+
 pub(crate) mod consformer;
 
 use std::path::Path;
@@ -67,13 +70,21 @@ pub(crate) trait Batch<B: Backend>: Clone + Send + Sync + std::fmt::Debug + 'sta
     ) -> Self;
 }
 
+/// A neural network that reads a [`Batch`] of type `Ba` and returns its logits.
 pub(crate) trait Network<B: Backend, Ba: Batch<B>>: Module<B> {
+    /// The logits for `batch`, of shape `(batch_size, number_vars, domain_size)`: one per value of
+    /// every variable.
     fn forward(&self, batch: &Ba) -> Tensor<B, 3>;
 }
 
+/// The hyperparameters of a network: what it takes to build one for a set of problems.
 pub(crate) trait NetworkConfig<B: Backend> {
+    /// The network that the configuration builds.
     type N: Module<B>;
 
+    /// Builds a network with randomly initialised weights. Whatever depends on the problems (for
+    /// instance the positions of their variables) is read from `problems`; all of them must be
+    /// accepted by the batch type of the network (see [`Batch::check_problems`]).
     fn init(&self, problems: &[Arc<Problem>], device: &B::Device) -> Self::N;
 }
 

@@ -1,3 +1,32 @@
+//! The data ConsFormer is trained on and the batches it reads.
+//!
+//! # Meaning
+//!
+//! A [`ConsFormerDataset`] holds problems together with what ConsFormer needs to know about each:
+//! the attention mask (which variables share a constraint) and which variables have a choice to
+//! make. A [`ConsFormerBatcher`] turns a few of them into a [`ConsFormerBatch`], the input of the
+//! network and of the losses: the stacked masks, a random assignment for every problem, and the
+//! variables the network must re-predict. The same batch type is built at inference time by
+//! [`Batch::for_assignments`], from the assignments of a local search.
+//!
+//! # How it works
+//!
+//! The masks of a problem do not change, so they are computed once, when the dataset is built
+//! (the problems in parallel, the tensors afterwards on a single thread). A batch then stacks them
+//! and draws a random assignment per problem. The variables to re-predict are either chosen by a
+//! destroy operator, as local search does, or drawn at random among the variables with more than
+//! one value, each with probability `mask_fraction`.
+//!
+//! # Design notes
+//!
+//! - **All problems of a batch have the same variables.** The network reads rectangular tensors and
+//!   builds its positional embedding from one problem, so [`Batch::check_problems`] refuses a
+//!   batch whose problems have different numbers of variables. Their domains and constraints may
+//!   differ.
+//! - **Random masks skip the variables without a choice.** A variable with a single value has
+//!   nothing to re-predict, so drawing at random never picks it, which keeps the given values of a
+//!   problem (the hints of a Sudoku) out of the loss. A destroy operator chooses freely.
+
 use std::sync::Arc;
 
 use burn::data::dataloader::batcher::Batcher;
@@ -22,11 +51,17 @@ use super::ConsFormerInputs;
 /// `Tensor::from_data` calls -- which touch the device, and so are kept single-threaded to avoid
 /// any backend-specific thread/context assumptions (e.g. around CUDA) -- happen afterward.
 struct ConsFormerMaskData {
+    /// Number of variables of the problem.
     number_vars: usize,
+    /// The attention mask, row by row: `[i * number_vars + j]` is true if variable `i` may attend
+    /// to variable `j`.
     flat_attention_mask: Vec<bool>,
+    /// Whether each variable has more than one value in its domain.
     is_var: Vec<bool>,
 }
 
+/// Computes the attention mask and the variable indicator of `problem` as plain data. Variables
+/// that share a constraint attend to each other, and every variable attends to itself.
 fn consformer_mask_data(problem: &Problem) -> ConsFormerMaskData {
     let n = problem.number_variables();
     let mut flat_attention_mask = vec![false; n * n];
@@ -65,6 +100,8 @@ fn consformer_mask_data(problem: &Problem) -> ConsFormerMaskData {
 }
 
 impl ConsFormerMaskData {
+    /// Builds the tensors of the masks on `device`: the `(number_vars, number_vars)` attention
+    /// mask and the `(number_vars,)` indicator of the variables with a choice.
     fn into_tensors<B: Backend>(
         self,
         device: &B::Device,
@@ -94,8 +131,11 @@ pub(crate) fn consformer_masks<B: Backend>(
 /// We pre-compute these tensors beforehand since they are invariant during training
 #[derive(Clone)]
 pub(crate) struct ConsFormerSample<B: Backend> {
+    /// The problem.
     problem: Arc<Problem>,
+    /// (number_vars, number_vars): true where a variable may attend to another.
     attention_mask: Tensor<B, 2, Bool>,
+    /// (number_vars): true for the variables with more than one value in their domain.
     var_mask: Tensor<B, 1, Bool>,
 }
 
@@ -111,10 +151,12 @@ impl<B: Backend> std::fmt::Debug for ConsFormerSample<B> {
 
 /// A dataset is just a vector of samples
 pub(crate) struct ConsFormerDataset<B: Backend> {
+    /// One sample per problem, in the order the problems were given.
     samples: Vec<ConsFormerSample<B>>,
 }
 
 impl<B: Backend> ConsFormerDataset<B> {
+    /// Builds the dataset of `problems`, computing their masks on `device`.
     pub(crate) fn new(problems: Vec<Arc<Problem>>, device: &B::Device) -> Self {
         let mask_data: Vec<ConsFormerMaskData> = crate::utils::worker_pool().install(|| {
             problems
@@ -178,6 +220,10 @@ pub(super) fn shared_number_variables(problems: &[Arc<Problem>]) -> usize {
     try_shared_number_variables(problems).unwrap_or_else(|e| panic!("{e}"))
 }
 
+/// Stacks the attention masks of a batch, draws a random assignment for each problem and chooses
+/// the variables to re-predict: those picked by `destroy` if given, else a random `mask_fraction`
+/// of the variables with a choice. Returns the attention masks, the variables to re-predict and
+/// the assignments, with the problems as rows.
 fn stack_masks_and_sample_assignments<B: Backend>(
     attention_mask_tensors: Vec<Tensor<B, 2, Bool>>,
     var_mask_tensors: &[Tensor<B, 1, Bool>],
@@ -208,6 +254,9 @@ fn stack_masks_and_sample_assignments<B: Backend>(
     (attention_masks, var_masks, assignments)
 }
 
+/// Picks at random, among the variables with a choice of each problem (given by
+/// `var_mask_tensors`), those to re-predict, each with probability `mask_fraction`. Returns the
+/// choice of all problems, one after the other.
 fn random_var_masks<B: Backend>(
     var_mask_tensors: &[Tensor<B, 1, Bool>],
     mask_fraction: f64,
@@ -234,6 +283,7 @@ fn random_var_masks<B: Backend>(
     var_masks_data
 }
 
+/// Draws a random assignment for each problem, all concatenated.
 fn sample_initial_assignments(problems: &[Arc<Problem>]) -> Vec<i64> {
     problems
         .iter()
@@ -245,6 +295,9 @@ fn sample_initial_assignments(problems: &[Arc<Problem>]) -> Vec<i64> {
         .collect()
 }
 
+/// Asks `destroy` which variables of each problem to re-predict, given the assignments `init` of
+/// all problems (`n` variables each, concatenated). The problems are handled in parallel, each
+/// with its own generator, so the result does not depend on the thread schedule.
 fn destroyed_var_masks(
     destroy: &dyn DestroyOperator,
     problems: &[Arc<Problem>],
@@ -278,9 +331,14 @@ fn destroyed_var_masks(
     masks
 }
 
+/// Builds the batches of a [`ConsFormerDataset`].
 #[derive(Clone)]
 pub(crate) struct ConsFormerBatcher {
+    /// Fraction of the variables with a choice that are re-predicted, when there is no destroy
+    /// operator.
     pub mask_fraction: f64,
+    /// Chooses the variables to re-predict, as local search does. If absent, they are drawn at
+    /// random with `mask_fraction`.
     pub destroy: Option<Arc<dyn DestroyOperator>>,
 }
 
@@ -294,6 +352,7 @@ pub(crate) struct ConsFormerBatch<B: Backend> {
     pub var_masks: Tensor<B, 2, Bool>,
     /// Problems, used to compute the loss
     pub problems: Vec<Arc<Problem>>,
+    /// (batch_size, number_vars): the current value of each variable.
     pub assignments: Tensor<B, 2, Int>,
 }
 
@@ -312,6 +371,10 @@ impl<B: Backend> Batcher<B, ConsFormerSample<B>, ConsFormerBatch<B>> for ConsFor
     /// and create initial assignments by sampling uniformly each variable. Note that this respect
     /// the predefined problems (e.g., sudoku with hints) as the fixed variables have domain size
     /// 1, so sampling it always return the same value
+    ///
+    /// This operation is cheap because we clone Burn's tensor which only involve copying a
+    /// reference. Every sample has already its own tensor representations so we don't create any
+    /// tensor except when stacking.
     fn batch(&self, samples: Vec<ConsFormerSample<B>>, device: &B::Device) -> ConsFormerBatch<B> {
         let attention_mask_tensors: Vec<Tensor<B, 2, Bool>> =
             samples.iter().map(|s| s.attention_mask.clone()).collect();

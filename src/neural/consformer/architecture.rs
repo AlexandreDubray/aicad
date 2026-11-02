@@ -1,9 +1,43 @@
+//! The layers of ConsFormer, the transformer that reads an assignment and proposes new values.
+//!
+//! Each variable of a problem is a token. The network embeds the current value of every variable,
+//! marks the variables it must re-predict, optionally tells the variables apart by their position
+//! in the problem, lets the variables that share a constraint exchange information, and outputs
+//! one logit per value of the domain for every variable ([`ConsFormer`]). The same network is used
+//! for every problem that has the same variables; the problem enters through the attention mask
+//! that [`ConsFormerInputs`] provides.
+//!
+//! # How it works
+//!
+//! 1. [`AssignmentEmbedding`] maps each value to a vector, [`StructuredPositionalEmbedding`] maps
+//!    the position of each variable to a vector (when positions are used), and a learned vector
+//!    marks the variables to re-predict. [`EmbeddingMixer`] adds the three, each scaled by a
+//!    learned weight.
+//! 2. A stack of [`TransformerBlock`]s follows. Each block normalises its input, applies
+//!    [`MultiHeadAttention`] restricted to the variables that share a constraint (and the variable
+//!    itself), adds the result to its input, then does the same with a [`FeedForward`] layer.
+//! 3. A linear layer maps each variable to one logit per value, divided by the temperature `tau`.
+//!
+//! # Design notes
+//!
+//! - **The hidden size equals the embedding size.** The blocks add their output to their input
+//!   (residual connections), so both must have the same size. This restrictions is inherited from
+//!   the original ConsFormer design.
+//! - **Attention follows the constraints.** A variable only attends to the variables it shares a
+//!   constraint with, so the network sees the structure of the problem without reading the
+//!   constraints themselves. [`MaskingKind`] chooses between forbidding the other pairs outright
+//!   and learning how strongly to suppress them.
+//! - **Positions are summed, not concatenated.** A variable can have any number of coordinates
+//!   (row and column of a Sudoku cell, nurse, day and shift of a roster): each coordinate is
+//!   embedded on its own and the embeddings are added. This is a shift from the original
+//!   ConsFormer code; however, we see no difference in performance.
+
 use burn::config::Config;
 use burn::module::{Module, Param};
 use burn::nn::{
     Dropout, DropoutConfig, EmbeddingConfig, Gelu, LayerNorm, LayerNormConfig, Linear, LinearConfig,
 };
-use burn::tensor::{Bool, Int, Tensor, backend::Backend};
+use burn::tensor::{backend::Backend, Bool, Int, Tensor};
 
 use super::ConsFormerInputs;
 use crate::neural::*;
@@ -13,6 +47,7 @@ use crate::neural::*;
 /// Embeds a discrete assignment to the variables into the embedding space
 #[derive(Module, Debug)]
 pub(crate) struct AssignmentEmbedding<B: Backend> {
+    /// The embedding table, with one row per value of the domain.
     embedding: burn::nn::Embedding<B>,
 }
 
@@ -26,6 +61,7 @@ pub(crate) struct AssignmentEmbeddingConfig {
 }
 
 impl AssignmentEmbeddingConfig {
+    /// Creates the embedding with randomly initialised rows.
     pub(crate) fn init<B: Backend>(&self, device: &B::Device) -> AssignmentEmbedding<B> {
         AssignmentEmbedding {
             embedding: EmbeddingConfig::new(self.domain_size, self.embedding_size).init(device),
@@ -95,8 +131,9 @@ impl<B: Backend> FixedPositionalEmbedding<B> {
 /// mask, position) is already combined by `EmbeddingMixer`.
 #[derive(Module, Debug)]
 pub(crate) struct StructuredPositionalEmbedding<B: Backend> {
-    /// One table per axis, each sized to that axis's cardinality.
+    /// One table per axis.
     axes: Vec<FixedPositionalEmbedding<B>>,
+    /// `axis_ids[a][v]` is the coordinate of variable `v` on axis `a`.
     #[module(skip)]
     axis_ids: Vec<Vec<usize>>,
 }
@@ -140,6 +177,9 @@ impl<B: Backend> StructuredPositionalEmbedding<B> {
     }
 }
 
+/// Combines the embedding of the assignment, the embedding of the position and the embedding that
+/// marks the variables to re-predict into one input for the transformer blocks. Each of the three is
+/// scaled by its own learned weight.
 #[derive(Module, Debug)]
 pub(crate) struct EmbeddingMixer<B: Backend> {
     /// Weight the assignment embedding for mixing. Learnable float parameter.
@@ -150,12 +190,15 @@ pub(crate) struct EmbeddingMixer<B: Backend> {
     position_weight: Param<Tensor<B, 3>>,
 }
 
+/// Parameters of the [`EmbeddingMixer`].
 #[derive(Config, Debug)]
 pub(crate) struct EmbeddingMixerConfig {
+    /// Size of the embeddings that are mixed.
     pub embedding_size: usize,
 }
 
 impl EmbeddingMixerConfig {
+    /// Creates the mixer with all three weights set to 1.
     pub(crate) fn init<B: Backend>(&self, device: &B::Device) -> EmbeddingMixer<B> {
         EmbeddingMixer {
             assignment_weight: Param::from_tensor(Tensor::ones([1, 1, 1], device)),
@@ -166,6 +209,9 @@ impl EmbeddingMixerConfig {
 }
 
 impl<B: Backend> EmbeddingMixer<B> {
+    /// Returns the weighted sum of the embeddings, where the mask embedding only counts at the
+    /// variables to re-predict.
+    ///
     /// assignment_embeddings: Embeddings of the current assignment. Tensor of shape (batch_size, number_var, embedding_size)
     /// mask_embedding: Learned mask for the embeddings.             Tensor of shape (embedding_size,)
     /// position_embeddings: Positional embeddings                   Tensor of shape (batch_size, number_var, embedding_size)
@@ -200,25 +246,37 @@ impl<B: Backend> EmbeddingMixer<B> {
 
 // --- Feed forward block --- //
 
+/// Feed-forward layer of a transformer block: it transforms each variable on its own, without
+/// looking at the others.
 #[derive(Module, Debug)]
 pub(crate) struct FeedForward<B: Backend> {
+    /// Expands each variable from the hidden size to the expanded size.
     fc1: Linear<B>,
+    /// Non-linearity between the two linear layers.
     act: Gelu,
+    /// Brings each variable back from the expanded size to the hidden size.
     fc2: Linear<B>,
+    /// Dropout applied to the output, during training.
     drop: Dropout,
 }
 
+/// Parameters of the [`FeedForward`] layer.
 #[derive(Config, Debug)]
 pub(crate) struct FeedForwardConfig {
+    /// Size of the input and of the output of the layer
     pub hidden_size: usize,
+    /// Size of the internal layer
     pub expand_size: usize,
+    /// Dropout of the output during training
     #[config(default = 0.1)]
     pub drop: f64,
+    /// Insert bias in the linear layers
     #[config(default = true)]
     pub bias: bool,
 }
 
 impl FeedForwardConfig {
+    /// Creates the layer with randomly initialised weights.
     pub(crate) fn init<B: Backend>(&self, device: &B::Device) -> FeedForward<B> {
         FeedForward {
             fc1: LinearConfig::new(self.hidden_size, self.expand_size)
@@ -234,6 +292,8 @@ impl FeedForwardConfig {
 }
 
 impl<B: Backend> FeedForward<B> {
+    /// x: (batch_size, number_vars, hidden_size)
+    /// returns: the same shape.
     pub(crate) fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
         let x = self.fc1.forward(x);
         let x = self.act.forward(x);
@@ -252,7 +312,9 @@ impl<B: Backend> FeedForward<B> {
 /// beyond the primal graph where that helps.
 #[derive(Module, Debug)]
 pub(crate) struct LearnedMaskBias<B: Backend> {
+    /// Bias, per head, of the pairs that are linked. Starts at 0.
     connected: Param<Tensor<B, 1>>,
+    /// Bias, per head, of the pairs that are not linked. Starts at `UNCONNECTED_BIAS_INIT`.
     unconnected: Param<Tensor<B, 1>>,
 }
 
@@ -262,6 +324,7 @@ pub(crate) struct LearnedMaskBias<B: Backend> {
 const UNCONNECTED_BIAS_INIT: f32 = -1.0;
 
 impl<B: Backend> LearnedMaskBias<B> {
+    /// Creates the biases for `head_count` heads, at their initial values.
     fn new(head_count: usize, device: &B::Device) -> Self {
         LearnedMaskBias {
             connected: Param::from_tensor(Tensor::zeros([head_count], device)),
@@ -295,19 +358,30 @@ pub(crate) enum MaskingKind {
     Learned,
 }
 
+/// Lets each variable gather information from the variables it shares a constraint with: for each
+/// head, a variable weighs its neighbours by how well what it looks for matches what they offer, and
+/// takes the weighted sum of what they offer. The heads are then concatenated and projected back.
 #[derive(Module, Debug)]
 pub(crate) struct MultiHeadAttention<B: Backend> {
+    /// Computes the queries: what each variable looks for.
     q_proj: Linear<B>,
+    /// Computes the keys: what each variable advertises about itself.
     k_proj: Linear<B>,
+    /// Computes the values: what each variable offers to the variables that attend to it.
     v_proj: Linear<B>,
+    /// Dropout applied to the attention weights, during training.
     drop_out: Dropout,
+    /// Brings the concatenated heads back to the hidden size.
     projection: Linear<B>,
+    /// Size of the representation of a variable in one head.
     hidden_size: usize,
+    /// Number of heads.
     head_count: usize,
     /// `Some` iff `masking_kind == MaskingKind::Learned`.
     learned_bias: Option<LearnedMaskBias<B>>,
 }
 
+/// Parameters of the [`MultiHeadAttention`] layer.
 #[derive(Config, Debug)]
 pub(crate) struct MultiHeadAttentionConfig {
     /// Size of the embedding of the assignments
@@ -326,6 +400,7 @@ pub(crate) struct MultiHeadAttentionConfig {
 }
 
 impl MultiHeadAttentionConfig {
+    /// Creates the attention layer with randomly initialised weights.
     pub(crate) fn init<B: Backend>(&self, device: &B::Device) -> MultiHeadAttention<B> {
         MultiHeadAttention {
             q_proj: LinearConfig::new(self.embedding_size, self.hidden_size * self.head_count)
@@ -429,14 +504,21 @@ impl<B: Backend> MultiHeadAttention<B> {
 
 // --- Transformer --- //
 
+/// One block of the transformer: an attention layer then a feed-forward layer, each preceded by a
+/// normalisation and added to its input.
 #[derive(Module, Debug)]
 pub(crate) struct TransformerBlock<B: Backend> {
+    /// Normalisation of the input of the attention layer.
     norm1: LayerNorm<B>,
+    /// Exchange of information between the variables that share a constraint.
     attn: MultiHeadAttention<B>,
+    /// Normalisation of the input of the feed-forward layer.
     norm2: LayerNorm<B>,
+    /// Transformation of each variable on its own.
     ffn: FeedForward<B>,
 }
 
+/// Parameters of the [`TransformerBlock`].
 #[derive(Config, Debug)]
 pub(crate) struct TransformerBlockConfig {
     /// Size of the embedding of the assignments
@@ -445,6 +527,7 @@ pub(crate) struct TransformerBlockConfig {
     pub hidden_size: usize,
     /// Number of heads in the multi-head attention block
     pub num_heads: usize,
+    /// Size of the internal layer of the feed-forward block
     pub expand_size: usize,
     /// Dropout of the multi-head attention block during training
     #[config(default = 0.1)]
@@ -489,6 +572,9 @@ impl TransformerBlockConfig {
 }
 
 impl<B: Backend> TransformerBlock<B> {
+    /// x: (batch_size, number_vars, embedding_size)
+    /// attention_mask: (batch_size, number_vars, number_vars), true where attention is allowed.
+    /// returns: the same shape as `x`.
     pub(crate) fn forward(
         &self,
         x: Tensor<B, 3>,
@@ -503,6 +589,8 @@ impl<B: Backend> TransformerBlock<B> {
 
 // --- Consformer architecture, embedding the transformer blocks --- //
 
+/// The ConsFormer network: reads an assignment and returns, for every variable, one logit per value
+/// of the domain. See the [module documentation](self).
 #[derive(Module, Debug)]
 pub(crate) struct ConsFormer<B: Backend> {
     /// Learned embedding for the masked variables

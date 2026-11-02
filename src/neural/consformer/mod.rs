@@ -1,3 +1,32 @@
+//! ConsFormer is a neural-local search solver based on a transformed architecture, designed to
+//! solve constraint satisfaction problems \[1, 2\]. This module provides the neural architecture
+//! and its configuration in Burn.
+//!
+//! The configuration checks the hyper-parameters, builds the transformer blocks, the embeddings
+//! and the output layer, and, if positions are used, reads the position of each variable from
+//! the first problem. See [`architecture`] for what the network computes.
+//!
+//! # Design notes
+//!
+//! - **The problems are assumed to be homogeneous.** Each problem has the same number of variable,
+//!   the same domains, and the same positional encoding. The positional embedding is built from the
+//!   positions of the variables, so a network is tied to problems whose variables sit where those
+//!   of the problems it was built with did (see [`Batch::check_problems`]). The checkpoint stores
+//!   only the hyperparameters and the weights; the positions are read again from the problems
+//!   when it is loaded.
+//! - **Position of variable are stored wihtin the variable.** We set every position of the
+//!   variable at their creation using the public API. We do this to separate problem modelling and
+//!   solving/training. The training loop has knowledge of what problem is being solved, it receive
+//!   an arbitrary [`Problem`](crate::modelling::problem::Problem); hence, each problem needs to
+//!   store all information needed for the embedding computations.
+//!
+//! # References
+//!
+//! \[1\] "Self-Supervised Transformers as Iterative Solution Improvers for Constraint
+//! Satisfaction" Xu et al. - ICML 2025
+//! \[2\] "Large neighborhood search meets iterative neural constraint heuristics" - Xu et al.
+//! CPAIOR 2026
+
 pub(crate) mod architecture;
 pub(crate) mod dataset;
 
@@ -21,6 +50,8 @@ pub(crate) trait ConsFormerInputs<B: Backend>: Batch<B> {
     fn attention_masks(&self) -> Tensor<B, 3, Bool>;
 }
 
+/// Hyperparameters of [`ConsFormer`]. It builds the network with `NetworkConfig::init`, and is
+/// saved with the weights in a checkpoint.
 #[derive(Config, Debug)]
 pub(crate) struct ConsFormerConfig {
     /// Size of the domains of the variables. Currently assumed fixed for all variables.
@@ -42,6 +73,9 @@ pub(crate) struct ConsFormerConfig {
     /// Insert bias in feed-forward block
     #[config(default = true)]
     pub bias: bool,
+    /// Number of coordinates of the position of a variable (2 for the row and column of a Sudoku
+    /// cell). 0 gives the network no positional information. Otherwise every variable must have a
+    /// position with at least that many coordinates.
     pub positional_encoding_dimensions: usize,
     /// Fraction of free variables randomly marked eligible for update on
     /// each training step (see `ConsFormerBatcher::mask_fraction`).
@@ -56,6 +90,16 @@ pub(crate) struct ConsFormerConfig {
 impl<B: Backend> NetworkConfig<B> for ConsFormerConfig {
     type N = ConsFormer<B>;
 
+    /// Builds the network, with randomly initialised weights.
+    ///
+    /// # Panics
+    ///
+    /// - If `hidden_size` is not `embedding_size`: the blocks add their output to their input, so
+    ///   the two must match.
+    /// - If `problems` do not all have the same number of variables (see
+    ///   `Batch::check_problems`), when positions are used.
+    /// - If `positional_encoding_dimensions` is positive and a variable has no position, or fewer
+    ///   coordinates than that.
     fn init(&self, problems: &[Arc<Problem>], device: &B::Device) -> Self::N {
         // Note: in the ConsFormer architecture it is assumed that hidden_size == embedding_size.
         //       It is unclear to me that we need this and how it affects learning. Especially
