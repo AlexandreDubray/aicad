@@ -1,18 +1,23 @@
-"""Solving models.
+"""Local search.
 
-:func:`solve` takes a model, or a list of them, and a *method*: :class:`Compilation` compiles an
-MDD and reads a solution off it; the local searches destroy and repair an assignment repeatedly,
-guided by a trained network (:class:`NeuralPriorSearch`), by a network used as the prior of belief
-propagation on the MDDs (:class:`NeuralPriorBPSearch`) or by belief propagation alone
-(:class:`BeliefPropagationSearch`).
+:func:`local_search` takes a model, or a list of them, and a *search*: it starts from a random
+assignment and repeatedly destroys part of it and repairs it, until it satisfies the model or a
+limit is reached. Every search runs the same loop; they differ in how they repair. A
+:class:`BeliefPropagationSearch` repairs with belief propagation on the diagrams of the
+constraints; :class:`NeuralPriorSearch` starts from the predictions of a trained network, and
+:class:`NeuralPriorBPSearch` then refines them with belief propagation.
 
 >>> import pyaicad as ac
 >>> m = ac.Model()
 >>> x = m.int_vars(3, domain=range(3))
 >>> m.add(ac.all_different(x))
->>> result = ac.solve(m)
+>>> search = ac.BeliefPropagationSearch(destroy_fraction=0.5)
+>>> result = ac.local_search(m, search, ac.Limits(iterations=100), seed=0)
 >>> result.status, m.check(result.assignment)
 (<Status.FEASIBLE: 'feasible'>, True)
+
+A local search cannot prove that a model has no solution; for that, compile it
+(:class:`pyaicad.Compiler`).
 """
 
 from __future__ import annotations
@@ -20,22 +25,19 @@ from __future__ import annotations
 import enum
 import math
 import os
-import time
 from dataclasses import dataclass, replace
 from typing import Any, List, Optional, Sequence, Union, overload
 
 from . import _core
 from ._runtime import set_seed
 from .learning import Checkpoint
-from .mdd import compile as compile_mdd
 from .model import Model
 
 __all__ = [
-    "solve",
+    "local_search",
     "Limits",
     "Result",
     "Status",
-    "Compilation",
     "NeuralPriorSearch",
     "NeuralPriorBPSearch",
     "BeliefPropagationSearch",
@@ -43,11 +45,10 @@ __all__ = [
 
 
 class Status(str, enum.Enum):
-    """What a solve established."""
+    """What a search established."""
 
     FEASIBLE = "feasible"  #: a solution was found
-    INFEASIBLE = "infeasible"  #: the model was proved to have no solution
-    UNKNOWN = "unknown"  #: neither: the method stopped, or cannot decide
+    UNKNOWN = "unknown"  #: none was found before a limit; a local search never proves infeasibility
 
 
 @dataclass(frozen=True)
@@ -75,9 +76,9 @@ class Result:
     status: Status
     assignment: Optional[List[int]]  #: one value per variable; ``None`` unless FEASIBLE
     runtime: float  #: seconds, compilation included
-    compile_time: float  #: seconds spent compiling diagrams (0 when the method compiles none)
-    iterations: Optional[int]  #: iterations of the search, ``None`` for methods without any
-    method: str
+    compile_time: float  #: seconds spent compiling the diagrams the search uses
+    iterations: Optional[int]  #: iterations of the search
+    search: str  #: which search produced it: "neural-prior", "neural-prior-bp" or "bp"
 
     @property
     def found(self) -> bool:
@@ -85,66 +86,10 @@ class Result:
         return self.status is Status.FEASIBLE
 
 
-@dataclass(frozen=True)
-class Compilation:
-    """Solves by compiling an MDD and reading a solution off it.
-
-    Exact when ``width`` is ``None`` (see :func:`pyaicad.compile` about memory), relaxed otherwise;
-    a relaxed diagram can fail to give a solution, in which case the status is UNKNOWN.
-    It is complete: an exact diagram decides both feasible and infeasible, and a relaxed one can
-    still prove infeasibility.
-
-    Limits are not supported yet: a compilation runs to its end.
-    """
-
-    width: Optional[int] = None
-    order: Union[str, Sequence[int]] = "auto"
-    merge: str = "less_relaxed"
-
-    name = "compilation"
-
-    def _solve(self, models: List[Model], limits: Limits, seed: Optional[int]) -> List[Result]:
-        if limits.time is not None or limits.iterations is not None:
-            raise ValueError("Compilation does not support limits yet")
-        return [self._solve_one(m) for m in models]
-
-    def _solve_one(self, model: Model) -> Result:
-        start = time.perf_counter()
-        mdd = compile_mdd(model, width=self.width, order=self.order, merge=self.merge)
-        compile_time = time.perf_counter() - start
-        values = mdd.solution()
-        assignment = None if values is None else _assignment(model, mdd, values)
-        if mdd.is_unsat:
-            status = Status.INFEASIBLE
-        elif assignment is not None and model.check(assignment):
-            status = Status.FEASIBLE
-        else:
-            status, assignment = Status.UNKNOWN, None
-        runtime = time.perf_counter() - start
-        return Result(status, assignment, runtime, compile_time, None, self.name)
-
-
-def _assignment(model: Model, mdd: Any, values: List[int]) -> List[int]:
-    """The assignment of ``model`` that gives ``values`` to the variables of the scope of ``mdd``.
-
-    A variable in no constraint has no layer and can take any value: it takes the first of its
-    domain.
-    """
-    assignment = [model.domain(variable)[0] for variable in model.variables]
-    for variable, value in zip(mdd.scope, values):
-        assignment[variable.index] = value
-    return assignment
-
-
 _DESTROY = {
     "random": _core.PyDestroyKind.Random,
     "worst": _core.PyDestroyKind.Worst,
     "related": _core.PyDestroyKind.Related,
-}
-_STATUS = {
-    "Satisfiable": Status.FEASIBLE,
-    "Unsatisfiable": Status.INFEASIBLE,
-    "Unknown": Status.UNKNOWN,
 }
 
 
@@ -159,8 +104,8 @@ def _check_search(destroy: str, destroy_fraction: float, batch_size: Optional[in
 
 
 class _LocalSearch:
-    """What the local-search methods share: they repeatedly destroy part of the current
-    assignment and repair it, many problems of a :func:`solve` call running together as batches.
+    """What the searches share: they repeatedly destroy part of the current assignment and repair
+    it, many problems of a :func:`local_search` call running together as batches.
 
     A subclass is one search architecture, with the settings of that architecture and nothing
     else; it says which native search it is (``_search``) and whether it uses a network
@@ -197,12 +142,12 @@ class _LocalSearch:
         )
         return [
             Result(
-                status=_STATUS[str(s.status).rsplit(".", 1)[-1]],
+                status=Status.UNKNOWN if s.solution is None else Status.FEASIBLE,
                 assignment=None if s.solution is None else list(s.solution),
                 runtime=s.runtime,
                 compile_time=s.compilation_runtime,
                 iterations=s.iterations,
-                method=self.name,
+                search=self.name,
             )
             for s in solutions
         ]
@@ -344,14 +289,14 @@ class BeliefPropagationSearch(_LocalSearch):
         )
 
 
-Method = Union[Compilation, NeuralPriorSearch, NeuralPriorBPSearch, BeliefPropagationSearch]
-_METHODS = (Compilation, NeuralPriorSearch, NeuralPriorBPSearch, BeliefPropagationSearch)
+Search = Union[NeuralPriorSearch, NeuralPriorBPSearch, BeliefPropagationSearch]
+_SEARCHES = (NeuralPriorSearch, NeuralPriorBPSearch, BeliefPropagationSearch)
 
 
 @overload
-def solve(
+def local_search(
     problems: Model,
-    method: Optional[Method] = ...,
+    search: Search,
     limits: Optional[Limits] = ...,
     *,
     seed: Optional[int] = ...,
@@ -359,37 +304,39 @@ def solve(
 
 
 @overload
-def solve(
+def local_search(
     problems: Sequence[Model],
-    method: Optional[Method] = ...,
+    search: Search,
     limits: Optional[Limits] = ...,
     *,
     seed: Optional[int] = ...,
 ) -> List[Result]: ...
 
 
-def solve(
+def local_search(
     problems: Union[Model, Sequence[Model]],
-    method: Optional[Method] = None,
+    search: Search,
     limits: Optional[Limits] = None,
     *,
     seed: Optional[int] = None,
 ) -> Union[Result, List[Result]]:
-    """Solves a model, or a list of models, and returns a :class:`Result` for each.
+    """Runs a local search on a model, or on a list of models, and returns a :class:`Result` for
+    each.
 
     Args:
         problems: A model, giving one result, or a list of models, giving a list of results in the
             same order.
-        method: How to solve: :class:`Compilation` (the default, exact) or one of the local searches.
-        limits: When to stop, per problem. No limit by default.
+        search: How the search repairs: :class:`NeuralPriorSearch`, :class:`NeuralPriorBPSearch`
+            or :class:`BeliefPropagationSearch`, with their settings.
+        limits: When to stop, per problem. No limit by default: a search that finds no solution
+            then runs forever.
         seed: Makes the run reproducible: it seeds the search and every other source of randomness
             (as :func:`pyaicad.set_seed` does). Unset, the run follows the current state of those.
     """
-    method = Compilation() if method is None else method
-    if not isinstance(method, _METHODS):
+    if not isinstance(search, _SEARCHES):
         raise TypeError(
-            "method must be a Compilation, a NeuralPriorSearch, a NeuralPriorBPSearch or a "
-            f"BeliefPropagationSearch, got {method!r}"
+            "search must be a NeuralPriorSearch, a NeuralPriorBPSearch or a "
+            f"BeliefPropagationSearch, got {search!r}"
         )
     limits = Limits() if limits is None else limits
     single = isinstance(problems, Model)
@@ -403,5 +350,5 @@ def solve(
         # The destroy choices and the sampling follow `seed` directly; the network uses the
         # process-wide generators, which this seeds too.
         set_seed(seed)
-    results = method._solve(models, limits, seed)
+    results = search._solve(models, limits, seed)
     return results[0] if single else results

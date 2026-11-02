@@ -464,9 +464,21 @@ class Model:
         """Whether ``assignment`` (one value per variable) satisfies the model."""
         return self._native_problem().is_solution(self._assignment(assignment))
 
-    def satisfied_fraction(self, assignment: Sequence[int]) -> float:
-        """The fraction of the constraints that ``assignment`` satisfies."""
-        return self._native_problem().satisfied_fraction(self._assignment(assignment))
+    def is_constraint_satisfied(self, constraint: Constraint, assignment: Sequence[int]) -> bool:
+        """Whether ``assignment`` (one value per variable) satisfies one constraint of the model.
+
+        Iterate over :attr:`constraints` to find which ones an assignment violates.
+        """
+        values = self._assignment(assignment)
+        for position, c in enumerate(self._constraints):
+            if c is constraint:
+                break
+        else:
+            raise ModelError(f"{constraint!r} is not a constraint of this model")
+        if isinstance(c, _Equal):  # a restriction of the domain, not a native constraint
+            return values[c.x.index] == c.value
+        native_index = sum(not isinstance(k, _Equal) for k in self._constraints[:position])
+        return self._native_problem().is_constraint_satisfied(native_index, values)
 
     # --- copying and pickling --- #
 

@@ -9,7 +9,7 @@ recipe; the trained network is a :class:`Checkpoint` that the neural searches (:
 >>> from pyaicad import learning
 >>> data = learning.Dataset.split(problems, seed=0)                  # doctest: +SKIP
 >>> ckpt = learning.fit(data, "consformer-mdd", checkpoint_dir="ckpt", epochs=50)  # doctest: +SKIP
->>> results = ac.solve(data.test, ac.NeuralPriorBPSearch(ckpt))  # doctest: +SKIP
+>>> results = ac.local_search(data.test, ac.NeuralPriorBPSearch(ckpt))  # doctest: +SKIP
 """
 
 from __future__ import annotations
@@ -287,7 +287,7 @@ class Recipe:
     network: Network = field(default_factory=Network)
     training: Training = field(default_factory=Training)
     order: Union[str, Tuple[int, ...]] = "auto"  # how constraint MDDs are ordered ("mdd" loss)
-    merge: str = "less_relaxed"  # and merged ("mdd" loss); has no effect on an exact compile
+    merge: str = "state_similarity"  # and merged ("mdd" loss); has no effect on an exact compile
 
     def __post_init__(self) -> None:
         if self.loss not in ("classical", "mdd"):

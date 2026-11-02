@@ -58,15 +58,19 @@ def test_add_accepts_constraints_and_iterables():
     assert m.domain(x[3]) == (2,)
 
 
-def test_check_and_satisfied_fraction():
+def test_check_and_constraint_satisfaction():
     m = ac.Model()
     x = m.int_vars(3, domain=range(3))
     m.add(ac.all_different(x[:2]), ac.not_equal(x[1], x[2]))
     assert m.check([0, 1, 2])
     assert not m.check([0, 1, 1])
     assert not m.check([0, 1, 7])  # outside the domain
-    assert m.satisfied_fraction([0, 1, 1]) == 0.5
-    assert m.satisfied_fraction([0, 1, 2]) == 1.0
+    first, second = m.constraints
+    assert [m.is_constraint_satisfied(c, [0, 1, 1]) for c in m.constraints] == [True, False]
+    assert m.is_constraint_satisfied(first, [0, 0, 2]) is False
+    assert m.is_constraint_satisfied(second, [0, 0, 2]) is True
+    with pytest.raises(ModelError):
+        m.is_constraint_satisfied(ac.not_equal(x[0], x[1]), [0, 1, 2])
     with pytest.raises(ModelError):
         m.check([0, 1])
 
@@ -106,3 +110,11 @@ def test_equal_does_not_change_other_models_domains():
     x = m.int_var(range(3))
     m.add(ac.equal(x, 2))
     assert m.check([2]) and not m.check([1])
+
+
+def test_constraint_satisfaction_with_equal_constraints():
+    m = ac.Model()
+    x = m.int_vars(3, domain=range(3))
+    m.add(ac.equal(x[0], 1), ac.all_different(x), ac.not_equal(x[1], x[2]))
+    assert [m.is_constraint_satisfied(c, [1, 0, 0]) for c in m.constraints] == [True, False, False]
+    assert [m.is_constraint_satisfied(c, [0, 1, 2]) for c in m.constraints] == [False, True, True]

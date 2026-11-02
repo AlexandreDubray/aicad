@@ -88,7 +88,7 @@ MODELS = [
 @pytest.mark.parametrize("build", MODELS)
 def test_exact_count_matches_enumeration(build):
     m = build()
-    mdd = ac.compile(m)
+    mdd = ac.Compiler(m).compile()
     expected = solutions(m)
     assert mdd.count() == len(expected)
     sol = mdd.solution()
@@ -105,14 +105,14 @@ def test_regular_count_matches_enumeration():
     m.add(ac.regular(x, [[0, 1], [0, None]], 0, [0, 1]))
     expected = solutions(m, regular_symbols=[0, 1])
     assert len(expected) == 21
-    assert ac.compile(m).count() == 21
+    assert ac.Compiler(m).compile().count() == 21
 
 
 @pytest.mark.parametrize("build", MODELS)
 def test_relaxed_diagram_is_a_superset(build):
     m = build()
-    exact = ac.compile(m).count()
-    relaxed = ac.compile(m, width=2)
+    exact = ac.Compiler(m).compile().count()
+    relaxed = ac.Compiler(m).compile(width=2)
     assert relaxed.count() >= exact
     assert max(relaxed.widths) <= 2
     assert relaxed.width == 2
@@ -122,7 +122,7 @@ def test_unsat():
     m = ac.Model()
     x = m.int_vars(3, domain=range(2))
     m.add(ac.all_different(x))
-    mdd = ac.compile(m)
+    mdd = ac.Compiler(m).compile()
     assert mdd.is_unsat
     assert mdd.count() == 0
     assert mdd.solution() is None
@@ -131,7 +131,7 @@ def test_unsat():
 
 def test_structure_is_consistent_with_count():
     m = latin_3x3()
-    mdd = ac.compile(m)
+    mdd = ac.Compiler(m).compile()
     widths = mdd.widths
     assert len(widths) == mdd.num_layers and widths[0] == 1 and widths[-1] == 1
     assert mdd.count() == 12
@@ -142,31 +142,31 @@ def test_subset_of_constraints_and_custom_order():
     m = ac.Model()
     x = m.int_vars(4, domain=range(2))
     m.add(ac.not_equal(x[0], x[1]), ac.not_equal(x[2], x[3]))
-    first_only = ac.compile(m, constraints=[0])
+    first_only = ac.Compiler(m, constraints=[0]).compile()
     assert first_only.num_layers == 3  # two variables and the sink
     assert first_only.count() == 2
-    ordered = ac.compile(m, order=[x[3], x[2], x[1], x[0]])
+    ordered = ac.Compiler(m, order=[x[3], x[2], x[1], x[0]]).compile()
     assert ordered.count() == 4
 
 
 def test_compile_argument_errors():
     m = all_different_4()
     with pytest.raises(ValueError):
-        ac.compile(m, width=0)
+        ac.Compiler(m).compile(width=0)
     with pytest.raises(ValueError):
-        ac.compile(m, merge="nope")
+        ac.Compiler(m, merge="nope")
     with pytest.raises(ValueError):
-        ac.compile(m, order="nope")
+        ac.Compiler(m, order="nope")
     with pytest.raises(ac.ModelError):
-        ac.compile(m, constraints=[3])
+        ac.Compiler(m, constraints=[3])
     with pytest.raises(ac.ModelError):
-        ac.compile(m, order=[0, 0, 1, 2])
+        ac.Compiler(m, order=[0, 0, 1, 2])
 
 
 @pytest.mark.parametrize("merge", ["less_relaxed", "most_likely", "state_similarity"])
 def test_merge_heuristics_run(merge):
     m = latin_3x3()
-    assert ac.compile(m, width=2, merge=merge).count() >= 12
+    assert ac.Compiler(m, merge=merge).compile(width=2).count() >= 12
 
 
 def two_of_four_constrained():
@@ -178,20 +178,65 @@ def two_of_four_constrained():
 
 def test_a_diagram_of_some_variables_gives_values_for_its_scope():
     m, x = two_of_four_constrained()
-    mdd = ac.compile(m)
+    mdd = ac.Compiler(m).compile()
     assert mdd.scope == [x[1], x[3]]
     assert mdd.count() == 6
     for values in [mdd.solution()] + mdd.sample(10):
-        assert len(values) == 2 and values[0] != values[1]
+        # One value per variable of the model; the two outside every constraint take the first
+        # value of their domain.
+        assert len(values) == 4 and values[1] != values[3]
+        assert m.check(values)
 
 
 def test_a_diagram_of_the_whole_model_has_every_variable_in_its_scope():
     m = all_different_4()
-    assert ac.compile(m).scope == m.variables
+    assert ac.Compiler(m).compile().scope == m.variables
 
 
-def test_solving_gives_a_value_to_variables_outside_every_constraint():
-    m, _ = two_of_four_constrained()
-    r = ac.solve(m, ac.Compilation())
-    assert r.found and len(r.assignment) == 4
-    assert m.check(r.assignment)
+def test_a_relaxed_diagram_may_find_no_solution_without_being_unsatisfiable():
+    m = ac.Model()
+    grid = m.int_vars((4, 4), domain=range(4))
+    m.add(ac.all_different(row) for row in grid)
+    m.add(ac.all_different([grid[i][j] for i in range(4)]) for j in range(4))
+    mdd = ac.Compiler(m).compile(width=2)
+    assert not mdd.is_unsat
+    found = mdd.solution()
+    assert found is None or m.check(found)
+    assert m.check(ac.Compiler(m).compile().solution())
+
+
+def test_refine_tightens_a_relaxed_diagram_step_by_step_to_the_exact_one():
+    model = ac.Model()
+    grid = model.int_vars((4, 4), domain=range(4))
+    model.add(ac.all_different(row) for row in grid)
+    model.add(ac.all_different([grid[i][j] for i in range(4)]) for j in range(4))
+    exact = ac.Compiler(model).compile().count()
+    mdd = ac.Compiler(model).compile(width=2)
+    counts = [mdd.count()]
+    for width in (4, 8, 32, None):
+        mdd.refine(width)
+        assert mdd.width == width
+        counts.append(mdd.count())
+    assert counts == sorted(counts, reverse=True)
+    assert counts[-1] == exact == 576
+
+
+def test_refine_refuses_a_width_below_one():
+    model = ac.Model()
+    model.add(ac.all_different(model.int_vars(2, domain=range(2))))
+    with pytest.raises(ValueError, match="at least 1"):
+        ac.Compiler(model).compile().refine(0)
+
+
+def test_a_compiler_hands_out_independent_diagrams_of_the_model_it_was_made_for():
+    model = ac.Model()
+    x = model.int_vars(3, domain=range(3))
+    model.add(ac.all_different(x))
+    compiler = ac.Compiler(model)
+    exact, relaxed = compiler.compile(), compiler.compile(width=1)
+    relaxed.refine()
+    assert exact.count() == relaxed.count() == 6
+    # Later changes to the model do not reach the compiler.
+    model.add(ac.equal(x[0], 0))
+    assert compiler.compile().count() == 6 and compiler.model.num_constraints == 1
+    assert ac.Compiler(model).compile().count() == 2

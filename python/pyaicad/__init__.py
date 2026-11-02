@@ -1,13 +1,16 @@
-"""pyaicad: MDD compilation for constraint satisfaction and optimisation problems.
+"""pyaicad: MDD compilation and local search for constraint satisfaction problems.
 
 The three things you do with it:
 
 * **Model** a problem: :class:`Model`, with the constraints :func:`all_different`,
   :func:`not_equal`, :func:`equal`, :func:`among`, :func:`at_least`, :func:`sum_equals`,
   :func:`gcc` and :func:`regular`.
-* **Compile** it into a decision diagram, :func:`compile`, and query the :class:`MDD`.
-* **Solve** it, :func:`solve`, by :class:`Compilation` or by local search: :class:`NeuralPriorSearch`,
-  :class:`NeuralPriorBPSearch` or :class:`BeliefPropagationSearch`.
+* **Compile** it into a decision diagram: a :class:`Compiler` made for the model and its
+  heuristics hands out an :class:`MDD`, as exact or as relaxed as you ask, to count, sample and
+  refine.
+* **Search** for solutions with :func:`local_search`, repairing with a trained network
+  (:class:`NeuralPriorSearch`, :class:`NeuralPriorBPSearch`) or with belief propagation alone
+  (:class:`BeliefPropagationSearch`).
 
 Networks for the neural searches are trained with :mod:`pyaicad.learning`.
 
@@ -15,14 +18,14 @@ Networks for the neural searches are trained with :mod:`pyaicad.learning`.
 >>> m = ac.Model()
 >>> x = m.int_vars(3, domain=range(3))
 >>> m.add(ac.all_different(x))
->>> ac.compile(m).count()
+>>> ac.Compiler(m).compile().count()
 6
 """
 
 from . import learning
 from ._runtime import get_num_threads, set_log_level, set_num_threads, set_seed
 from .errors import AicadError, CheckpointError, ModelError
-from .mdd import MDD, compile
+from .mdd import MDD, Compiler
 from .model import (
     Constraint,
     Model,
@@ -36,15 +39,14 @@ from .model import (
     regular,
     sum_equals,
 )
-from .solve import (
+from .search import (
     BeliefPropagationSearch,
-    Compilation,
+    Limits,
     NeuralPriorBPSearch,
     NeuralPriorSearch,
-    Limits,
     Result,
     Status,
-    solve,
+    local_search,
 )
 
 __version__ = "0.0.1"
@@ -63,11 +65,10 @@ __all__ = [
     "gcc",
     "regular",
     # compiling
-    "compile",
+    "Compiler",
     "MDD",
-    # solving
-    "solve",
-    "Compilation",
+    # searching
+    "local_search",
     "NeuralPriorSearch",
     "NeuralPriorBPSearch",
     "BeliefPropagationSearch",

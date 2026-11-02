@@ -51,6 +51,6 @@ def test_it_can_be_changed_between_uses(restore_threads):
     x = m.int_vars(4, domain=range(4))
     m.add(ac.all_different(x))
     ac.set_num_threads(1)
-    assert ac.compile(m).count() == 24
+    assert ac.Compiler(m).compile().count() == 24
     ac.set_num_threads(2)
-    assert ac.compile(m).count() == 24
+    assert ac.Compiler(m).compile().count() == 24

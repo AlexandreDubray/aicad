@@ -4,7 +4,7 @@
 >>> m = ac.Model()
 >>> x = m.int_vars(3, domain=range(3))
 >>> m.add(ac.all_different(x))
->>> mdd = ac.compile(m)
+>>> mdd = ac.Compiler(m).compile()
 >>> mdd.count()
 6
 """
@@ -18,7 +18,7 @@ from . import _core
 from .errors import ModelError
 from .model import Model, Var
 
-__all__ = ["compile", "MDD"]
+__all__ = ["Compiler", "MDD"]
 
 _USIZE_MAX = 2**64 - 1
 
@@ -49,52 +49,83 @@ def _ordering(order: Union[str, Sequence[Union[Var, int]]], model: Model) -> Any
     return _core.PyOrderingHeuristic.Custom(indices)
 
 
-def compile(
-    model: Model,
-    *,
-    width: Optional[int] = None,
-    constraints: Optional[Sequence[int]] = None,
-    order: Union[str, Sequence[Union[Var, int]]] = "auto",
-    merge: str = "less_relaxed",
-) -> "MDD":
-    """Compiles ``model`` into an MDD.
+class Compiler:
+    """Compiles a model into decision diagrams.
 
-    Without ``width`` the diagram is exact: its paths are exactly the solutions of the model.
-    **An exact diagram can grow without bound and fill the memory**, so give a ``width`` for
-    models whose size you do not know.
+    The compiler is made for a model and the heuristics that drive the compilation; it then hands
+    out diagrams, as exact or as relaxed as asked: :meth:`compile`. It works on the model as it is
+    when the compiler is created. Each diagram is independent of the others and can be refined
+    further (:meth:`MDD.refine`).
 
-    With ``width``, the diagram is relaxed: no layer has more than ``width`` nodes, and every
-    solution of the model is still a path, but some paths are not solutions.
+    >>> import pyaicad as ac
+    >>> m = ac.Model()
+    >>> x = m.int_vars(3, domain=range(3))
+    >>> m.add(ac.all_different(x))
+    >>> mdd = ac.Compiler(m).compile()
+    >>> mdd.count()
+    6
 
     Args:
         model: The model to compile.
-        width: The maximum number of nodes per layer. ``None`` compiles an exact diagram.
-        constraints: Compile only these constraints, given as positions in ``model.constraints``.
-            By default all of them. Only the variables in their scope get a layer.
         order: ``"auto"`` to let the compiler choose the order of the layers, or a sequence
             listing the variables from the first layer to the last.
-        merge: How the nodes of a layer that is too wide are merged: ``"less_relaxed"``,
-            ``"most_likely"`` or ``"state_similarity"``. Only used with ``width``.
+        merge: How the nodes of a layer that is too wide are merged: ``"state_similarity"``
+            (the default), ``"less_relaxed"`` or ``"most_likely"``. Only used by relaxed diagrams.
+        constraints: Compile only these constraints, given as positions in ``model.constraints``.
+            By default all of them. Only the variables in their scope get a layer.
     """
-    if width is not None:
-        width = operator.index(width)
-        if width < 1:
-            raise ValueError(f"width must be at least 1, got {width}")
-    if constraints is not None:
-        constraints = [operator.index(c) for c in constraints]
-        if any(not 0 <= c < model.num_constraints for c in constraints):
-            raise ModelError("constraints must be positions in model.constraints")
-    native = _core.Compiler(model._native_problem()).compile(
-        constraints=constraints,
-        max_width=_USIZE_MAX if width is None else width,
-        pyordering=_ordering(order, model),
-        pymerge=_merge_heuristic(merge),
-    )
-    return MDD(model, native, width)
+
+    def __init__(
+        self,
+        model: Model,
+        *,
+        order: Union[str, Sequence[Union[Var, int]]] = "auto",
+        merge: str = "state_similarity",
+        constraints: Optional[Sequence[int]] = None,
+    ) -> None:
+        if constraints is not None:
+            constraints = [operator.index(c) for c in constraints]
+            if any(not 0 <= c < model.num_constraints for c in constraints):
+                raise ModelError("constraints must be positions in model.constraints")
+        self._model = model.copy()
+        self._ordering = _ordering(order, model)
+        self._merge = _merge_heuristic(merge)
+        self._constraints = constraints
+        self._native = _core.Compiler(model._native_problem())
+
+    @property
+    def model(self) -> Model:
+        """The model this compiler was made for, as it was then."""
+        return self._model
+
+    def compile(self, width: Optional[int] = None) -> "MDD":
+        """A new diagram of the model.
+
+        Without ``width`` the diagram is exact: its paths are exactly the solutions of the model.
+        **An exact diagram can grow without bound and fill the memory**, so give a ``width`` for
+        models whose size you do not know.
+
+        With ``width``, the diagram is relaxed: no layer has more than ``width`` nodes, and every
+        solution of the model is still a path, but some paths are not solutions.
+        """
+        if width is not None:
+            width = operator.index(width)
+            if width < 1:
+                raise ValueError(f"width must be at least 1, got {width}")
+        native = self._native.compile(
+            constraints=self._constraints,
+            max_width=_USIZE_MAX if width is None else width,
+            pyordering=self._ordering,
+            pymerge=self._merge,
+        )
+        return MDD(self._model, native, width)
+
+    def __repr__(self) -> str:
+        return f"Compiler({self._model!r})"
 
 
 class MDD:
-    """A compiled diagram. Returned by :func:`compile`.
+    """A compiled diagram. Returned by :meth:`Compiler.compile`.
 
     Each layer branches on one variable; a path from the root to the sink assigns every variable
     in the diagram. In an exact diagram the paths are the solutions, in a relaxed one they are a
@@ -121,6 +152,20 @@ class MDD:
         """Whether the model is proved to have no solution. A relaxed diagram can prove it too."""
         return bool(self._native.is_unsat())
 
+    def refine(self, width: Optional[int] = None) -> None:
+        """Tightens the diagram in place, up to ``width`` nodes per layer (``None``: exact).
+
+        A diagram compiled with a small width can be refined step by step, each step keeping the
+        solutions and removing paths that are not. Refining to a width below the current one
+        merges nodes again, giving a looser diagram.
+        """
+        if width is not None:
+            width = operator.index(width)
+            if width < 1:
+                raise ValueError(f"width must be at least 1, got {width}")
+        self._native.refine(_USIZE_MAX if width is None else width)
+        self._width = width
+
     def count(self) -> int:
         """The number of paths. For an exact diagram, the number of solutions of the model.
 
@@ -133,33 +178,42 @@ class MDD:
         """The variables the diagram branches on, in the order they were declared.
 
         All the variables of the model unless some are in no compiled constraint: they have no
-        layer. :meth:`solution` and :meth:`sample` give one value for each of these variables, in
-        this order.
+        layer, and :meth:`solution` and :meth:`sample` give them the first value of their domain.
         """
         variables = self._model.variables
         return [variables[index] for index in self._native.scope()]
 
     def solution(self) -> Optional[List[int]]:
-        """A path of the diagram as values for the variables of :attr:`scope`, or ``None`` if
-        there is none.
+        """A solution read off the diagram, as one value per variable of the model, or ``None``.
 
-        When the diagram covers the whole model this is an assignment of the model. It is a
-        solution if the diagram is exact. If it is relaxed, check it with :meth:`Model.check`.
+        The solution is a path of exact nodes, so it satisfies the compiled constraints. An
+        exact diagram has one whenever the model is satisfiable. A relaxed diagram may hold
+        solutions that this does not find: ``None`` proves nothing unless :attr:`is_unsat`.
         """
-        if self.is_unsat:
-            return None
-        found = self._native.get_solution(False)
-        return None if found is None else list(found[0])
+        found = None if self.is_unsat else self._native.get_solution(False)
+        return None if found is None else self._assignment(found)
 
     def sample(self, n: int = 1) -> List[List[int]]:
-        """``n`` paths drawn at random, as values for the variables of :attr:`scope`.
+        """``n`` paths drawn at random, as one value per variable of the model.
 
-        Call :func:`pyaicad.set_seed` first to make them reproducible. Empty if the model is
+        In an exact diagram every solution is equally likely to be drawn. A path of a relaxed
+        diagram is not necessarily a solution: check it with :meth:`Model.check`. Call
+        :func:`pyaicad.set_seed` first to make them reproducible. Empty if the model is
         unsatisfiable.
         """
         if self.is_unsat:
             return []
-        return [list(self._native.get_solution(True)[0]) for _ in range(operator.index(n))]
+        return [
+            self._assignment(self._native.get_solution(True)) for _ in range(operator.index(n))
+        ]
+
+    def _assignment(self, found: Any) -> List[int]:
+        """The assignment of the model for a path given as ``(values, variable indices)``."""
+        values, indices = found
+        assignment = [self._model.domain(v)[0] for v in self._model.variables]
+        for index, value in zip(indices, values):
+            assignment[index] = value
+        return assignment
 
     @property
     def widths(self) -> List[int]:
