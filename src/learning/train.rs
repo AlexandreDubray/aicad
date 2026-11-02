@@ -1,6 +1,6 @@
 use burn::config::Config;
-use burn::data::dataloader::batcher::Batcher;
 use burn::data::dataloader::DataLoaderBuilder;
+use burn::data::dataloader::batcher::Batcher;
 use burn::data::dataset::Dataset;
 use burn::module::{AutodiffModule, Module};
 use burn::optim::GradientsParams;
@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::learning::Loss;
 use crate::learning::monitoring::SatisfactionReport;
 use crate::learning::optimiser::OptimiserConfig;
-use crate::learning::Loss;
 use crate::modelling::Problem;
 use crate::neural::{Batch, Network, NetworkConfig};
 

@@ -151,11 +151,7 @@ use crate::modelling::ValueIndex;
 const LOG_ZERO: f64 = -745.0;
 
 fn safe_ln(p: f64) -> f64 {
-    if p > 0.0 {
-        p.ln()
-    } else {
-        LOG_ZERO
-    }
+    if p > 0.0 { p.ln() } else { LOG_ZERO }
 }
 
 /// Normalises a categorical probability distribution if at least one element has non-zero weight,
@@ -397,10 +393,10 @@ pub(crate) fn belief_propagation(
 mod tests {
     use super::*;
     use crate::constraints::{all_different, gcc, not_equals, sum};
+    use crate::mdd::Compiler;
     use crate::mdd::heuristics::{
         CompilationHeuristic, MergeHeuristic, OrderingHeuristic, SelectHeuristic,
     };
-    use crate::mdd::Compiler;
     use crate::modelling::{ConstraintIndex, Problem};
     use rand::rngs::StdRng;
     use rand::{RngExt, SeedableRng};

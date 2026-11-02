@@ -253,8 +253,8 @@ mod tests {
 
     #[test]
     fn a_draw_with_a_given_generator_follows_its_seed() {
-        use rand::rngs::StdRng;
         use rand::SeedableRng;
+        use rand::rngs::StdRng;
         let weights = [0.2, 0.3, 0.5];
         let draw = |seed| {
             let mut rng = StdRng::seed_from_u64(seed);
