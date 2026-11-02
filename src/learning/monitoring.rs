@@ -52,26 +52,28 @@ impl ConstraintStats {
     }
 }
 
+/// How well assignments satisfy the constraints of their problems, per constraint type. It starts
+/// empty and is filled with [`update`](Self::update), once per batch.
+#[derive(Default)]
 pub(crate) struct SatisfactionReport {
+    /// Statistics of the satisfaction rate of each constraint type.
     by_constraint: HashMap<&'static str, ConstraintStats>,
 }
 
 impl SatisfactionReport {
-    /// Builds a report for `assignments`, one per problem of `problems`, in the same order. Each
+    /// Adds `assignments`, one per problem of `problems` and in the same order, to the report. Each
     /// assignment holds one value per variable of its problem; assignments need not have the same
     /// length.
     ///
     /// # Panics
     ///
     /// If there are not as many assignments as problems.
-    pub(crate) fn build(problems: &[Arc<Problem>], assignments: &[Vec<isize>]) -> Self {
+    pub(crate) fn update(&mut self, problems: &[Arc<Problem>], assignments: &[Vec<isize>]) {
         assert_eq!(
             problems.len(),
             assignments.len(),
             "a report needs one assignment per problem"
         );
-
-        let mut by_constraint: HashMap<&'static str, ConstraintStats> = HashMap::new();
 
         for (problem, sample_assignment) in problems.iter().zip(assignments) {
             // First tally (satisfied, total) per constraint type, within
@@ -94,28 +96,13 @@ impl SatisfactionReport {
                     continue;
                 }
                 let rate = satisfied as f64 / total as f64;
-                let entry = by_constraint.entry(name).or_default();
+                let entry = self.by_constraint.entry(name).or_default();
                 entry.count += 1;
                 entry.sum_rate += rate;
                 entry.sum_rate_sq += rate * rate;
                 entry.min = entry.min.min(rate);
                 entry.max = entry.max.max(rate);
             }
-        }
-
-        SatisfactionReport { by_constraint }
-    }
-
-    /// Merges another report into this one, e.g. across multiple batches in
-    /// an epoch.
-    pub(crate) fn merge(&mut self, other: SatisfactionReport) {
-        for (name, stats) in other.by_constraint {
-            let entry = self.by_constraint.entry(name).or_default();
-            entry.count += stats.count;
-            entry.sum_rate += stats.sum_rate;
-            entry.sum_rate_sq += stats.sum_rate_sq;
-            entry.min = entry.min.min(stats.min);
-            entry.max = entry.max.max(stats.max);
         }
     }
 
@@ -174,7 +161,8 @@ mod tests {
     fn problems_of_different_sizes_are_scored_each_on_its_own_assignment() {
         let problems = vec![chain(2), chain(4)];
         // The first satisfies its constraint, the second violates two of its three.
-        let report = SatisfactionReport::build(&problems, &[vec![0, 1], vec![0, 0, 0, 1]]);
+        let mut report = SatisfactionReport::default();
+        report.update(&problems, &[vec![0, 1], vec![0, 0, 0, 1]]);
         let stats = &report.by_constraint["Not Equals"];
         assert_eq!(stats.count, 2);
         assert!((stats.max() - 1.0).abs() < 1e-12);
@@ -182,8 +170,18 @@ mod tests {
     }
 
     #[test]
+    fn updates_accumulate() {
+        let mut report = SatisfactionReport::default();
+        report.update(&[chain(2)], &[vec![0, 1]]);
+        report.update(&[chain(2)], &[vec![0, 0]]);
+        let stats = &report.by_constraint["Not Equals"];
+        assert_eq!(stats.count, 2);
+        assert!((stats.mean() - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
     #[should_panic(expected = "one assignment per problem")]
     fn every_problem_needs_an_assignment() {
-        SatisfactionReport::build(&[chain(2)], &[]);
+        SatisfactionReport::default().update(&[chain(2)], &[]);
     }
 }

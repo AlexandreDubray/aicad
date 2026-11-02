@@ -1,20 +1,20 @@
 use burn::config::Config;
-use burn::data::dataloader::DataLoaderBuilder;
 use burn::data::dataloader::batcher::Batcher;
+use burn::data::dataloader::DataLoaderBuilder;
 use burn::data::dataset::Dataset;
 use burn::module::{AutodiffModule, Module};
 use burn::optim::GradientsParams;
 use burn::prelude::ElementConversion;
 use burn::record::CompactRecorder;
-use burn::tensor::backend::{AutodiffBackend, Backend};
+use burn::tensor::backend::AutodiffBackend;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::learning::Loss;
 use crate::learning::monitoring::SatisfactionReport;
 use crate::learning::optimiser::OptimiserConfig;
+use crate::learning::Loss;
 use crate::modelling::Problem;
 use crate::neural::{Batch, Network, NetworkConfig};
 
@@ -55,20 +55,19 @@ pub(crate) struct TrainingConfig {
 /// sample type (S), the training batch type (TBatch), the Batcher (Ba), the loss function (L),
 /// the validation sample type (SValid) and the validation batch type (VBatch). This is designed
 /// so each neural network can be learned with this method against several different training
-/// recipes sharing the same architecture -- e.g. the classical per-constraint-penalty ConsFormer
-/// loss and the MDD-WMC ConsFormer loss both drive the same `ConsFormer` network, just by
-/// instantiating this function with a different `(S, TBatch, L, SValid, VBatch)` tuple.
+/// recipes sharing the same architecture. For example, the classical per-constraint-penalty
+/// ConsFormer loss and the MDD-WMC ConsFormer loss both drive the same `ConsFormer` network
+/// just by instantiating this function with a different `(S, TBatch, L, SValid, VBatch)` tuple)
 ///
 /// network_config: Neural network configuration (type and hyper-parameters)
 /// train_dataset: training dataset, used for gradient updates
-/// valid_dataset: held-out dataset, used only for model selection -- built on `B::InnerBackend`
-///                since evaluating it never needs autodiff bookkeeping
+/// valid_dataset: held-out dataset, used only for model selection (built on `B::InnerBackend`
+///                since evaluating it never needs autodiff bookkeeping)
 /// batcher: shared by both dataloaders; needs to implement `Batcher` for both `B` and
 ///          `B::InnerBackend`, which is automatic for any batcher generic over `Backend`
-/// loss_fn: The loss function; it is first prepared with `problems` (see `Loss::prepare`)
+/// loss_fn: The loss function
 /// training: Configuration of the training loop
-/// device: Device to launch the training on (cpu or gpu) -- also valid as `B::InnerBackend`'s
-///         device, since `Autodiff<X>::Device == X::Device`
+/// device: Device to launch the training on (cpu or gpu)
 ///
 /// Returns the best model found, the one with the lowest validation loss, which is also saved in
 /// `out_dir/weights`. When no validation check ran (for instance `num_epochs` is smaller than
@@ -110,11 +109,13 @@ where
             training.num_epochs, training.validation_interval, training.num_epochs
         );
     }
-    // Let the loss prepare whatever it needs about the problems (e.g. compile their MDDs)
+    // Let the loss prepare whatever it needs about the problems (e.g. compile their MDDs).
     <L as Loss<B, TBatch>>::prepare(&mut loss_fn, problems);
 
-    // Initialise the network architecture with the given parameters
+    // Initialise the network architecture with the given parameters.
     let mut network = network_config.init(problems, device);
+    // If some initial weights are given as parameters, we load them. This allows restarting the
+    // learning from a previous checkpoint (e.g., for adaptative learning, fine-tuning, etc.)
     if let Some(checkpoint) = &training.initial_weights {
         network = network
             .load_file(checkpoint.join("weights"), &CompactRecorder::new(), device)
@@ -137,6 +138,7 @@ where
         .batch_size(training.batch_size)
         .build(valid_dataset);
 
+    // Initialise the optimiser.
     let mut optim = training.optimiser.init::<B, NC::N>();
 
     let mut best_score = f64::INFINITY;
@@ -144,36 +146,29 @@ where
     let mut best_saved = false;
     let mut stagnant_checks = 0usize;
 
+    // Actual training loop over the number of epochs
     for epoch in 0..training.num_epochs {
         let mut epoch_loss_sum = 0.0;
         let mut epoch_batches = 0usize;
-        let mut epoch_report: Option<SatisfactionReport> = None;
-        let epoch_start = Instant::now();
-
+        // Some logging for learning monitoring. Doesn't imply that a "better" satisfiaction report
+        // means better learning, it's just an heuristical way of checking how learning behaves.
+        let mut epoch_report = SatisfactionReport::default();
         // Some runtime statistics for logging. The statistics are over the batches; it is the sum
         // of each batch runtime, so it can be used as a comparison if the batch sizes are equal.
         // Total time passed in forward pass of the neural network.
+        let epoch_start = Instant::now();
+
         let mut t_forward = 0.0f64;
         let mut t_loss = 0.0f64;
         let mut t_backward = 0.0f64;
 
-        let mut train_iter = train_dataloader.iter();
-        loop {
-            let next = train_iter.next();
-            let Some(batch) = next else { break };
-
+        for batch in train_dataloader.iter() {
             let t = Instant::now();
             let logits = network.forward(&batch);
             B::sync(device).ok();
             t_forward += t.elapsed().as_secs_f64();
 
-            let batch_report =
-                SatisfactionReport::build(batch.problems(), &batch.decode(logits.clone()));
-            match &mut epoch_report {
-                Some(report) => report.merge(batch_report),
-                None => epoch_report = Some(batch_report),
-            }
-            B::sync(device).ok();
+            epoch_report.update(batch.problems(), &batch.decode(logits.clone()));
 
             let t = Instant::now();
             let loss = loss_fn.loss(logits.clone(), &batch);
@@ -230,9 +225,7 @@ where
             epoch_rt_s = epoch_start.elapsed().as_secs_f64(),
             epoch_loss = epoch_loss,
         );
-        if let Some(report) = epoch_report {
-            report.print(40);
-        }
+        epoch_report.print(40);
 
         if (epoch + 1) % training.validation_interval == 0 {
             // Pass the network in validation mode
@@ -240,17 +233,10 @@ where
             let mut valid_loss_sum = 0.0f64;
             let mut valid_batches = 0usize;
 
-            let mut valid_iter = valid_dataloader.iter();
-            loop {
-                let next = valid_iter.next();
-                let Some(batch) = next else { break };
-
+            for batch in valid_dataloader.iter() {
                 let logits = valid_network.forward(&batch);
-                B::InnerBackend::sync(device).ok();
-
                 let loss = loss_fn.loss(logits, &batch);
                 valid_loss_sum += loss.into_scalar().elem::<f32>() as f64;
-                B::InnerBackend::sync(device).ok();
                 valid_batches += 1;
             }
 

@@ -13,8 +13,8 @@ pub(crate) mod train;
 
 use std::sync::Arc;
 
-use burn::tensor::Tensor;
 use burn::tensor::backend::Backend;
+use burn::tensor::Tensor;
 
 use crate::modelling::Problem;
 use crate::neural::Batch;
