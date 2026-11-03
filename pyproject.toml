@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "pyaicad"
-version = "0.0.1"
+version = "1.0.0-rc.1"
 description = "MDD compilation for constraint satisfaction and search strategies built on it"
 requires-python = ">=3.8"
 dependencies = []

@@ -1,7 +1,17 @@
 [package]
 name = "aicad"
-version = "0.1.0"
+version = "1.0.0-rc.1"
 edition = "2024"
+rust-version = "1.95"
+description = "A library to solve Constraint satisfaction problems with Multi-valued decision diagrams and, optionnaly, neural networks"
+license = "MIT"
+repository = "https://github.com/AlexandreDubray/aicad"
+documentation = "https://docs.rs/aicad"
+homepage = "https://alexandredubray.github.io/aicad/"
+readme = "README.md"
+keywords = ["constraint programming", "multi-valued decision diagrams", "constraints", "neural-networks"]
+categories = ["algorithms", "science", "mathematics"]
+exclude = [".github/", ".githooks/", "docs/", "scripts/", "python/", "pyproject.toml", "CONTRIBUTING.md"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
