@@ -19,24 +19,24 @@ x = model.int_vars((4, 4), domain=range(4))              # a 4 x 4 grid of varia
 model.add(ac.all_different(row) for row in x)             # latin square: rows ...
 model.add(ac.all_different(col) for col in zip(*x))       # ... and columns
 
-mdd = ac.compile(model)                                   # exact diagram; compile(model, width=8) relaxes
+mdd = ac.Compiler(model).compile()                        # exact diagram; compile(width=8) relaxes
 mdd.count()                                               # 576
-ac.solve(model).assignment                                # solve by compilation (the default)
+mdd.solution()                                            # one latin square
 ```
 
 - **Model**: `Model`, `all_different`, `not_equal`, `equal`, `among`, `at_least`, `sum_equals`,
   `gcc`, `regular`.
-- **Compile**: `compile(model, width=None)` returns an `MDD` that can be counted, sampled and
-  inspected. This function is useful to integrate MDD-based reasoning inside other project.
-- **Solve**: `solve(model_or_models, method, limits)` with `Compilation(...)` or a local search, `NeuralPriorSearch(...)`, `NeuralPriorBPSearch(...)` or
-  `BeliefPropagationSearch(...)` (the last needs no network), giving
-  a `Result` (status, assignment, runtimes). Status is `FEASIBLE` or `INFEASIBLE` if the search find
-  a solution or proves the problem has no solution. In case of timeout, status is `UNKNOWN`.
+- **Compile**: `Compiler(model, order=..., merge=...)` hands out `MDD`s, exact or relaxed, that can be
+  counted, sampled, refined, frozen and drawn. This is useful to integrate MDD-based reasoning
+  inside other projects.
+- **Search**: `local_search(problems, search, limits)` with `BeliefPropagationSearch(...)`, or with
+  `NeuralPriorSearch(...)` / `NeuralPriorBPSearch(...)` (full build), gives a `Result` (status,
+  assignment, iterations, runtime). A local search finds solutions; it cannot prove that there are none.
 - **Learn**: `pyaicad.learning` trains the networks used by the neural searches: `Dataset`, `fit` with a named
   recipe (`"consformer"`, `"consformer-mdd"`), `load`.
 
-`examples/` has a quick start and a complete train-then-solve script. The models and experiments of
-the papers are scripts in the same style.
+The user guide (`docs/`) goes through all of this with small examples that are run when it is built:
+`pip install -e ".[docs]"` then `sphinx-build docs docs/_build`.
 
 Build the extension with `maturin develop` and run the tests with `pytest`. That is the slim build: the
 compiler, sampling and the belief-propagation search. Training and the neural searches need the `learning`

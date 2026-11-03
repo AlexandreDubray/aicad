@@ -73,6 +73,41 @@ jobs:
       - run: cargo doc --no-deps
       - run: cargo doc --no-deps --features learning --document-private-items
 
+  # The Python package in both builds: the slim wheel (no burn) must work and refuse learning
+  # clearly, the full wheel runs everything. The user guide executes its examples, so building
+  # it with -W is also the test that the guide matches the library.
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: slim
+            features: python
+          - name: full
+            features: python,learning
+    name: python (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+      - run: python -m venv .venv && .venv/bin/pip install maturin pytest
+      - run: .venv/bin/maturin develop --release --features ${{ matrix.features }}
+        env:
+          VIRTUAL_ENV: ${{ github.workspace }}/.venv
+      - run: .venv/bin/python -m pytest -q -rs
+      - name: Build the user guide
+        if: matrix.name == 'full'
+        run: |
+          .venv/bin/pip install sphinx furo "myst-nb>=1" sphinx-copybutton
+          .venv/bin/python -m sphinx -b html -W --keep-going docs docs/_build
+
   coverage:
     runs-on: ubuntu-latest
     steps:
