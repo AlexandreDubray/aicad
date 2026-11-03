@@ -42,15 +42,21 @@ def coloring(rng, nodes, colours, degree):
 
 ## Data
 
-`Dataset.split` divides a list of problems into training, validation and test sets. The validation
-problems pick the best network during training; the test ones are not seen before the end.
+`Dataset.split` divides the problems you train on into a training and a validation set. The
+validation problems pick the best network during training. (`fit` also takes a plain list and splits
+it 80/20 itself.)
+
+There is no test set in a `Dataset` on purpose. The problems you evaluate on are yours to keep
+apart: generate them separately and never pass them to `fit`, so that the network has certainly not
+seen them.
 
 ```{code-cell} python
 rng = random.Random(0)
-problems = [coloring(rng, nodes=20, colours=3, degree=3.5) for _ in range(120)]
+training_problems = [coloring(rng, nodes=20, colours=3, degree=3.5) for _ in range(108)]
+test_problems = [coloring(rng, nodes=20, colours=3, degree=3.5) for _ in range(12)]
 
-data = learning.Dataset.split(problems, (0.8, 0.1, 0.1), seed=0)
-print(len(data.train), "training,", len(data.validation), "validation,", len(data.test), "test")
+data = learning.Dataset.split(training_problems, 0.1, seed=0)
+print(len(data.train), "training,", len(data.validation), "validation,", len(test_problems), "test")
 ```
 
 ## Recipes
@@ -101,7 +107,7 @@ searches = {
     "neural prior + BP": ac.NeuralPriorBPSearch(checkpoint, destroy="worst", destroy_fraction=0.2),
 }
 for name, search in searches.items():
-    results = ac.local_search(data.test, search, limits, seed=0)
+    results = ac.local_search(test_problems, search, limits, seed=0)
     print(f"{name:>20}: solved {sum(r.found for r in results)} of {len(results)} test problems")
 ```
 

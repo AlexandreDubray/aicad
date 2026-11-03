@@ -23,10 +23,27 @@ def test_split_is_reproducible_and_complete():
     ps = problems(10)
     a, b = Dataset.split(ps, seed=3), Dataset.split(ps, seed=3)
     assert [id(m) for m in a.train] == [id(m) for m in b.train]
-    assert (len(a.train), len(a.validation), len(a.test)) == (8, 1, 1)
+    assert (len(a.train), len(a.validation)) == (8, 2)
     assert {id(m) for m in a} == {id(m) for m in ps}
-    two = Dataset.split(ps, (0.7, 0.3), seed=0)
-    assert (len(two.train), len(two.validation), len(two.test)) == (7, 3, 0)
+    assert not {id(m) for m in a.train} & {id(m) for m in a.validation}
+    more = Dataset.split(ps, 0.3, seed=0)
+    assert (len(more.train), len(more.validation)) == (7, 3)
+
+
+def test_split_keeps_both_sets_non_empty_and_refuses_nonsense():
+    two = Dataset.split(problems(2), 0.01)
+    assert (len(two.train), len(two.validation)) == (1, 1)
+    nearly_all = Dataset.split(problems(5), 0.99)
+    assert (len(nearly_all.train), len(nearly_all.validation)) == (1, 4)
+    for bad in (0.0, 1.0, -0.1, 1.5):
+        with pytest.raises(ValueError, match="strictly between"):
+            Dataset.split(problems(4), bad)
+    with pytest.raises(ValueError, match="at least two"):
+        Dataset.split(problems(1))
+
+
+def test_a_dataset_has_no_test_set():
+    assert not hasattr(Dataset.split(problems(4)), "test")
 
 
 def test_dataset_needs_training_and_validation_problems():
@@ -126,7 +143,7 @@ def test_load_checks_the_checkpoint(tmp_path):
 @needs_learning
 @pytest.mark.parametrize("recipe", ["consformer", "consformer-mdd"])
 def test_fit_then_solve_with_the_checkpoint(tmp_path, recipe):
-    data = Dataset.split(problems(8), (0.75, 0.25), seed=0)
+    data = Dataset.split(problems(8), 0.25, seed=0)
     ckpt = learning.fit(
         data,
         recipe,

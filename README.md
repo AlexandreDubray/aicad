@@ -32,7 +32,7 @@ mdd.solution()                                            # one latin square
 - **Search**: `local_search(problems, search, limits)` with `BeliefPropagationSearch(...)`, or with
   `NeuralPriorSearch(...)` / `NeuralPriorBPSearch(...)` (full build), gives a `Result` (status,
   assignment, iterations, runtime). A local search finds solutions; it cannot prove that there are none.
-- **Learn**: `pyaicad.learning` trains the networks used by the neural searches: `Dataset`, `fit` with a named
+- **Learn**: `pyaicad.learning` trains the networks used by the neural searches: `Dataset` (a train/validation split), `fit` with a named
   recipe (`"consformer"`, `"consformer-mdd"`), `load`.
 
 The user guide (`docs/`) goes through all of this with small examples that are run when it is built:

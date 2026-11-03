@@ -1,15 +1,14 @@
 """Training the networks that guide the search.
 
 A training set is a list of problems: one problem per training example. :class:`Dataset` splits a
-list into training, validation and test sets; :func:`fit` trains a network on it with a named
-recipe; the trained network is a :class:`Checkpoint` that the neural searches (:class:`pyaicad.NeuralPriorSearch`,
+list into training and validation sets; :func:`fit` trains a network on it with a named
+recipe. The problems you evaluate on are kept apart by you and never given to :func:`fit`; the trained network is a :class:`Checkpoint` that the neural searches (:class:`pyaicad.NeuralPriorSearch`,
 :class:`pyaicad.NeuralPriorBPSearch`) solve with.
 
 >>> import pyaicad as ac
 >>> from pyaicad import learning
->>> data = learning.Dataset.split(problems, seed=0)                  # doctest: +SKIP
->>> ckpt = learning.fit(data, "consformer-mdd", checkpoint_dir="ckpt", epochs=50)  # doctest: +SKIP
->>> results = ac.local_search(data.test, ac.NeuralPriorBPSearch(ckpt))  # doctest: +SKIP
+>>> ckpt = learning.fit(train_problems, "consformer-mdd", checkpoint_dir="ckpt", epochs=50)  # doctest: +SKIP
+>>> results = ac.local_search(test_problems, ac.NeuralPriorBPSearch(ckpt))  # doctest: +SKIP
 """
 
 from __future__ import annotations
@@ -53,18 +52,18 @@ PathLike = Union[str, "os.PathLike[str]"]
 
 @dataclass(frozen=True)
 class Dataset:
-    """Training, validation and (optionally) test problems.
+    """The problems a network is trained on: training and validation problems.
 
-    The validation set is used during training to keep the best network; the test set is never
-    seen by training and is there for you to evaluate on.
+    The validation set is used during training to keep the best network. There is no test set on
+    purpose: evaluating on problems that training could have seen proves nothing, so the problems
+    you evaluate on are yours to keep apart and never pass to :func:`fit`.
     """
 
     train: Tuple[Model, ...]
     validation: Tuple[Model, ...]
-    test: Tuple[Model, ...] = ()
 
     def __post_init__(self) -> None:
-        for name in ("train", "validation", "test"):
+        for name in ("train", "validation"):
             object.__setattr__(self, name, tuple(getattr(self, name)))
         if not self.train:
             raise ValueError("a dataset needs at least one training problem")
@@ -75,35 +74,29 @@ class Dataset:
     def split(
         cls,
         problems: Iterable[Model],
-        fractions: Tuple[float, ...] = (0.8, 0.1, 0.1),
+        validation_fraction: float = 0.2,
         *,
         seed: Optional[int] = None,
     ) -> "Dataset":
-        """Splits ``problems`` at random into training, validation and test sets.
+        """Splits ``problems`` at random into training and validation sets.
 
-        ``fractions`` gives the share of each set (they are normalised to sum to one); with two
-        numbers there is no test set. The same ``seed`` gives the same split.
+        ``validation_fraction`` is the share of the problems kept for validation, strictly between
+        0 and 1; both sets get at least one problem. The same ``seed`` gives the same split.
         """
         items = list(problems)
-        if len(fractions) not in (2, 3) or any(f < 0 for f in fractions) or sum(fractions) <= 0:
-            raise ValueError("fractions must be two or three non-negative numbers")
+        if not 0.0 < validation_fraction < 1.0:
+            raise ValueError(f"validation_fraction must be strictly between 0 and 1, got {validation_fraction}")
+        if len(items) < 2:
+            raise ValueError("splitting needs at least two problems, one to train on and one to validate on")
         random.Random(seed).shuffle(items)
-        total = float(sum(fractions))
-        n_train = round(len(items) * fractions[0] / total)
-        n_val = round(len(items) * fractions[1] / total)
-        if len(fractions) == 2:
-            n_val = len(items) - n_train
-        return cls(
-            train=tuple(items[:n_train]),
-            validation=tuple(items[n_train : n_train + n_val]),
-            test=tuple(items[n_train + n_val :]),
-        )
+        n_val = min(len(items) - 1, max(1, round(len(items) * validation_fraction)))
+        return cls(train=tuple(items[n_val:]), validation=tuple(items[:n_val]))
 
     def __iter__(self):  # pragma: no cover - convenience
-        yield from (*self.train, *self.validation, *self.test)
+        yield from (*self.train, *self.validation)
 
     def __len__(self) -> int:
-        return len(self.train) + len(self.validation) + len(self.test)
+        return len(self.train) + len(self.validation)
 
 
 # --------------------------------------------------------------------------------------------
@@ -496,7 +489,8 @@ def fit(
 
     Args:
         data: A :class:`Dataset`, or a list of problems, which is split 80/20 into training and
-            validation sets (use :meth:`Dataset.split` for control over the split).
+            validation sets (use :meth:`Dataset.split` for another share). Never include the
+            problems you evaluate on.
         recipe: The name of a recipe in :data:`RECIPES`, or a :class:`Recipe`.
         checkpoint_dir: Where the network is written. Created if missing.
         seed: Seeds the library's randomness (see :func:`pyaicad.set_seed`) before training, and
@@ -512,7 +506,7 @@ def fit(
     if settings:
         recipe = recipe.replace(**settings)
     if not isinstance(data, Dataset):
-        data = Dataset.split(data, (0.8, 0.2), seed=seed)
+        data = Dataset.split(data, seed=seed)
 
     t = recipe.training
     if t.validation_interval < 1 or t.epochs < 1:

@@ -31,10 +31,6 @@ nb_execution_raise_on_error = True
 nb_execution_timeout = 300
 nb_merge_streams = True
 
-if not pyaicad.HAS_LEARNING:
-    nb_execution_excludepatterns = ["guide/learning.md"]
-    exclude_patterns = ["guide/learning.md"]
-
 autodoc_member_order = "bysource"
 autodoc_typehints = "description"
 napoleon_google_docstring = True
