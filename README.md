@@ -38,7 +38,11 @@ ac.solve(model).assignment                                # solve by compilation
 `examples/` has a quick start and a complete train-then-solve script. The models and experiments of
 the papers are scripts in the same style.
 
-Build the extension with `maturin develop` and run the tests with `pytest`.
+Build the extension with `maturin develop` and run the tests with `pytest`. That is the slim build: the
+compiler, sampling and the belief-propagation search. Training and the neural searches need the `learning`
+feature (it pulls in burn, which is slow to build): `maturin develop --features python,learning`.
+`pyaicad.HAS_LEARNING` tells which one is installed, and the learning calls raise `FeatureUnavailableError`
+on the slim build.
 
 ## Rust
 

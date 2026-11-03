@@ -2,6 +2,11 @@
 
 from typing import Any, List, Optional, Tuple
 
+# Whether the build includes training and the neural searches (the `learning` feature). When it
+# does not, `PyConsFormerConfig`, `PyOptimiser`, `PyTrainingConfig`, `train_consformer` and
+# `train_consformer_mdd` do not exist.
+HAS_LEARNING: bool
+
 def set_seed(seed: int) -> None: ...
 def set_num_threads(n: int) -> None: ...
 def get_num_threads() -> int: ...

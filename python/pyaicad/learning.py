@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from . import _core
-from ._runtime import set_seed
+from ._runtime import require_learning, set_seed
 from .errors import CheckpointError
 from .mdd import _merge_heuristic, _ordering
 from .model import Model
@@ -507,6 +507,7 @@ def fit(
     Returns:
         The :class:`Checkpoint` holding the best network.
     """
+    require_learning("training a network")
     recipe = Recipe.named(recipe) if isinstance(recipe, str) else recipe
     if settings:
         recipe = recipe.replace(**settings)

@@ -14,3 +14,10 @@ pub(crate) fn set_num_threads(n: usize) {
 pub(crate) fn get_num_threads() -> usize {
     crate::utils::num_threads()
 }
+
+/// Seeds every source of randomness of the crate, so that a later run reproduces itself given the
+/// same seed. See [`crate::set_seed`].
+#[pyfunction]
+pub(crate) fn set_seed(seed: u64) {
+    crate::set_seed(seed);
+}

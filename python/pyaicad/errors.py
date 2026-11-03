@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__all__ = ["AicadError", "ModelError", "CheckpointError"]
+__all__ = ["AicadError", "ModelError", "CheckpointError", "FeatureUnavailableError"]
 
 
 class AicadError(Exception):
@@ -15,3 +15,10 @@ class ModelError(AicadError, ValueError):
 
 class CheckpointError(AicadError):
     """A checkpoint is missing, incomplete, or cannot be used for the requested problems."""
+
+
+class FeatureUnavailableError(AicadError):
+    """The feature needs a part of pyaicad that this build does not include.
+
+    Training and the neural searches come with the ``learning`` feature of the native library.
+    """

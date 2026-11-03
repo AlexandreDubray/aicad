@@ -18,7 +18,11 @@ test = ["pytest>=7"]
 [tool.maturin]
 python-source = "python"
 module-name = "pyaicad._core"
-features = ["python", "learning"]
+# The compiler, sampling and the belief-propagation search. Training and the neural searches are
+# the `learning` feature, which pulls in burn and is heavy to build: add it with
+# `maturin develop --features python,learning` (or `maturin build --release --features python,learning`).
+# A `--features` on the command line replaces this list rather than extending it, so keep `python`.
+features = ["python"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "python/pyaicad"]

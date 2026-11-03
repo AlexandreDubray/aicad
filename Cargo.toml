@@ -27,9 +27,10 @@ default = []
 # Training and the neural searches: pulls in burn, which is heavy to build. The MDD compiler,
 # sampling, belief propagation and the belief-propagation local search do not need it.
 learning = ["dep:burn"]
-# The Python bindings (the `pyaicad` package), which ship training and so need `learning`. Built
-# by maturin, never needed from Rust.
-python = ["learning", "dep:pyo3", "dep:pyo3-log", "pyo3/extension-module"]
+# The Python bindings (the `pyaicad` package). Built by maturin, never needed from Rust. Combine
+# with `learning` for the training and the neural searches; without it the bindings stop at the
+# compiler, sampling and belief propagation.
+python = ["dep:pyo3", "dep:pyo3-log", "pyo3/extension-module"]
 
 [package.metadata.docs.rs]
 # The learning modules are documented too, although docs.rs has no GPU: it only builds the docs.

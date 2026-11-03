@@ -29,7 +29,7 @@ from dataclasses import dataclass, replace
 from typing import Any, List, Optional, Sequence, Union, overload
 
 from . import _core
-from ._runtime import set_seed
+from ._runtime import require_learning, set_seed
 from .learning import Checkpoint
 from .model import Model
 
@@ -191,6 +191,7 @@ class NeuralPriorSearch(_LocalSearch):
     name = "neural-prior"
 
     def __post_init__(self) -> None:
+        require_learning("NeuralPriorSearch")
         _check_search(self.destroy, self.destroy_fraction, self.batch_size)
 
     def _checkpoint(self) -> Optional[Checkpoint]:
@@ -236,6 +237,7 @@ class NeuralPriorBPSearch(_LocalSearch):
     name = "neural-prior-bp"
 
     def __post_init__(self) -> None:
+        require_learning("NeuralPriorBPSearch")
         _check_search(self.destroy, self.destroy_fraction, self.batch_size)
         if self.bp_iterations < 1:
             raise ValueError("bp_iterations must be at least 1")

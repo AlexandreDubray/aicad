@@ -170,13 +170,6 @@ impl From<&PyTrainingConfig> for TrainingConfig {
     }
 }
 
-/// Seeds every source of randomness of the crate, so that a later training or search run
-/// reproduces itself given the same seed. See [`crate::set_seed`].
-#[pyfunction]
-pub(crate) fn set_seed(seed: u64) {
-    crate::set_seed(seed);
-}
-
 /// Trains consformer on a set of problems.
 ///
 /// Releases the GIL for the whole training run (`py.detach`): everything this needs --

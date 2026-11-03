@@ -5,11 +5,12 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 
-use crate::destroy::{DestroyKind, DestroyOperator};
-use crate::local_search::{
-    BeliefPropagationSearchConfig, NeuralPriorBpSearchConfig, NeuralPriorSearchConfig,
-    SearchConfig, SolveConfig, solve,
-};
+use crate::destroy::DestroyKind;
+#[cfg(feature = "learning")]
+use crate::destroy::DestroyOperator;
+use crate::local_search::{BeliefPropagationSearchConfig, SearchConfig, SolveConfig, solve};
+#[cfg(feature = "learning")]
+use crate::local_search::{NeuralPriorBpSearchConfig, NeuralPriorSearchConfig};
 use crate::modelling::{Problem, Solution, Status};
 
 use super::problem::PyProblem;
@@ -84,6 +85,7 @@ impl From<&PyDestroyKind> for DestroyKind {
     }
 }
 
+#[cfg(feature = "learning")]
 impl PyDestroyKind {
     /// The operator to train with, `None` for `Random`, which is the training default.
     pub(super) fn training_operator(&self, fraction: f64) -> Option<Arc<dyn DestroyOperator>> {
@@ -111,6 +113,7 @@ pub(crate) enum PyProblemsArg<'py> {
 #[derive(Clone)]
 pub enum PySearch {
     /// A trained network, decoding its logits. `temperature` only matters when `stochastic`.
+    /// Needs the `learning` feature to run.
     NeuralPrior {
         destroy_kind: PyDestroyKind,
         destroy_fraction: f64,
@@ -118,7 +121,7 @@ pub enum PySearch {
         temperature: f64,
     },
     /// A trained network whose probabilities are the prior of belief propagation over the MDDs of
-    /// the constraints.
+    /// the constraints. Needs the `learning` feature to run.
     NeuralPriorBp {
         destroy_kind: PyDestroyKind,
         destroy_fraction: f64,
@@ -135,9 +138,13 @@ pub enum PySearch {
     },
 }
 
-impl From<&PySearch> for SearchConfig {
-    fn from(search: &PySearch) -> Self {
-        match search {
+impl TryFrom<&PySearch> for SearchConfig {
+    type Error = String;
+
+    /// Fails for a neural search in a build without the `learning` feature.
+    fn try_from(search: &PySearch) -> Result<Self, String> {
+        Ok(match search {
+            #[cfg(feature = "learning")]
             PySearch::NeuralPrior {
                 destroy_kind,
                 destroy_fraction,
@@ -149,6 +156,7 @@ impl From<&PySearch> for SearchConfig {
                 stochastic: *stochastic,
                 temperature: *temperature,
             }),
+            #[cfg(feature = "learning")]
             PySearch::NeuralPriorBp {
                 destroy_kind,
                 destroy_fraction,
@@ -171,7 +179,15 @@ impl From<&PySearch> for SearchConfig {
                 stochastic: *stochastic,
                 bp_iterations: *bp_iterations,
             }),
-        }
+            #[cfg(not(feature = "learning"))]
+            PySearch::NeuralPrior { .. } | PySearch::NeuralPriorBp { .. } => {
+                return Err(
+                    "the neural searches need a build of pyaicad with the `learning` \
+                     feature"
+                        .to_string(),
+                );
+            }
+        })
     }
 }
 
@@ -212,9 +228,11 @@ impl PySolveConfig {
     }
 }
 
-impl From<&PySolveConfig> for SolveConfig {
-    fn from(c: &PySolveConfig) -> Self {
-        let mut config = SolveConfig::default().with_search((&c.search).into());
+impl TryFrom<&PySolveConfig> for SolveConfig {
+    type Error = String;
+
+    fn try_from(c: &PySolveConfig) -> Result<Self, String> {
+        let mut config = SolveConfig::default().with_search((&c.search).try_into()?);
         if let Some(seconds) = c.time_limit {
             config = config.with_runtime_limit(seconds);
         }
@@ -227,7 +245,7 @@ impl From<&PySolveConfig> for SolveConfig {
         if let Some(seed) = c.seed {
             config = config.with_seed(seed);
         }
-        config
+        Ok(config)
     }
 }
 
@@ -268,7 +286,7 @@ pub(crate) fn run_local_search(
         ));
     }
     let checkpoint_dir = checkpoint_dir.map(PathBuf::from);
-    let config = SolveConfig::from(&config);
+    let config = SolveConfig::try_from(&config).map_err(PyValueError::new_err)?;
 
     let solutions = py
         .detach(move || solve(&problems, &config, checkpoint_dir.as_deref()))

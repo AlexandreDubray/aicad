@@ -7,8 +7,31 @@ import operator
 from typing import Dict
 
 from . import _core
+from .errors import FeatureUnavailableError
 
-__all__ = ["set_seed", "set_num_threads", "get_num_threads", "set_log_level"]
+__all__ = [
+    "HAS_LEARNING",
+    "set_seed",
+    "set_num_threads",
+    "get_num_threads",
+    "set_log_level",
+    "require_learning",
+]
+
+#: Whether this build of pyaicad includes training and the neural searches (the ``learning``
+#: feature of the native library, which is heavy to build). Compilation, sampling and the
+#: belief-propagation search are always there.
+HAS_LEARNING: bool = bool(getattr(_core, "HAS_LEARNING", False))
+
+
+def require_learning(what: str) -> None:
+    """Raises :class:`FeatureUnavailableError` naming ``what`` if the build has no ``learning``."""
+    if not HAS_LEARNING:
+        raise FeatureUnavailableError(
+            f"{what} needs the learning part of pyaicad, which this build does not include. "
+            "Install the full build, or build from source with `maturin develop --features learning`."
+        )
+
 
 _LEVELS: Dict[str, str] = {
     "off": "set_verbosity_off",

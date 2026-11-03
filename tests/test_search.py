@@ -1,4 +1,5 @@
 import pytest
+from conftest import needs_learning
 
 import pyaicad as ac
 from pyaicad import CheckpointError, Limits, Status
@@ -32,6 +33,7 @@ def test_argument_types():
         ac.local_search([latin(), 3], ac.BeliefPropagationSearch())
 
 
+@needs_learning
 def test_search_option_validation(tmp_path):
     with pytest.raises(ValueError):
         ac.BeliefPropagationSearch(destroy="nope")
@@ -56,6 +58,7 @@ def test_search_option_validation(tmp_path):
     assert ac.BeliefPropagationSearch().with_(bp_iterations=3).bp_iterations == 3
 
 
+@needs_learning
 def test_a_consformer_search_needs_a_checkpoint(tmp_path):
     with pytest.raises(TypeError):
         ac.NeuralPriorSearch()

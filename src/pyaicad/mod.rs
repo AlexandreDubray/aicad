@@ -2,17 +2,20 @@ use pyo3::prelude::*;
 
 mod compiler;
 mod heuristics;
+#[cfg(feature = "learning")]
 mod learn;
 mod local_search;
 mod logging;
+#[cfg(feature = "learning")]
 mod optimiser;
 mod problem;
 mod threads;
 
 pub(crate) use compiler::{PyCompiler, PyMdd};
 pub(crate) use heuristics::{PyMergeHeuristic, PyOrderingHeuristic, PySelectHeuristic};
+#[cfg(feature = "learning")]
 pub(crate) use learn::{
-    PyConsFormerConfig, PyTrainingConfig, set_seed, train_consformer, train_consformer_mdd,
+    PyConsFormerConfig, PyTrainingConfig, train_consformer, train_consformer_mdd,
 };
 pub(crate) use local_search::{
     PyDestroyKind, PySearch, PySolution, PySolveConfig, PyStatus, run_local_search,
@@ -21,9 +24,10 @@ pub(crate) use logging::{
     disable_data_log, enable_data_log, set_verbosity_debug, set_verbosity_error,
     set_verbosity_info, set_verbosity_off, set_verbosity_trace, set_verbosity_warning,
 };
+#[cfg(feature = "learning")]
 pub(crate) use optimiser::PyOptimiser;
 pub(crate) use problem::PyProblem;
-pub(crate) use threads::{get_num_threads, set_num_threads};
+pub(crate) use threads::{get_num_threads, set_num_threads, set_seed};
 
 #[pymodule]
 fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -54,9 +58,6 @@ fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyOrderingHeuristic>()?;
     m.add_class::<PyMergeHeuristic>()?;
     m.add_class::<PySelectHeuristic>()?;
-    m.add_class::<PyConsFormerConfig>()?;
-    m.add_class::<PyOptimiser>()?;
-    m.add_class::<PyTrainingConfig>()?;
     m.add_class::<PyDestroyKind>()?;
     m.add_class::<PySearch>()?;
     m.add_class::<PySolveConfig>()?;
@@ -65,8 +66,6 @@ fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_seed, m)?)?;
     m.add_function(wrap_pyfunction!(set_num_threads, m)?)?;
     m.add_function(wrap_pyfunction!(get_num_threads, m)?)?;
-    m.add_function(wrap_pyfunction!(train_consformer, m)?)?;
-    m.add_function(wrap_pyfunction!(train_consformer_mdd, m)?)?;
     m.add_function(wrap_pyfunction!(run_local_search, m)?)?;
     m.add_function(wrap_pyfunction!(set_verbosity_off, m)?)?;
     m.add_function(wrap_pyfunction!(set_verbosity_error, m)?)?;
@@ -76,5 +75,18 @@ fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_verbosity_trace, m)?)?;
     m.add_function(wrap_pyfunction!(enable_data_log, m)?)?;
     m.add_function(wrap_pyfunction!(disable_data_log, m)?)?;
+
+    // Whether this build ships the training and the neural searches (the `learning` feature); the
+    // Python package reads it to refuse them with a clear message instead of failing on a missing
+    // attribute.
+    m.add("HAS_LEARNING", cfg!(feature = "learning"))?;
+    #[cfg(feature = "learning")]
+    {
+        m.add_class::<PyConsFormerConfig>()?;
+        m.add_class::<PyOptimiser>()?;
+        m.add_class::<PyTrainingConfig>()?;
+        m.add_function(wrap_pyfunction!(train_consformer, m)?)?;
+        m.add_function(wrap_pyfunction!(train_consformer_mdd, m)?)?;
+    }
     Ok(())
 }

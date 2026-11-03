@@ -1,4 +1,5 @@
 import pytest
+from conftest import needs_learning
 
 import pyaicad as ac
 from pyaicad import CheckpointError, learning
@@ -87,6 +88,7 @@ def test_optimiser_settings_are_checked():
         SGD(lr=1e-2, momentum=0.9, nesterov=True, grad_clip_norm=5.0),
     ],
 )
+@needs_learning
 def test_every_optimiser_trains(tmp_path, optimiser):
     ckpt = learning.fit(
         problems(6),
@@ -121,6 +123,7 @@ def test_load_checks_the_checkpoint(tmp_path):
         learning.load(tmp_path)  # no domain_size
 
 
+@needs_learning
 @pytest.mark.parametrize("recipe", ["consformer", "consformer-mdd"])
 def test_fit_then_solve_with_the_checkpoint(tmp_path, recipe):
     data = Dataset.split(problems(8), (0.75, 0.25), seed=0)
@@ -147,6 +150,7 @@ def test_fit_then_solve_with_the_checkpoint(tmp_path, recipe):
                 assert m.check(r.assignment)
 
 
+@needs_learning
 def test_fit_takes_a_plain_list_and_a_domain_size(tmp_path):
     ckpt = learning.fit(
         problems(6),
@@ -164,16 +168,19 @@ def test_fit_takes_a_plain_list_and_a_domain_size(tmp_path):
     assert ckpt.domain_size == 5
 
 
+@needs_learning
 def test_fit_rejects_unknown_settings(tmp_path):
     with pytest.raises(TypeError):
         learning.fit(problems(4), checkpoint_dir=tmp_path, epoch=1)
 
 
+@needs_learning
 def test_fit_refuses_a_run_that_would_never_validate(tmp_path):
     with pytest.raises(ValueError, match="never be validated"):
         learning.fit(problems(4), checkpoint_dir=tmp_path, epochs=2, validation_interval=10)
 
 
+@needs_learning
 def test_training_can_start_from_the_weights_of_an_earlier_checkpoint(tmp_path):
     settings = dict(
         epochs=1,
@@ -196,6 +203,7 @@ def test_training_can_start_from_the_weights_of_an_earlier_checkpoint(tmp_path):
     assert (resumed.path / "weights.mpk").is_file()
 
 
+@needs_learning
 def test_missing_initial_weights_are_an_error(tmp_path):
     with pytest.raises(ValueError, match="nowhere"):
         learning.fit(
@@ -209,3 +217,13 @@ def test_missing_initial_weights_are_an_error(tmp_path):
             hidden_size=8,
             expand_size=8,
         )
+
+
+@pytest.mark.skipif(ac.HAS_LEARNING, reason="checks the build without the learning feature")
+def test_a_build_without_learning_refuses_training_and_neural_searches_clearly(tmp_path):
+    with pytest.raises(ac.FeatureUnavailableError, match="learning"):
+        learning.fit(problems(4), checkpoint_dir=tmp_path, epochs=1, validation_interval=1)
+    with pytest.raises(ac.FeatureUnavailableError, match="NeuralPriorSearch"):
+        ac.NeuralPriorSearch(tmp_path)
+    with pytest.raises(ac.FeatureUnavailableError, match="NeuralPriorBPSearch"):
+        ac.NeuralPriorBPSearch(tmp_path)
