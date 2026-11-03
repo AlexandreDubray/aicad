@@ -26,7 +26,7 @@ use super::{SearchArchitecture, SearchState, destroy_rows, row_seeds};
 
 /// The settings of the belief-propagation local search.
 #[derive(Debug, Clone)]
-pub(crate) struct BeliefPropagationSearchConfig {
+pub struct BeliefPropagationSearchConfig {
     /// Destroy operator choosing the variables to free at each iteration.
     pub destroy_kind: DestroyKind,
     /// Fraction of the variables the destroy operator frees at each iteration, in `[0, 1]`.
@@ -42,14 +42,16 @@ impl Default for BeliefPropagationSearchConfig {
         Self {
             destroy_kind: DestroyKind::default(),
             destroy_fraction: 1.0,
-            stochastic: false,
+            // From uniform priors a greedy decoding takes the same value everywhere and never
+            // leaves it, so the default samples.
+            stochastic: true,
             bp_iterations: 1,
         }
     }
 }
 
 /// The belief-propagation local search.
-pub(crate) struct BeliefPropagationSearch {
+pub struct BeliefPropagationSearch {
     /// Heuristic choosing the variables to free.
     destroy_op: Box<dyn DestroyOperator>,
     /// How a value is taken from a marginal.
@@ -60,7 +62,7 @@ pub(crate) struct BeliefPropagationSearch {
 
 impl BeliefPropagationSearch {
     /// Builds the search from its settings.
-    pub(crate) fn new(config: &BeliefPropagationSearchConfig) -> Self {
+    pub fn new(config: &BeliefPropagationSearchConfig) -> Self {
         Self {
             destroy_op: config.destroy_kind.build(config.destroy_fraction),
             mode: if config.stochastic {

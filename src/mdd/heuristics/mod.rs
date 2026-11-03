@@ -67,3 +67,15 @@ pub struct CompilationHeuristic {
     /// Which node is split next, during `Compiler::refine`.
     pub selection: SelectHeuristic,
 }
+
+impl Default for CompilationHeuristic {
+    /// [`OrderingHeuristic::MinDomMaxLinked`], [`MergeHeuristic::default`] and
+    /// [`SelectHeuristic::Greedy`].
+    fn default() -> Self {
+        Self {
+            ordering: OrderingHeuristic::MinDomMaxLinked,
+            merge: MergeHeuristic::default(),
+            selection: SelectHeuristic::Greedy,
+        }
+    }
+}

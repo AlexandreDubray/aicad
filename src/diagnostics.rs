@@ -3,7 +3,7 @@
 //! # Purpose
 //!
 //! Timings and statistics of a long run (training epochs, MDD compilation, ...) are recorded
-//! with [`data_log!`], one JSON object per line, and read back afterwards (`pd.read_json(path,
+//! with `data_log!`, one JSON object per line, and read back afterwards (`pd.read_json(path,
 //! lines=True)`). This is separate from the `log` crate, which carries text for a human reading a
 //! terminal. While no sink is enabled a call site costs one relaxed atomic load: its arguments
 //! are not evaluated and nothing is allocated, so call sites can stay in hot-ish code.
@@ -74,13 +74,13 @@ fn lock_sink() -> MutexGuard<'static, Option<Sink>> {
 }
 
 /// Whether a sink is open, that is, whether an event would be recorded.
-pub(crate) fn is_enabled() -> bool {
+pub fn is_enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
 /// Starts recording to `path`, truncating it. Fails, without touching either file, if a sink is
 /// already open (see the module documentation) or if `path` cannot be created.
-pub(crate) fn enable(path: &Path) -> std::io::Result<()> {
+pub fn enable(path: &Path) -> std::io::Result<()> {
     let mut sink = lock_sink();
     if let Some(open) = sink.as_ref() {
         return Err(std::io::Error::new(
@@ -102,7 +102,7 @@ pub(crate) fn enable(path: &Path) -> std::io::Result<()> {
 }
 
 /// Flushes and closes the sink; does nothing if none is open.
-pub(crate) fn disable() {
+pub fn disable() {
     ENABLED.store(false, Ordering::Relaxed);
     if let Some(mut open) = lock_sink().take()
         && let Err(e) = open.writer.flush()
@@ -111,6 +111,11 @@ pub(crate) fn disable() {
     }
 }
 
+// Only the learning code records events so far; the facility is not specific to it.
+#[cfg_attr(
+    not(feature = "learning"),
+    allow(dead_code, unused_macros, unused_imports)
+)]
 /// Writes `value` as one line and flushes it. On a write error, logs one warning and closes the
 /// sink (see the module documentation).
 pub(crate) fn record(value: serde_json::Value) {
@@ -132,6 +137,11 @@ pub(crate) fn record(value: serde_json::Value) {
     }
 }
 
+// Only the learning code records events so far; the facility is not specific to it.
+#[cfg_attr(
+    not(feature = "learning"),
+    allow(dead_code, unused_macros, unused_imports)
+)]
 /// Records one event when a sink is enabled, and does nothing (one atomic load, arguments not
 /// evaluated) otherwise. `event` names the kind; each `key = value` becomes a field of the same
 /// JSON object. See the module documentation for the field rules.
@@ -161,6 +171,10 @@ macro_rules! data_log {
     };
 }
 
+#[cfg_attr(
+    not(feature = "learning"),
+    allow(dead_code, unused_macros, unused_imports)
+)]
 pub(crate) use data_log;
 
 #[cfg(test)]

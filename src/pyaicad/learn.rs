@@ -1,29 +1,15 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use burn::backend::Autodiff;
-use burn::backend::cuda::{Cuda, CudaDevice};
-use burn::backend::ndarray::{NdArray, NdArrayDevice};
-use burn::config::Config;
-use burn::tensor::backend::{AutodiffBackend, Backend};
-
-use rand::seq::SliceRandom;
-
-use crate::destroy::DestroyOperator;
-use crate::learning::consformer::{ConsFormerLoss, DecomposedMddLoss};
-use crate::learning::optimiser::OptimiserConfig;
-use crate::learning::train::{TrainingConfig, train_model};
-use crate::mdd::arena::MddCompilationConfig;
+use crate::learning::consformer::{train_consformer as train, train_consformer_mdd as train_mdd};
+use crate::learning::{OptimiserConfig, TrainingConfig};
+use crate::mdd::MddCompilationConfig;
 use crate::mdd::heuristics::MergeHeuristic;
 use crate::modelling::Problem;
-use crate::neural::consformer::architecture::MaskingKind;
-use crate::neural::consformer::{
-    ConsFormerBatch, ConsFormerBatcher, ConsFormerConfig, ConsFormerDataset, ConsFormerSample,
-};
-use crate::utils::with_rng;
+use crate::neural::consformer::{ConsFormerConfig, MaskingKind};
 
 use super::heuristics::{PyMergeHeuristic, PyOrderingHeuristic, PySelectHeuristic};
 use super::local_search::PyDestroyKind;
@@ -184,91 +170,11 @@ impl From<&PyTrainingConfig> for TrainingConfig {
     }
 }
 
-/// Runtime CUDA availability check. Burn's backend is a compile-time generic, so
-/// "auto-detection" is done as follows: try to grab a CUDA device, and fall back to
-/// the NdArray (CPU) backend if that fails.
-///
-/// `CudaDevice::default()` alone is NOT a valid check: `CudaDevice` is just a
-/// `#[derive(Default)]` wrapper around a device index (`CudaDevice(0)`). To actually touch the
-/// GPU, we need to create a tensor. To avoid lazy initialisation, we turn it into_data(). If no
-/// cude device is available, this should panic; which we catch manually.
-pub(super) fn cuda_available() -> bool {
-    let prev_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let result = std::panic::catch_unwind(|| {
-        let device = CudaDevice::default();
-        let tensor = burn::tensor::Tensor::<Cuda, 1>::from_data([0.0f32], &device);
-        let _ = tensor.into_data();
-    });
-    std::panic::set_hook(prev_hook);
-    result.is_ok()
-}
-
-/// Seeds every independently-seedable source of randomness this crate uses, so a subsequent
-/// training/search run reproduces bit-for-bit given the same seed (weight init, `gumbel_softmax`
-/// sampling, decode-time sampling, the train/validation shuffle, and per-batch variable masking --
-/// see `utils::rng`'s doc for the one source this deliberately leaves out, and why).
-///
-/// Seeds *both* backends' RNGs unconditionally (`NdArray` always; `Cuda` only if
-/// `cuda_available()`, since touching an absent GPU would itself panic) rather than just whichever
-/// one the next call happens to dispatch to: `set_seed` has no way to know in advance which
-/// backend a later `train_consformer`/`local_search` call will pick, and seeding the one
-/// that won't be used is harmless.
+/// Seeds every source of randomness of the crate, so that a later training or search run
+/// reproduces itself given the same seed. See [`crate::set_seed`].
 #[pyfunction]
 pub(crate) fn set_seed(seed: u64) {
-    crate::utils::rng::set_seed(seed);
-    NdArray::<f32>::seed(&NdArrayDevice::default(), seed);
-    if cuda_available() {
-        Cuda::<f32>::seed(&CudaDevice::default(), seed);
-    }
-}
-
-/// Picks `Autodiff<Cuda>` or `Autodiff<NdArray>` at runtime (via `cuda_available`) and calls
-/// `$call` with the matching device already threaded in as the first argument, so every training
-/// entry point doesn't have to hand-write the same `if cuda_available() { ... } else { ... }`
-/// dispatch. Add one `train_consformer_<recipe>` here for every new recipe (nurse rostering, etc)
-/// and it gets this for free.
-macro_rules! dispatch_backend {
-    ($call:ident, $($args:expr),* $(,)?) => {
-        if cuda_available() {
-            $call::<Autodiff<Cuda>>(CudaDevice::default(), $($args),*)
-        } else {
-            $call::<Autodiff<NdArray>>(NdArrayDevice::default(), $($args),*)
-        }
-    };
-}
-
-/// `(all, train, validation)`, as returned by `split_train_validation`.
-type ProblemSplit = (Vec<Arc<Problem>>, Vec<Arc<Problem>>, Vec<Arc<Problem>>);
-
-/// Splits `problems` into a `(all, train, validation)` triple: `all` is an unshuffled clone (the
-/// full problem set that `train_model` hands to the network and the loss to prepare),
-/// while `train`/`validation` are a random 80/20 split of a shuffled copy. Shared by every
-/// `run_training_*` function so the split logic can't drift between recipes.
-fn split_train_validation(
-    mut problems: Vec<Arc<Problem>>,
-    validation: Option<Vec<Arc<Problem>>>,
-) -> ProblemSplit {
-    if let Some(validation_problems) = validation {
-        let mut all_problems = problems.clone();
-        all_problems.extend(validation_problems.iter().cloned());
-        return (all_problems, problems, validation_problems);
-    }
-    let all_problems = problems.clone();
-    let training_size = (problems.len() as f64 * 0.8).round() as usize;
-    with_rng(|rng| problems.shuffle(rng));
-    let validation_problems = problems.split_off(training_size);
-    (all_problems, problems, validation_problems)
-}
-
-/// Creates `checkpoint_dir` (if missing) and saves `network_config` as `config.json` inside it,
-/// so it can be reloaded at inference time. Shared by every `run_training_*` function.
-fn prepare_checkpoint_dir<C: Config>(checkpoint_dir: &Path, network_config: &C) -> PyResult<()> {
-    std::fs::create_dir_all(checkpoint_dir)
-        .map_err(|e| PyRuntimeError::new_err(format!("failed to create checkpoint dir: {e}")))?;
-    network_config
-        .save(checkpoint_dir.join("config.json"))
-        .map_err(|e| PyRuntimeError::new_err(format!("failed to save network config: {e}")))
+    crate::set_seed(seed);
 }
 
 /// Trains consformer on a set of problems.
@@ -302,8 +208,7 @@ pub(crate) fn train_consformer(
     let checkpoint_dir = PathBuf::from(checkpoint_dir);
 
     py.detach(move || {
-        dispatch_backend!(
-            run_training,
+        train(
             problems,
             validation,
             network_config,
@@ -312,68 +217,16 @@ pub(crate) fn train_consformer(
             &checkpoint_dir,
         )
     })
-}
-
-/// runs the training loop for a set of training problems, a network/training loop configuration.
-/// The network is saved to the checkpoint.
-fn run_training<B: AutodiffBackend>(
-    device: B::Device,
-    problems: Vec<Arc<Problem>>,
-    validation: Option<Vec<Arc<Problem>>>,
-    network_config: ConsFormerConfig,
-    training_config: TrainingConfig,
-    destroy: Option<Arc<dyn DestroyOperator>>,
-    checkpoint_dir: &Path,
-) -> PyResult<()> {
-    prepare_checkpoint_dir(checkpoint_dir, &network_config)?;
-
-    let (all_problems, problems, validation_problems) =
-        split_train_validation(problems, validation);
-    let train_dataset = ConsFormerDataset::<B>::new(problems, &device);
-    let validation_dataset =
-        ConsFormerDataset::<B::InnerBackend>::new(validation_problems, &device);
-    let batcher = ConsFormerBatcher {
-        mask_fraction: network_config.mask_fraction,
-        destroy,
-    };
-
-    // Create and train the network
-    let _network = train_model::<
-        B,
-        ConsFormerConfig,
-        ConsFormerSample<B>,
-        ConsFormerBatch<B>,
-        ConsFormerBatcher,
-        ConsFormerLoss,
-        ConsFormerSample<B::InnerBackend>,
-        ConsFormerBatch<B::InnerBackend>,
-    >(
-        network_config,
-        &all_problems,
-        train_dataset,
-        validation_dataset,
-        batcher,
-        ConsFormerLoss,
-        training_config,
-        checkpoint_dir,
-        &device,
-    )
-    .map_err(PyValueError::new_err)?;
-
-    Ok(())
+    .map_err(PyValueError::new_err)
 }
 
 /// Trains ConsFormer against the exact per-constraint MDD weighted model count (see
 /// `DecomposedMddLoss`) instead of the classical hand-written per-constraint-type penalty --
 /// otherwise identical to `train_consformer`: same network architecture, same config, same
-/// checkpointing. No `epsilon`: the loss's gradient is computed by hand, walking each compiled
-/// `Mdd` directly (`crate::mdd::wmc`) instead of through Burn's autodiff, with its own small fixed
-/// floor (`loss::WMC_EPS`) on WMC -- a constraint whose fixed context is already structurally
-/// unsatisfiable reads back as `-log(WMC_EPS)` rather than `-log(0) = inf`. `pyordering`/
-/// `pymerge`/`pyselect` control how each constraint's MDD is compiled (`pymerge` is accepted for
-/// parity with `Compiler::compile` but has no effect here -- this recipe always refines to an
-/// exact, unbounded-width MDD, and `merge` only ever triggers once a width bound would be
-/// exceeded; see `MddCompilationConfig`'s doc).
+/// checkpointing. `pyordering`/`pymerge`/`pyselect` control how each constraint's MDD is compiled
+/// (`pymerge` is accepted for parity with `Compiler::compile` but has no effect here -- this
+/// recipe always refines to an exact, unbounded-width MDD, and `merge` only ever triggers once a
+/// width bound would be exceeded; see `MddCompilationConfig`'s doc).
 ///
 /// Releases the GIL for the whole training run -- see `train_consformer`'s doc for why.
 #[pyfunction]
@@ -421,8 +274,7 @@ pub(crate) fn train_consformer_mdd(
     };
 
     py.detach(move || {
-        dispatch_backend!(
-            run_training_mdd,
+        train_mdd(
             problems,
             validation,
             network_config,
@@ -431,57 +283,5 @@ pub(crate) fn train_consformer_mdd(
             &checkpoint_dir,
         )
     })
-}
-
-/// Runs the ConsFormer-MDD training loop -- see `run_training` for the classical recipe this
-/// mirrors. The only structural difference is the loss: `DecomposedMddLoss` scores each problem
-/// through its constraints compiled into exact MDDs, which `train_model` has it compile, once,
-/// for every training and validation problem.
-fn run_training_mdd<B: AutodiffBackend>(
-    device: B::Device,
-    problems: Vec<Arc<Problem>>,
-    validation: Option<Vec<Arc<Problem>>>,
-    network_config: ConsFormerConfig,
-    training_config: TrainingConfig,
-    compilation: MddCompilationConfig,
-    checkpoint_dir: &Path,
-) -> PyResult<()> {
-    prepare_checkpoint_dir(checkpoint_dir, &network_config)?;
-
-    let (all_problems, problems, validation_problems) =
-        split_train_validation(problems, validation);
-
-    let loss = DecomposedMddLoss::new(compilation, network_config.domain_size);
-    let train_dataset = ConsFormerDataset::<B>::new(problems, &device);
-    let validation_dataset =
-        ConsFormerDataset::<B::InnerBackend>::new(validation_problems, &device);
-    let batcher = ConsFormerBatcher {
-        mask_fraction: network_config.mask_fraction,
-        destroy: None,
-    };
-
-    // Create and train the network
-    let _network = train_model::<
-        B,
-        ConsFormerConfig,
-        ConsFormerSample<B>,
-        ConsFormerBatch<B>,
-        ConsFormerBatcher,
-        DecomposedMddLoss,
-        ConsFormerSample<B::InnerBackend>,
-        ConsFormerBatch<B::InnerBackend>,
-    >(
-        network_config,
-        &all_problems,
-        train_dataset,
-        validation_dataset,
-        batcher,
-        loss,
-        training_config,
-        checkpoint_dir,
-        &device,
-    )
-    .map_err(PyValueError::new_err)?;
-
-    Ok(())
+    .map_err(PyValueError::new_err)
 }

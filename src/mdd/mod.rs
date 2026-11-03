@@ -66,7 +66,7 @@ pub use arena::MddArena;
 pub use compiler::Compiler;
 pub use diagram::Mdd;
 
-pub(crate) use arena::CompiledConstraint;
+pub use arena::{CompiledConstraint, MddCompilationConfig, compile_constraints};
 pub(crate) use edge::Edge;
 pub(crate) use node::Node;
 

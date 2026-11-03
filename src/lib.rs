@@ -1,42 +1,96 @@
 //! # aicad
 //!
-//! MDD compilation for constraint satisfaction and optimisation problems, with strategies built
-//! on top of it (belief propagation, neural local search, learned priors).
+//! MDD compilation for constraint satisfaction problems, with strategies built on top of it:
+//! belief propagation, local search, and local search guided by a trained neural network.
 //!
-//! The supported interface of aicad is its Python package, `pyaicad`. The Rust API below is the
-//! *core*: it is public so that other solvers can embed the compiler, but it is **experimental**
-//! and may change between minor versions until its users have shaped it.
+//! Everything the Python package `pyaicad` does is available here too, for applications that
+//! cannot afford the interpreter. The Rust API is **experimental** and may change between minor
+//! versions until its users have shaped it.
 //!
-//! The core is, from the bottom up:
+//! # Modules
+//!
+//! From the bottom up, each module only depends on the ones listed before it:
 //!
 //! - [`modelling`]: variables, the [`Problem`](modelling::Problem), and the traits that a
 //!   constraint implements.
 //! - [`constraints`]: the constraints, with the contract that the compiler relies on.
 //! - [`mdd`]: the compiler and the compiled diagram.
 //! - [`sampling`]: sampling solutions from a compiled diagram.
+//! - [`bp`]: belief propagation over the diagrams of the constraints.
+//! - [`destroy`]: the operators that choose which variables a local search frees.
+//! - [`local_search`]: the local search engine, its architectures and [`local_search::solve`].
+//! - [`diagnostics`]: an optional log of structured events for offline analysis.
 //!
-//! One setting is public next to the core: the number of threads of the worker pool that runs
-//! the parallel parts of the library ([`set_num_threads`], [`num_threads`]), a quarter of the
-//! available threads unless set.
+//! # Features
 //!
-//! Everything above the core (`learning`, `local_search`, the Python bindings) and the helpers below it
-//! are private. Modules only depend on the ones listed before them, which `scripts/check_layering.py`
-//! checks in CI.
+//! - `learning` (off by default): the neural networks (`neural`), their training (`learning`)
+//!   and the local searches that use them. It pulls in [burn](https://burn.dev), which is heavy to
+//!   build; the compiler, sampling, belief propagation and the belief-propagation local search do
+//!   not need it.
+//! - `python` (off by default): the bindings built by maturin into `pyaicad`. It implies
+//!   `learning`, and is never needed from Rust.
+//!
+//! # Settings
+//!
+//! A few settings are global: the number of threads of the worker pool that runs the parallel parts
+//! of the library ([`set_num_threads`], [`num_threads`]), a quarter of the available threads
+//! unless set, and the seed of the randomness ([`set_seed`]).
+//!
+//! # Example
+//!
+//! ```
+//! use aicad::constraints::all_different;
+//! use aicad::mdd::Compiler;
+//! use aicad::mdd::heuristics::CompilationHeuristic;
+//! use aicad::modelling::Problem;
+//! use std::sync::Arc;
+//!
+//! let mut problem = Problem::default();
+//! let vars = problem.add_variables(3, vec![0, 1, 2]);
+//! let constraint = all_different(&mut problem, vars);
+//!
+//! let mut compiler = Compiler::new(
+//!     Arc::new(problem),
+//!     CompilationHeuristic::default(),
+//!     &[constraint],
+//! );
+//! compiler.refine(usize::MAX);
+//! assert_eq!(compiler.into_mdd().count_solutions().to_string(), "6");
+//! ```
 
 #![cfg_attr(not(test), warn(unreachable_pub))]
 
+pub mod bp;
 pub mod constraints;
+pub mod destroy;
+pub mod diagnostics;
+pub mod local_search;
 pub mod mdd;
 pub mod modelling;
 pub mod sampling;
 
-mod bp;
-mod destroy;
-mod diagnostics;
-mod learning;
-mod local_search;
-mod neural;
+#[cfg(feature = "learning")]
+pub mod learning;
+#[cfg(feature = "learning")]
+pub mod neural;
+
+#[cfg(feature = "python")]
 mod pyaicad;
+
 mod utils;
 
 pub use utils::{default_num_threads, num_threads, set_num_threads};
+
+/// Seeds every source of randomness of the crate, so that a later run of a compilation, a
+/// training or a search reproduces itself given the same seed: the process-wide generator (the
+/// sampling of diagrams, the destroy operators, the train and validation split, the masking of
+/// training samples) and, with the `learning` feature, the generators of the burn backends (the
+/// initial weights, the sampling of logits).
+///
+/// Compilation uses no randomness and local search is reproducible given its own seed; whether
+/// a seeded training run reproduces itself bit for bit is not guaranteed.
+pub fn set_seed(seed: u64) {
+    utils::set_seed(seed);
+    #[cfg(feature = "learning")]
+    neural::seed_backends(seed);
+}

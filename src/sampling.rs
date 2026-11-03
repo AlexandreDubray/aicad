@@ -35,7 +35,7 @@ use crate::modelling::{Problem, ValueIndex};
 /// How a categorical distribution given as weights turns into a value: [`sample_categorical`] or
 /// [`argmax`].
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum DecodeMode {
+pub enum DecodeMode {
     /// Draw a value proportionally to its weight.
     Sample,
     /// Take the value of largest weight.
@@ -47,7 +47,7 @@ pub(crate) enum DecodeMode {
 /// # Panics
 ///
 /// Panics if `weights` is empty or holds a NaN.
-pub(crate) fn argmax(weights: &[f64]) -> usize {
+pub fn argmax(weights: &[f64]) -> usize {
     assert!(!weights.is_empty(), "weights should not be empty");
     let mut best = 0;
     for (index, weight) in weights.iter().enumerate() {
@@ -65,7 +65,7 @@ pub(crate) fn argmax(weights: &[f64]) -> usize {
 /// # Panics
 ///
 /// Panics unless the weights have a positive, finite sum.
-pub(crate) fn sample_categorical_with<R: Rng + ?Sized>(weights: &[f64], rng: &mut R) -> usize {
+pub fn sample_categorical_with<R: Rng + ?Sized>(weights: &[f64], rng: &mut R) -> usize {
     let total: f64 = weights.iter().sum();
     assert!(
         total.is_finite() && total > 0.0,
@@ -81,14 +81,14 @@ pub(crate) fn sample_categorical_with<R: Rng + ?Sized>(weights: &[f64], rng: &mu
     weights.len() - 1
 }
 
-/// [`sample_categorical_with`] the process-wide generator ([`with_rng`](crate::utils::with_rng)).
-pub(crate) fn sample_categorical(weights: &[f64]) -> usize {
+/// [`sample_categorical_with`] the process-wide generator (`with_rng`).
+pub fn sample_categorical(weights: &[f64]) -> usize {
     crate::utils::with_rng(|rng| sample_categorical_with(weights, rng))
 }
 
 /// A random assignment of `problem`: every variable takes a value of its domain, drawn uniformly
 /// from the process-wide generator, whatever the constraints say.
-pub(crate) fn random_assignment(problem: &Problem) -> Vec<isize> {
+pub fn random_assignment(problem: &Problem) -> Vec<isize> {
     problem
         .iter_variables()
         .map(|variable| {

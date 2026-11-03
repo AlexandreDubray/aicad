@@ -32,6 +32,10 @@ jobs:
 
   clippy:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # The lightest build (no burn), the build with training, and the Python bindings.
+        features: ["", "--features learning", "--features python"]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -39,17 +43,35 @@ jobs:
           toolchain: "1.95.0"
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets ${{ matrix.features }} -- -D warnings
 
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        features: ["", "--features learning"]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.95.0"
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test
+      - run: cargo test ${{ matrix.features }}
+
+  # The public docs (what docs.rs shows), then everything for contributors, private items
+  # included. Both must build without a warning, broken links included.
+  doc:
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --no-deps
+      - run: cargo doc --no-deps --features learning --document-private-items
 
   coverage:
     runs-on: ubuntu-latest
@@ -63,5 +85,5 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Line coverage summary
         run: |
-          cargo llvm-cov --summary-only | tee coverage.txt
+          cargo llvm-cov --features learning --summary-only | tee coverage.txt
           { echo '```'; cat coverage.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

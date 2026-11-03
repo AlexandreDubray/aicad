@@ -71,7 +71,7 @@ impl ConstraintStats {
 /// How well assignments satisfy the constraints of their problems, per constraint type. It starts
 /// empty and is filled with [`update`](Self::update), once per batch.
 #[derive(Default)]
-pub(crate) struct SatisfactionReport {
+pub struct SatisfactionReport {
     /// Statistics of the satisfaction rate of each constraint type.
     by_constraint: HashMap<&'static str, ConstraintStats>,
 }
@@ -84,7 +84,7 @@ impl SatisfactionReport {
     /// # Panics
     ///
     /// If there are not as many assignments as problems.
-    pub(crate) fn update(&mut self, problems: &[Arc<Problem>], assignments: &[Vec<isize>]) {
+    pub fn update(&mut self, problems: &[Arc<Problem>], assignments: &[Vec<isize>]) {
         assert_eq!(
             problems.len(),
             assignments.len(),
@@ -124,7 +124,7 @@ impl SatisfactionReport {
 
     /// Logs the table of the statistics, the least satisfied type of constraint first. `width` is
     /// the width of the separator line, beyond the name column.
-    pub(crate) fn print(&self, width: usize) {
+    pub fn print(&self, width: usize) {
         if self.by_constraint.is_empty() {
             log::warn!("Can not show constraint satisfaction: no constraints recorded.");
             return;

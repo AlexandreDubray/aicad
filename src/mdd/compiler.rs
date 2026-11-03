@@ -689,7 +689,7 @@ impl Compiler {
     /// Recomputes the top-down properties of the flagged nodes, layer by layer from `start_layer`
     /// (but at least the first layer after the root), and filters the edges that leave the nodes
     /// whose property changed. Flags the children of a changed node for the next layer, and the
-    /// node itself for [`Mdd::update_bottom_up`]. Stops at the first layer where no node changed and none is flagged in the next one.
+    /// node itself for `update_bottom_up`. Stops at the first layer where no node changed and none is flagged in the next one.
     /// Returns the deepest layer where one did. See the module documentation.
     fn update_top_down(&mut self, start_layer: usize) -> usize {
         let mut deepest_changed_layer = start_layer.max(1) - 1;

@@ -1,9 +1,9 @@
 //! Structure representing a decision diagram itself, as compiled by the
-//! [`Compiler`](super::Compiler)
+//! [`Compiler`]
 //!
 //! # Meaning
 //!
-//! An [`Mdd`] is what a [`Compiler`](super::Compiler) produces: the nodes and edges of the
+//! An [`Mdd`] is what a [`Compiler`] produces: the nodes and edges of the
 //! diagram, the variable branched on at each layer and the problem that gives the variables and
 //! their values a meaning. It carries nothing that only the compilation needs (the constraints,
 //! their properties, the heuristics), so a finished diagram is small, and the counting, sampling and weighted-counting code
@@ -33,7 +33,7 @@ use crate::modelling::*;
 use num_bigint::BigUint;
 use std::sync::Arc;
 
-/// A decision diagram of the solutions of some constraints of a problem. A [`Compiler`](crate::mdd::Compiler)
+/// A decision diagram of the solutions of some constraints of a problem. A [`Compiler`]
 /// builds and refines it; see [`mdd`](crate::mdd) for how.
 pub struct Mdd {
     /// The problem whose variables and values the diagram speaks about.
@@ -71,13 +71,13 @@ impl Mdd {
     }
 
     /// Total number of nodes, in every layer.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "learning"))]
     pub(crate) fn number_nodes(&self) -> usize {
         self.nodes.iter().map(|layer| layer.len()).sum()
     }
 
     /// Total number of edges, in every layer.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "learning"))]
     pub(crate) fn number_edges(&self) -> usize {
         self.edges.iter().map(|layer| layer.len()).sum()
     }

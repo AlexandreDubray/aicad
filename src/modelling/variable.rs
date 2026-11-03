@@ -108,12 +108,12 @@ impl Variable {
 
     /// Places the variable in the structure of the problem, for the positional encoding of the
     /// learned models.
-    pub(crate) fn set_position(&mut self, position: Vec<usize>) {
+    pub fn set_position(&mut self, position: Vec<usize>) {
         self.position = Some(position);
     }
 
     /// The position given with `set_position`, if any.
-    pub(crate) fn position(&self) -> &Option<Vec<usize>> {
+    pub fn position(&self) -> &Option<Vec<usize>> {
         &self.position
     }
 }

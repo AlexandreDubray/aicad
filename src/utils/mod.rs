@@ -11,9 +11,11 @@
 pub(crate) mod bitset;
 pub(crate) mod parallel;
 pub(crate) mod rng;
+#[cfg(feature = "learning")]
 pub(crate) mod tensor;
 
 pub(crate) use bitset::Bitset;
 pub(crate) use parallel::worker_pool;
 pub use parallel::{default_num_threads, num_threads, set_num_threads};
+pub(crate) use rng::set_seed;
 pub(crate) use rng::with_rng;

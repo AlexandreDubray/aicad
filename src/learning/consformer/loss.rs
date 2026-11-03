@@ -74,7 +74,7 @@ impl Penalty {
 }
 
 /// The original ConsFormer loss: the penalties of the constraints, see the module documentation.
-pub(crate) struct ConsFormerLoss;
+pub struct ConsFormerLoss;
 
 impl<B: Backend> Loss<B, ConsFormerBatch<B>> for ConsFormerLoss {
     /// # Panics

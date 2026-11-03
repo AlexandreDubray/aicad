@@ -1,8 +1,12 @@
 //! The losses ConsFormer is trained with.
 
-pub(crate) mod decomposed_mdd_loss;
-pub(crate) mod loss;
-pub(crate) mod utils;
+mod decomposed_mdd_loss;
+mod loss;
+mod recipes;
+mod utils;
 
-pub(crate) use decomposed_mdd_loss::DecomposedMddLoss;
-pub(crate) use loss::ConsFormerLoss;
+pub use decomposed_mdd_loss::DecomposedMddLoss;
+pub use loss::ConsFormerLoss;
+pub use recipes::{
+    train_consformer, train_consformer_mdd, train_consformer_mdd_on, train_consformer_on,
+};

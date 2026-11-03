@@ -4,7 +4,7 @@
 //!
 //! The configuration checks the hyper-parameters, builds the transformer blocks, the embeddings
 //! and the output layer, and, if positions are used, reads the position of each variable from
-//! the first problem. See [`architecture`] for what the network computes.
+//! the first problem. See [`ConsFormer`] for what the network computes.
 //!
 //! # Design notes
 //!
@@ -17,7 +17,7 @@
 //! - **Position of variable are stored wihtin the variable.** We set every position of the
 //!   variable at their creation using the public API. We do this to separate problem modelling and
 //!   solving/training. The training loop has knowledge of what problem is being solved, it receive
-//!   an arbitrary [`Problem`](crate::modelling::problem::Problem); hence, each problem needs to
+//!   an arbitrary [`Problem`]; hence, each problem needs to
 //!   store all information needed for the embedding computations.
 //!
 //! # References
@@ -27,14 +27,14 @@
 //! \[2\] "Large neighborhood search meets iterative neural constraint heuristics" - Xu et al.
 //! CPAIOR 2026
 
-pub(crate) mod architecture;
-pub(crate) mod dataset;
+mod architecture;
+mod dataset;
 
 use super::*;
 use crate::modelling::Problem;
-pub(crate) use architecture::ConsFormer;
 use architecture::*;
-pub(crate) use dataset::{ConsFormerBatch, ConsFormerBatcher, ConsFormerDataset, ConsFormerSample};
+pub use architecture::{ConsFormer, MaskingKind};
+pub use dataset::{ConsFormerBatch, ConsFormerBatcher, ConsFormerDataset, ConsFormerSample};
 
 use burn::config::Config;
 use burn::module::Param;
@@ -45,7 +45,7 @@ use std::sync::Arc;
 
 /// A [`Batch`] that `ConsFormer` can read: on top of the assignments and the variables to
 /// re-predict, the network needs the attention mask of each problem.
-pub(crate) trait ConsFormerInputs<B: Backend>: Batch<B> {
+pub trait ConsFormerInputs<B: Backend>: Batch<B> {
     /// (batch_size, number_vars, number_vars)
     fn attention_masks(&self) -> Tensor<B, 3, Bool>;
 }
@@ -53,7 +53,7 @@ pub(crate) trait ConsFormerInputs<B: Backend>: Batch<B> {
 /// Hyperparameters of [`ConsFormer`]. It builds the network with `NetworkConfig::init`, and is
 /// saved with the weights in a checkpoint.
 #[derive(Config, Debug)]
-pub(crate) struct ConsFormerConfig {
+pub struct ConsFormerConfig {
     /// Size of the domains of the variables. Currently assumed fixed for all variables.
     pub domain_size: usize,
     /// Size of the embedding of the assignments

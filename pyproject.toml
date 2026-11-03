@@ -18,7 +18,7 @@ test = ["pytest>=7"]
 [tool.maturin]
 python-source = "python"
 module-name = "pyaicad._core"
-features = ["pyo3/extension-module"]
+features = ["python", "learning"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "python/pyaicad"]

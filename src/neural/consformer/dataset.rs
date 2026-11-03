@@ -130,7 +130,7 @@ pub(crate) fn consformer_masks<B: Backend>(
 /// The var mask indicates which variable as a domain of size > 1.
 /// We pre-compute these tensors beforehand since they are invariant during training
 #[derive(Clone)]
-pub(crate) struct ConsFormerSample<B: Backend> {
+pub struct ConsFormerSample<B: Backend> {
     /// The problem.
     problem: Arc<Problem>,
     /// (number_vars, number_vars): true where a variable may attend to another.
@@ -150,14 +150,14 @@ impl<B: Backend> std::fmt::Debug for ConsFormerSample<B> {
 }
 
 /// A dataset is just a vector of samples
-pub(crate) struct ConsFormerDataset<B: Backend> {
+pub struct ConsFormerDataset<B: Backend> {
     /// One sample per problem, in the order the problems were given.
     samples: Vec<ConsFormerSample<B>>,
 }
 
 impl<B: Backend> ConsFormerDataset<B> {
     /// Builds the dataset of `problems`, computing their masks on `device`.
-    pub(crate) fn new(problems: Vec<Arc<Problem>>, device: &B::Device) -> Self {
+    pub fn new(problems: Vec<Arc<Problem>>, device: &B::Device) -> Self {
         let mask_data: Vec<ConsFormerMaskData> = crate::utils::worker_pool().install(|| {
             problems
                 .par_iter()
@@ -333,7 +333,7 @@ fn destroyed_var_masks(
 
 /// Builds the batches of a [`ConsFormerDataset`].
 #[derive(Clone)]
-pub(crate) struct ConsFormerBatcher {
+pub struct ConsFormerBatcher {
     /// Fraction of the variables with a choice that are re-predicted, when there is no destroy
     /// operator.
     pub mask_fraction: f64,
@@ -345,7 +345,7 @@ pub(crate) struct ConsFormerBatcher {
 /// A batch is just a collection of samples with the addition of initial assignments that are
 /// passed to the neural network.
 #[derive(Clone)]
-pub(crate) struct ConsFormerBatch<B: Backend> {
+pub struct ConsFormerBatch<B: Backend> {
     /// (batch_size, number_vars, number_vars)
     pub attention_masks: Tensor<B, 3, Bool>,
     /// (batch_size, number_vars)

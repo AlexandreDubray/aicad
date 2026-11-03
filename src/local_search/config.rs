@@ -7,11 +7,12 @@
 use std::time::Duration;
 
 use super::bp_search::BeliefPropagationSearchConfig;
+#[cfg(feature = "learning")]
 use super::neural_prior::{NeuralPriorBpSearchConfig, NeuralPriorSearchConfig};
 
 /// Stopping criterion for the search; whichever limit is first reached stops it.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Budget {
+pub struct Budget {
     /// Limit on the runtime.
     pub time_limit: Duration,
     /// Limit on the number of iterations.
@@ -30,10 +31,13 @@ impl Default for Budget {
 /// The architecture of the search and its settings: one variant per
 /// [`SearchArchitecture`](super::SearchArchitecture).
 #[derive(Debug, Clone)]
-pub(crate) enum SearchConfig {
-    /// A trained network, decoding its logits.
+pub enum SearchConfig {
+    /// A trained network, decoding its logits. Needs the `learning` feature.
+    #[cfg(feature = "learning")]
     NeuralPrior(NeuralPriorSearchConfig),
     /// A trained network whose probabilities are the prior of belief propagation on the MDDs.
+    /// Needs the `learning` feature.
+    #[cfg(feature = "learning")]
     NeuralPriorBp(NeuralPriorBpSearchConfig),
     /// Belief propagation on the MDDs from uniform probabilities, on the CPU only.
     BeliefPropagation(BeliefPropagationSearchConfig),
@@ -41,7 +45,7 @@ pub(crate) enum SearchConfig {
 
 impl Default for SearchConfig {
     fn default() -> Self {
-        SearchConfig::NeuralPrior(NeuralPriorSearchConfig::default())
+        SearchConfig::BeliefPropagation(BeliefPropagationSearchConfig::default())
     }
 }
 
@@ -50,7 +54,7 @@ impl Default for SearchConfig {
 /// Built from the default, no limit and a single batch, with the `with_*` methods:
 /// `SolveConfig::default().with_runtime_limit(100).with_iteration_limit(2000)`.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct SolveConfig {
+pub struct SolveConfig {
     /// When the search of a batch stops. It applies to each batch separately.
     pub budget: Budget,
     /// Seed of the search. `None` draws one from the process-wide generator, so it is
@@ -65,31 +69,31 @@ pub(crate) struct SolveConfig {
 
 impl SolveConfig {
     /// Stops the search of each batch after `seconds` seconds.
-    pub(crate) fn with_runtime_limit(mut self, seconds: u64) -> Self {
+    pub fn with_runtime_limit(mut self, seconds: u64) -> Self {
         self.budget.time_limit = Duration::from_secs(seconds);
         self
     }
 
     /// Stops the search of each batch after `iterations` iterations.
-    pub(crate) fn with_iteration_limit(mut self, iterations: usize) -> Self {
+    pub fn with_iteration_limit(mut self, iterations: usize) -> Self {
         self.budget.iteration_limit = iterations;
         self
     }
 
     /// Steps at most `batch_size` problems together.
-    pub(crate) fn with_batch_size(mut self, batch_size: usize) -> Self {
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = Some(batch_size);
         self
     }
 
     /// Seeds the search.
-    pub(crate) fn with_seed(mut self, seed: u64) -> Self {
+    pub fn with_seed(mut self, seed: u64) -> Self {
         self.seed = Some(seed);
         self
     }
 
     /// Sets the architecture of the search and its settings.
-    pub(crate) fn with_search(mut self, search: SearchConfig) -> Self {
+    pub fn with_search(mut self, search: SearchConfig) -> Self {
         self.search = search;
         self
     }

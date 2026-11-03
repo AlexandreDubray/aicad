@@ -12,9 +12,7 @@
 //! use `with_rng` instead of `rand::rng()`. Everything that takes a `seed` argument, such as the
 //! neural local search, keeps using its own generator.
 //!
-//! The seed does not reach the network's backend (the Python-facing `set_seed` seeds it next to
-//! this generator) nor the tie-breaking generator of the MDD compiler, which each thread seeds
-//! from the operating system the first time it compiles.
+//! The network's backend has its own generator, which `crate::set_seed` seeds next to this one.
 //!
 //! # How it works
 //!

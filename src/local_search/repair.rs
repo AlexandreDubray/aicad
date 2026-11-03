@@ -40,12 +40,12 @@ use crate::sampling::{DecodeMode, argmax, sample_categorical_with};
 
 /// The decomposed MDDs of a problem, one compiled constraint per constraint. The `Arc` is shared
 /// by the copies of the same problem in a batch.
-pub(crate) type Compiled = Arc<Vec<CompiledConstraint>>;
+pub type Compiled = Arc<Vec<CompiledConstraint>>;
 
 /// Repairs assignments with belief propagation over the decomposed MDDs of the problem (one per
 /// constraint, not one diagram for the whole problem): the value of largest marginal, or a sample
 /// of the marginal, according to `mode`.
-pub(crate) struct MddRepair {
+pub struct MddRepair {
     /// How the constraints are compiled.
     compilation: MddCompilationConfig,
     /// Size of the nominal domain `0..domain_size` that the constraints are compiled over, which
@@ -62,7 +62,7 @@ impl MddRepair {
     /// `domain_size` is the number of values per variable of the probabilities given to
     /// [`MddRepair::repair`]: the nominal alphabet every shared constraint structure is compiled
     /// against, see `crate::mdd::arena`'s module doc.
-    pub(crate) fn new(
+    pub fn new(
         compilation: MddCompilationConfig,
         domain_size: usize,
         mode: DecodeMode,
@@ -77,7 +77,7 @@ impl MddRepair {
     }
 
     /// Smallest alphabet that covers every value any variable of any of `problems` can take.
-    pub(crate) fn domain_size_covering(problems: &[Arc<Problem>]) -> usize {
+    pub fn domain_size_covering(problems: &[Arc<Problem>]) -> usize {
         problems
             .iter()
             .flat_map(|problem| {
@@ -103,7 +103,7 @@ impl MddRepair {
     /// with one small diagram per constraint; with large grouped diagrams that nothing shares, it
     /// only adds a lookup, and the diagrams should be compiled directly into the list of the
     /// problem.
-    pub(crate) fn prepare(&self, problems: &[Arc<Problem>]) -> Vec<Compiled> {
+    pub fn prepare(&self, problems: &[Arc<Problem>]) -> Vec<Compiled> {
         let arena = MddArena::new();
         // The same problem can appear several times in a batch, for instance to run several
         // searches on it: it is compiled once.
@@ -166,7 +166,7 @@ impl MddRepair {
     /// seeded before the rows are repaired in parallel.
     ///
     /// Returns `current` unchanged when nothing is free, which needs no `compiled`.
-    pub(crate) fn repair(
+    pub fn repair(
         &self,
         problem: &Problem,
         compiled: Option<&Compiled>,
@@ -233,7 +233,7 @@ impl MddRepair {
 
 /// An [`MddRepair`] prepared for the rows of a batch: it owns the compiled MDDs of every row and
 /// repairs all the rows at once.
-pub(crate) struct BatchRepair {
+pub struct BatchRepair {
     /// Repairs one row.
     repair: MddRepair,
     /// What was compiled for each row, `None` once the row is solved.
@@ -242,7 +242,7 @@ pub(crate) struct BatchRepair {
 
 impl BatchRepair {
     /// Compiles the constraints of `problems`, one row each.
-    pub(crate) fn new(repair: MddRepair, problems: &[Arc<Problem>]) -> Self {
+    pub fn new(repair: MddRepair, problems: &[Arc<Problem>]) -> Self {
         let compiled = repair.prepare(problems).into_iter().map(Some).collect();
         Self { repair, compiled }
     }
@@ -250,7 +250,7 @@ impl BatchRepair {
     /// Repairs, in parallel, the variables each row of `destroyed` frees, in `assignments`.
     /// `seeds` holds one seed per row for its sampling, and `probability(row, variable, value)`
     /// the probability of a raw value for a variable of a row.
-    pub(crate) fn repair_rows(
+    pub fn repair_rows(
         &self,
         problems: &[Arc<Problem>],
         assignments: &mut [Vec<isize>],
@@ -280,7 +280,7 @@ impl BatchRepair {
     }
 
     /// Frees what was compiled for the rows flagged in `solved`.
-    pub(crate) fn solved(&mut self, solved: &[bool]) {
+    pub fn solved(&mut self, solved: &[bool]) {
         for (compiled, &is_solved) in self.compiled.iter_mut().zip(solved) {
             if is_solved {
                 *compiled = None;
@@ -289,7 +289,7 @@ impl BatchRepair {
     }
 
     /// Drops the rows not flagged in `keep`.
-    pub(crate) fn retain(&mut self, keep: &[bool]) {
+    pub fn retain(&mut self, keep: &[bool]) {
         self.compiled = super::filtered(std::mem::take(&mut self.compiled), keep);
     }
 }

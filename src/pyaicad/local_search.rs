@@ -1,29 +1,17 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 
-use burn::backend::cuda::{Cuda, CudaDevice};
-use burn::backend::ndarray::{NdArray, NdArrayDevice};
-use burn::tensor::backend::Backend;
-
-use indicatif::{ProgressBar, ProgressStyle};
-use rand::RngExt;
-
 use crate::destroy::{DestroyKind, DestroyOperator};
 use crate::local_search::{
-    BeliefPropagationSearch, BeliefPropagationSearchConfig, Budget, LocalSearch,
-    NeuralPriorBpSearch, NeuralPriorBpSearchConfig, NeuralPriorSearch, NeuralPriorSearchConfig,
-    SearchConfig, SolveConfig,
+    BeliefPropagationSearchConfig, NeuralPriorBpSearchConfig, NeuralPriorSearchConfig,
+    SearchConfig, SolveConfig, solve,
 };
 use crate::modelling::{Problem, Solution, Status};
-use crate::neural::consformer::{ConsFormer, ConsFormerBatch, ConsFormerConfig};
-use crate::neural::{Batch, load_network};
 
-use super::learn::cuda_available;
 use super::problem::PyProblem;
 
 #[pyclass(from_py_object)]
@@ -281,39 +269,10 @@ pub(crate) fn run_local_search(
     }
     let checkpoint_dir = checkpoint_dir.map(PathBuf::from);
     let config = SolveConfig::from(&config);
-    // Drawn from the process-wide RNG (see `crate::utils::rng`) so that, when `set_seed` has been
-    // called, even a caller that leaves `seed` unset gets a reproducible destroy sequence instead
-    // of a fresh OS-entropy one each time.
-    let seed = config
-        .seed
-        .unwrap_or_else(|| crate::utils::with_rng(|rng| rng.random_range(0..u64::MAX)));
 
-    let solutions = py.detach(move || match &config.search {
-        // No device is involved, so none is probed.
-        SearchConfig::BeliefPropagation(search) => {
-            if checkpoint_dir.is_some() {
-                return Err(PyValueError::new_err(
-                    "the belief-propagation search uses no network: do not give a checkpoint",
-                ));
-            }
-            let engine = LocalSearch::new(Box::new(BeliefPropagationSearch::new(search)));
-            batched_run(&engine, &problems, config.batch_size, config.budget, seed)
-        }
-        _ if cuda_available() => run::<Cuda>(
-            CudaDevice::default(),
-            problems,
-            checkpoint_dir.as_deref(),
-            &config,
-            seed,
-        ),
-        _ => run::<NdArray>(
-            NdArrayDevice::default(),
-            problems,
-            checkpoint_dir.as_deref(),
-            &config,
-            seed,
-        ),
-    })?;
+    let solutions = py
+        .detach(move || solve(&problems, &config, checkpoint_dir.as_deref()))
+        .map_err(PyValueError::new_err)?;
 
     if is_single {
         Ok(Py::new(py, PySolution::from(&solutions[0]))?.into_any())
@@ -328,125 +287,4 @@ pub(crate) fn run_local_search(
         }
         Ok(list.into_any().unbind())
     }
-}
-
-/// Runs the neural search of `config` on the device `B`, with the ConsFormer network of the
-/// checkpoint.
-fn run<B: Backend>(
-    device: B::Device,
-    problems: Vec<Arc<Problem>>,
-    checkpoint_dir: Option<&Path>,
-    config: &SolveConfig,
-    seed: u64,
-) -> PyResult<Vec<Solution>> {
-    let dir = checkpoint_dir
-        .ok_or_else(|| PyValueError::new_err("a neural search needs a checkpoint_dir"))?;
-    // Building the network reads the variables of the problems, so they are checked first.
-    ConsFormerBatch::<B>::check_problems(&problems).map_err(PyValueError::new_err)?;
-    let (_, network) =
-        load_network::<B, ConsFormerConfig>(dir, &problems, &device).map_err(|e| {
-            PyValueError::new_err(format!(
-                "failed to load network from checkpoint {}: {e}",
-                dir.display()
-            ))
-        })?;
-    let engine = match &config.search {
-        SearchConfig::NeuralPrior(c) => {
-            LocalSearch::new(Box::new(NeuralPriorSearch::<
-                B,
-                ConsFormerBatch<B>,
-                ConsFormer<B>,
-            >::new(network, c, device)))
-        }
-        SearchConfig::NeuralPriorBp(c) => {
-            LocalSearch::new(Box::new(NeuralPriorBpSearch::<
-                B,
-                ConsFormerBatch<B>,
-                ConsFormer<B>,
-            >::new(network, c, device)))
-        }
-        SearchConfig::BeliefPropagation(_) => {
-            unreachable!("the belief-propagation search runs without a device")
-        }
-    };
-    batched_run(&engine, &problems, config.batch_size, config.budget, seed)
-}
-
-/// Solves `problems` in batches of at most `batch_size` (all of them in one batch if unset), one
-/// batch after the other. The seed of a batch is `seed` plus its index, so that the batches do not
-/// replay the same destroy sequence. Every batch gets the full `budget`.
-fn batched_run(
-    nls: &LocalSearch,
-    problems: &[Arc<Problem>],
-    batch_size: Option<usize>,
-    budget: Budget,
-    seed: u64,
-) -> PyResult<Vec<Solution>> {
-    let batch_size = batch_size.unwrap_or(problems.len()).max(1);
-    let batches: Vec<&[Arc<Problem>]> = problems.chunks(batch_size).collect();
-    log::info!(
-        "Solving {} problems in {} batches of at most {}",
-        problems.len(),
-        batches.len(),
-        batch_size,
-    );
-
-    let progress = ProgressBar::new(problems.len() as u64);
-    progress.set_style(
-        ProgressStyle::with_template(
-            "{msg} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
-        )
-        .expect("hard-coded progress bar template should always be valid"),
-    );
-    progress.set_message("Solving instances");
-
-    let mut solutions = Vec::with_capacity(problems.len());
-    for (batch_idx, batch) in batches.iter().enumerate() {
-        let batch_start = Instant::now();
-        let batch_solutions = nls
-            .run(
-                batch,
-                budget,
-                seed.wrapping_add(batch_idx as u64),
-                Some(&progress),
-            )
-            .map_err(PyValueError::new_err)?;
-        log_status_counts(
-            &format!(
-                "batch {}/{} done in {:.1}s",
-                batch_idx + 1,
-                batches.len(),
-                batch_start.elapsed().as_secs_f64()
-            ),
-            &batch_solutions,
-        );
-        // `run` already advanced the bar for every problem it solved; the ones it gave up on are
-        // only known now.
-        let unsolved = batch_solutions
-            .iter()
-            .filter(|s| matches!(s.status(), Status::Unknown))
-            .count();
-        progress.inc(unsolved as u64);
-        solutions.extend(batch_solutions);
-    }
-    progress.finish_and_clear();
-    log_status_counts("Done", &solutions);
-
-    Ok(solutions)
-}
-
-fn log_status_counts(label: &str, solutions: &[Solution]) {
-    let sat = solutions
-        .iter()
-        .filter(|s| matches!(s.status(), Status::Satisfiable))
-        .count();
-    let unsat = solutions
-        .iter()
-        .filter(|s| matches!(s.status(), Status::Unsatisfiable))
-        .count();
-    let unknown = solutions.len() - sat - unsat;
-    log::info!(
-        "{label}: {sat} sat, {unsat} unsat, {unknown} unknown/timed out (of {})",
-        solutions.len(),
-    );
 }

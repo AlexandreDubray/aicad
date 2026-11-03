@@ -241,7 +241,7 @@ impl MddArena {
 
 /// A constraint ready for algorithmic processing (e.g., `wmc` or `sampling`): the structure shared
 /// through the arena, and the constraint's own branching order.
-pub(crate) struct CompiledConstraint {
+pub struct CompiledConstraint {
     /// The structure, shared with every constraint of the same shape.
     pub structure: Arc<Mdd>,
     /// The variable of the constraint's scope that each layer stands for, first layer first.
@@ -328,7 +328,7 @@ pub(crate) fn compile_constraint(
 
 /// How the constraints of a problem are compiled by [`compile_constraints`].
 #[derive(Clone, Debug)]
-pub(crate) struct MddCompilationConfig {
+pub struct MddCompilationConfig {
     /// Orders the scope of each constraint into its branching order.
     pub ordering: OrderingHeuristic,
     /// Not read today: the structures are compiled by the arena with a fixed merge heuristic.
@@ -362,7 +362,7 @@ impl Default for MddCompilationConfig {
 /// # Panics
 ///
 /// If a value of a variable in the scope of a constraint is outside `[0, domain_size)`.
-pub(crate) fn compile_constraints(
+pub fn compile_constraints(
     problem: &Problem,
     arena: &MddArena,
     config: &MddCompilationConfig,

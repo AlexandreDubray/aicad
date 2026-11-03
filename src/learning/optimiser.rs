@@ -18,7 +18,7 @@ use burn::tensor::backend::AutodiffBackend;
 
 /// Which optimiser to train with, and how it is configured.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) enum OptimiserConfig {
+pub enum OptimiserConfig {
     /// Adam (Kingma and Ba, 2015), with the weight decay of $L_2$ regularisation if configured.
     Adam {
         /// Learning rate.
@@ -53,14 +53,14 @@ impl Default for OptimiserConfig {
 
 impl OptimiserConfig {
     /// The learning rate.
-    pub(crate) fn lr(&self) -> f64 {
+    pub fn lr(&self) -> f64 {
         match self {
             Self::Adam { lr, .. } | Self::AdamW { lr, .. } | Self::Sgd { lr, .. } => *lr,
         }
     }
 
     /// Builds the optimiser, for a network of type `M`.
-    pub(crate) fn init<B: AutodiffBackend, M: AutodiffModule<B>>(&self) -> Optimiser<B, M> {
+    pub fn init<B: AutodiffBackend, M: AutodiffModule<B>>(&self) -> Optimiser<B, M> {
         let algorithm = match self {
             Self::Adam { config, .. } => Algorithm::Adam(config.init()),
             Self::AdamW { config, .. } => Algorithm::AdamW(config.init()),
@@ -74,7 +74,7 @@ impl OptimiserConfig {
 }
 
 /// The optimiser of [`OptimiserConfig`] that was chosen, with its state.
-pub(crate) struct Optimiser<B: AutodiffBackend, M: AutodiffModule<B>> {
+pub struct Optimiser<B: AutodiffBackend, M: AutodiffModule<B>> {
     /// Learning rate.
     lr: f64,
     /// The optimiser behind it.
@@ -93,7 +93,7 @@ enum Algorithm<B: AutodiffBackend, M: AutodiffModule<B>> {
 
 impl<B: AutodiffBackend, M: AutodiffModule<B>> Optimiser<B, M> {
     /// Moves the parameters of `module` one step along `grads`, and returns the updated module.
-    pub(crate) fn step(&mut self, module: M, grads: GradientsParams) -> M {
+    pub fn step(&mut self, module: M, grads: GradientsParams) -> M {
         match &mut self.algorithm {
             Algorithm::Adam(optim) => optim.step(self.lr, module, grads),
             Algorithm::AdamW(optim) => optim.step(self.lr, module, grads),

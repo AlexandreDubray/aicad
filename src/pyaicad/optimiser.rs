@@ -10,7 +10,7 @@ use burn::optim::momentum::MomentumConfig;
 use burn::optim::{AdamConfig, AdamWConfig, SgdConfig};
 use pyo3::prelude::*;
 
-use crate::learning::optimiser::OptimiserConfig;
+use crate::learning::OptimiserConfig;
 
 /// An optimiser and its hyper-parameters.
 ///

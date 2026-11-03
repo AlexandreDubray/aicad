@@ -9,37 +9,63 @@
 //!
 //! # The architectures
 //!
-//! - [`neural_prior`]: a trained network evaluated at each step, whose logits are decoded
-//!   directly ([`NeuralPriorSearch`]) or used as the prior of belief propagation over the MDDs of
-//!   the constraints ([`NeuralPriorBpSearch`]). Any network of [`crate::neural`] can drive them.
-//! - [`bp_search`]: belief propagation over the MDDs from uniform probabilities, on the CPU only.
+//! - [`BeliefPropagationSearch`]: belief propagation over the MDDs from uniform probabilities, on
+//!   the CPU only.
+//! - `NeuralPriorSearch` and `NeuralPriorBpSearch`, with the `learning` feature: a trained network
+//!   evaluated at each step, whose logits are decoded directly or used as the prior of belief
+//!   propagation over the MDDs of the constraints. Any network of `crate::neural` can drive them.
 //!
 //! Each has its own settings, gathered in [`SearchConfig`]; [`repair`] holds the belief-propagation
-//! repair the last two share.
+//! repair they share.
+//!
+//! # Example
+//!
+//! Belief propagation needs no network, so it runs in the lightest build of the crate:
+//!
+//! ```
+//! use aicad::constraints::all_different;
+//! use aicad::local_search::{solve, SolveConfig};
+//! use aicad::modelling::{Problem, Status};
+//! use std::sync::Arc;
+//!
+//! let mut problem = Problem::default();
+//! let vars = problem.add_variables(4, vec![0, 1, 2, 3]);
+//! all_different(&mut problem, vars);
+//!
+//! // A seed makes the run reproducible; the default search is belief propagation.
+//! let config = SolveConfig::default().with_iteration_limit(1000).with_seed(0);
+//! let solutions = solve(&[Arc::new(problem)], &config, None).unwrap();
+//! assert_eq!(solutions[0].status(), Status::Satisfiable);
+//! ```
 
 #![deny(missing_docs)]
 #![warn(clippy::missing_docs_in_private_items)]
 
-pub(crate) mod bp_search;
-pub(crate) mod config;
-pub(crate) mod neural_prior;
-pub(crate) mod repair;
+mod bp_search;
+mod config;
+#[cfg(feature = "learning")]
+mod neural_prior;
+pub mod repair;
 
-pub(crate) use bp_search::{BeliefPropagationSearch, BeliefPropagationSearchConfig};
-pub(crate) use config::{Budget, SearchConfig, SolveConfig};
-pub(crate) use neural_prior::{
+pub use bp_search::{BeliefPropagationSearch, BeliefPropagationSearchConfig};
+pub use config::{Budget, SearchConfig, SolveConfig};
+#[cfg(feature = "learning")]
+pub use neural_prior::{
     NeuralPriorBpSearch, NeuralPriorBpSearchConfig, NeuralPriorSearch, NeuralPriorSearchConfig,
+    solve_with_network,
 };
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
+use indicatif::{ProgressBar, ProgressStyle};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
 
 use crate::destroy::DestroyOperator;
-use crate::modelling::{Problem, Solution};
+use crate::modelling::{Problem, Solution, Status};
 
 /// Stopping criterion, updated during the local search loop.
 struct StoppingCriterion {
@@ -75,7 +101,7 @@ impl StoppingCriterion {
 
 /// The search of one architecture: what it needs from a batch of problems, and how it destroys and
 /// repairs their assignments.
-pub(crate) trait SearchArchitecture {
+pub trait SearchArchitecture {
     /// Builds the state of a search over `problems`, which is never empty. It holds what the
     /// search needs about the problems (per-problem data) and its rows follow the order of
     /// `problems`.
@@ -88,7 +114,7 @@ pub(crate) trait SearchArchitecture {
 /// The state of a search over a batch of problems, one row per problem still in the batch. The
 /// assignments belong to the engine, which hands them to every step; the state holds only what
 /// the architecture needs besides them.
-pub(crate) trait SearchState {
+pub trait SearchState {
     /// One iteration: destroys part of the assignment of each row flagged in `pending` and repairs
     /// it, in `assignments`. The other rows (their problem is solved but not yet dropped) must be
     /// left as they are. `problems` and `assignments` have one entry per row. `rng` is the source
@@ -120,7 +146,7 @@ fn random_assignments(problems: &[Arc<Problem>]) -> Vec<Vec<isize>> {
 
 /// The variables each row frees, `destroy_op` choosing them with a seed drawn per row from `rng`.
 /// A row that is not `pending` (solved, but not yet dropped) frees nothing.
-pub(crate) fn destroy_rows(
+pub fn destroy_rows(
     destroy_op: &dyn DestroyOperator,
     problems: &[Arc<Problem>],
     assignments: &[Vec<isize>],
@@ -147,7 +173,7 @@ pub(crate) fn destroy_rows(
 
 /// One seed per row, drawn in order from `rng`, so that work done on the rows in parallel stays
 /// reproducible.
-pub(crate) fn row_seeds(rows: usize, rng: &mut StdRng) -> Vec<u64> {
+pub fn row_seeds(rows: usize, rng: &mut StdRng) -> Vec<u64> {
     (0..rows).map(|_| rng.random::<u64>()).collect()
 }
 
@@ -164,7 +190,7 @@ fn filtered<T>(items: Vec<T>, keep: &[bool]) -> Vec<T> {
 /// problem is solved or the budget is spent. What a destroy and repair step is belongs to the
 /// [`SearchArchitecture`]: the engine only runs the loop, keeps the budget and tracks which
 /// problems are solved.
-pub(crate) struct LocalSearch {
+pub struct LocalSearch {
     /// The architecture performing the steps.
     architecture: Box<dyn SearchArchitecture>,
 }
@@ -178,7 +204,7 @@ impl LocalSearch {
     /// being solved so it can be reused across batches of problems. Nothing is kept between runs,
     /// what an architecture needs per problem is set up at the start of each run, which reports
     /// that time as preprocessing, and owned by the run.
-    pub(crate) fn new(architecture: Box<dyn SearchArchitecture>) -> Self {
+    pub fn new(architecture: Box<dyn SearchArchitecture>) -> Self {
         Self { architecture }
     }
 
@@ -194,7 +220,7 @@ impl LocalSearch {
     ///
     /// Returns an error when the architecture cannot search these problems together, see
     /// [`SearchArchitecture::setup`].
-    pub(crate) fn run(
+    pub fn run(
         &self,
         problems: &[Arc<Problem>],
         budget: Budget,
@@ -283,6 +309,126 @@ impl LocalSearch {
                 })
             })
             .collect())
+    }
+}
+
+/// Solves `problems` in batches of at most `batch_size` (all of them in one batch if `None`), one
+/// batch after the other, each with the full `budget`. The seed of a batch is `seed` plus its
+/// index, so that the batches do not replay the same destroy sequence. Shows a progress bar and
+/// logs the outcome of every batch.
+///
+/// Returns one solution per problem, in order, or the error of the architecture if it cannot search
+/// a batch (see [`SearchArchitecture::setup`]).
+pub fn run_batched(
+    engine: &LocalSearch,
+    problems: &[Arc<Problem>],
+    batch_size: Option<usize>,
+    budget: Budget,
+    seed: u64,
+) -> Result<Vec<Solution>, String> {
+    let batch_size = batch_size.unwrap_or(problems.len()).max(1);
+    let batches: Vec<&[Arc<Problem>]> = problems.chunks(batch_size).collect();
+    log::info!(
+        "Solving {} problems in {} batches of at most {}",
+        problems.len(),
+        batches.len(),
+        batch_size,
+    );
+
+    let progress = ProgressBar::new(problems.len() as u64);
+    progress.set_style(
+        ProgressStyle::with_template(
+            "{msg} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+        )
+        .expect("hard-coded progress bar template should always be valid"),
+    );
+    progress.set_message("Solving instances");
+
+    let mut solutions = Vec::with_capacity(problems.len());
+    for (batch_idx, batch) in batches.iter().enumerate() {
+        let batch_start = Instant::now();
+        let batch_solutions = engine.run(
+            batch,
+            budget,
+            seed.wrapping_add(batch_idx as u64),
+            Some(&progress),
+        )?;
+        log_status_counts(
+            &format!(
+                "batch {}/{} done in {:.1}s",
+                batch_idx + 1,
+                batches.len(),
+                batch_start.elapsed().as_secs_f64()
+            ),
+            &batch_solutions,
+        );
+        // `run` already advanced the bar for every problem it solved; the ones it gave up on are
+        // only known now.
+        let unsolved = batch_solutions
+            .iter()
+            .filter(|s| matches!(s.status(), Status::Unknown))
+            .count();
+        progress.inc(unsolved as u64);
+        solutions.extend(batch_solutions);
+    }
+    progress.finish_and_clear();
+    log_status_counts("Done", &solutions);
+
+    Ok(solutions)
+}
+
+/// Logs how many of `solutions` are satisfiable, unsatisfiable and unknown.
+fn log_status_counts(label: &str, solutions: &[Solution]) {
+    let count = |wanted: Status| solutions.iter().filter(|s| s.status() == wanted).count();
+    let (sat, unsat) = (count(Status::Satisfiable), count(Status::Unsatisfiable));
+    log::info!(
+        "{label}: {sat} sat, {unsat} unsat, {} unknown/timed out (of {})",
+        solutions.len() - sat - unsat,
+        solutions.len(),
+    );
+}
+
+/// Solves `problems` with the local search that `config` describes: the batching, the limits, the
+/// seed and the architecture with its settings. Returns one solution per problem, in order.
+///
+/// The seed of `config` is drawn from the process-wide generator when unset, so it is reproducible
+/// once [`crate::set_seed`] was called.
+///
+/// `checkpoint_dir` is the directory of a trained ConsFormer (`config.json` and `weights`, as
+/// written by `learning::consformer::train_consformer`): the neural architectures need
+/// it and load their network from it, on the best device found; the belief-propagation one uses no
+/// network and refuses it. To search with another network, or on a device of your choice, build the
+/// architecture yourself and use [`run_batched`].
+///
+/// # Errors
+///
+/// When `problems` is empty, when the checkpoint is missing for a neural architecture or given to
+/// one that has no network, when it cannot be loaded, or when the architecture cannot search these
+/// problems together.
+pub fn solve(
+    problems: &[Arc<Problem>],
+    config: &SolveConfig,
+    checkpoint_dir: Option<&Path>,
+) -> Result<Vec<Solution>, String> {
+    if problems.is_empty() {
+        return Err("local search: there are no problems to solve".to_string());
+    }
+    let seed = config
+        .seed
+        .unwrap_or_else(|| crate::utils::with_rng(|rng| rng.random_range(0..u64::MAX)));
+    match &config.search {
+        SearchConfig::BeliefPropagation(search) => {
+            if checkpoint_dir.is_some() {
+                return Err(
+                    "the belief-propagation search uses no network: do not give a checkpoint"
+                        .to_string(),
+                );
+            }
+            let engine = LocalSearch::new(Box::new(BeliefPropagationSearch::new(search)));
+            run_batched(&engine, problems, config.batch_size, config.budget, seed)
+        }
+        #[cfg(feature = "learning")]
+        _ => neural_prior::solve_with_consformer(problems, config, checkpoint_dir, seed),
     }
 }
 

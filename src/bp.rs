@@ -303,7 +303,7 @@ fn cavity_message(marginal: &[f64], local_belief: &[f64]) -> Vec<f64> {
 /// - If an MDD branches on a variable that has no row in `probs`.
 /// - If a row of `probs` is shorter than the largest value its variable takes in an MDD (see
 ///   `crate::mdd::wmc::log_wmc_and_gradient`).
-pub(crate) fn belief_propagation(
+pub fn belief_propagation(
     mdds: &[CompiledConstraint],
     probs: &[Vec<f64>],
     assignment: &[ValueIndex],

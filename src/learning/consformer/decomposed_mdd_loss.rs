@@ -137,7 +137,7 @@ fn sample_loss_and_gradient(
 /// The loss decomposes each constraint of a problem into its own exact MDD, so it needs those
 /// diagrams before it can score anything: [`Loss::prepare`] compiles them for every problem it
 /// will be asked about, and keeps them (with the arena they were compiled in) until the next call.
-pub(crate) struct DecomposedMddLoss {
+pub struct DecomposedMddLoss {
     /// How the constraint MDDs are compiled. Always exact, whatever width the setting asked for.
     compilation: MddCompilationConfig,
     /// Number of values the network predicts per variable; the MDDs are compiled against it.
@@ -156,7 +156,7 @@ impl DecomposedMddLoss {
     /// A loss for a network predicting `domain_size` values per variable. `compilation` chooses
     /// the variable ordering and the heuristics; its width bound is ignored, since the loss needs
     /// exact diagrams.
-    pub(crate) fn new(compilation: MddCompilationConfig, domain_size: usize) -> Self {
+    pub fn new(compilation: MddCompilationConfig, domain_size: usize) -> Self {
         Self {
             compilation: MddCompilationConfig {
                 max_width: usize::MAX,

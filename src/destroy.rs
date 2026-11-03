@@ -18,14 +18,14 @@ use crate::modelling::Problem;
 const SCORE_EPS: f64 = 1e-8;
 
 /// Trait to implement for a new destroy operator.
-pub(crate) trait DestroyOperator: Send + Sync {
+pub trait DestroyOperator: Send + Sync {
     /// Returns the index of the variables in `problem` to destroy given the current assignment.
     fn destroy(&self, problem: &Problem, assignment: &[isize], rng: &mut StdRng) -> Vec<usize>;
 }
 
 /// The destroy operators one can choose from, as a plain value that builds the operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum DestroyKind {
+pub enum DestroyKind {
     /// [`RandomDestroy`].
     #[default]
     Random,
@@ -38,7 +38,7 @@ pub(crate) enum DestroyKind {
 impl DestroyKind {
     /// Builds the operator of this kind that destroys (on average) `fraction` of the free
     /// variables.
-    pub(crate) fn build(self, fraction: f64) -> Box<dyn DestroyOperator> {
+    pub fn build(self, fraction: f64) -> Box<dyn DestroyOperator> {
         match self {
             DestroyKind::Random => Box::new(RandomDestroy { fraction }),
             DestroyKind::Worst => Box::new(WorstDestroy { fraction }),
@@ -48,7 +48,7 @@ impl DestroyKind {
 }
 
 /// Uniformly destroys a `fraction` of the free (domain size > 1) variables.
-pub(crate) struct RandomDestroy {
+pub struct RandomDestroy {
     /// Fraction of the free variables to destroy.
     pub fraction: f64,
 }
@@ -69,7 +69,7 @@ impl DestroyOperator for RandomDestroy {
 /// Stochastic worst removal: each free variable is destroyed with a probability that is the
 /// sigmoid of its standardised count of currently-violated constraints, rescaled so the mean
 /// probability matches `fraction`. Every free variable keeps a non-zero probability.
-pub(crate) struct WorstDestroy {
+pub struct WorstDestroy {
     /// Mean fraction of the free variables to destroy.
     pub fraction: f64,
 }
@@ -116,7 +116,7 @@ impl DestroyOperator for WorstDestroy {
 /// independently with a probability rescaled so the expected number of
 /// destroyed variables tracks `fraction * n`, regardless of how many
 /// constraints the problem has relative to its variables
-pub(crate) struct RelatedDestroy {
+pub struct RelatedDestroy {
     /// Expected fraction of the free variables to destroy.
     pub fraction: f64,
 }

@@ -25,6 +25,7 @@
 //!   computed, which is what lets another network be plugged in.
 
 use std::marker::PhantomData;
+use std::path::Path;
 use std::sync::Arc;
 
 use burn::tensor::activation::softmax;
@@ -36,16 +37,21 @@ use rand::rngs::StdRng;
 use crate::destroy::{DestroyKind, DestroyOperator};
 use crate::mdd::arena::MddCompilationConfig;
 use crate::modelling::Problem;
-use crate::neural::{Batch, Network};
+use crate::modelling::Solution;
+use crate::neural::consformer::{ConsFormer, ConsFormerBatch, ConsFormerConfig};
+use crate::neural::{Batch, Network, load_network};
 use crate::sampling::DecodeMode;
 use crate::utils::tensor::{rows_to_tensor, to_rows};
 
 use super::repair::{BatchRepair, MddRepair};
-use super::{SearchArchitecture, SearchState, destroy_rows, row_seeds};
+use super::{
+    LocalSearch, SearchArchitecture, SearchConfig, SearchState, SolveConfig, destroy_rows,
+    row_seeds, run_batched,
+};
 
 /// The settings of the NeuralPrior local search, which decodes the logits of the network.
 #[derive(Debug, Clone)]
-pub(crate) struct NeuralPriorSearchConfig {
+pub struct NeuralPriorSearchConfig {
     /// Destroy operator choosing the variables to free at each iteration.
     pub destroy_kind: DestroyKind,
     /// Fraction of the variables the destroy operator frees at each iteration, in `[0, 1]`.
@@ -70,7 +76,7 @@ impl Default for NeuralPriorSearchConfig {
 /// The settings of the NeuralPriorBP local search, which uses the probabilities of the network as
 /// the prior of belief propagation over the decomposed MDDs of the constraints.
 #[derive(Debug, Clone)]
-pub(crate) struct NeuralPriorBpSearchConfig {
+pub struct NeuralPriorBpSearchConfig {
     /// Destroy operator choosing the variables to free at each iteration.
     pub destroy_kind: DestroyKind,
     /// Fraction of the variables the destroy operator frees at each iteration, in `[0, 1]`.
@@ -209,7 +215,7 @@ impl Decoder {
 }
 
 /// The NeuralPrior local search: a trained network whose logits are decoded directly.
-pub(crate) struct NeuralPriorSearch<B: Backend, Ba, N> {
+pub struct NeuralPriorSearch<B: Backend, Ba, N> {
     /// The network and destroy operator.
     core: Core<B, Ba, N>,
     /// How the logits become values.
@@ -224,7 +230,7 @@ where
 {
     /// Builds the search from its network and settings. Nothing depends on the problems being
     /// solved, so it can be reused across batches.
-    pub(crate) fn new(network: N, config: &NeuralPriorSearchConfig, device: B::Device) -> Self {
+    pub fn new(network: N, config: &NeuralPriorSearchConfig, device: B::Device) -> Self {
         Self {
             core: Core {
                 network,
@@ -295,7 +301,7 @@ where
 
 /// The NeuralPriorBP local search: a trained network whose probabilities are the prior of belief
 /// propagation over the MDDs of the constraints.
-pub(crate) struct NeuralPriorBpSearch<B: Backend, Ba, N> {
+pub struct NeuralPriorBpSearch<B: Backend, Ba, N> {
     /// The network and destroy operator.
     core: Core<B, Ba, N>,
     /// Number of belief-propagation rounds per iteration.
@@ -312,7 +318,7 @@ where
 {
     /// Builds the search from its network and settings. Nothing depends on the problems being
     /// solved, so it can be reused across batches.
-    pub(crate) fn new(network: N, config: &NeuralPriorBpSearchConfig, device: B::Device) -> Self {
+    pub fn new(network: N, config: &NeuralPriorBpSearchConfig, device: B::Device) -> Self {
         Self {
             core: Core {
                 network,
@@ -406,6 +412,81 @@ where
     fn retain(&mut self, keep: &[bool]) {
         self.repair.retain(keep);
     }
+}
+
+/// Solves `problems` with the neural search of `config` and the ConsFormer network of the
+/// checkpoint, on the best device found. See [`super::solve`].
+pub(super) fn solve_with_consformer(
+    problems: &[Arc<Problem>],
+    config: &SolveConfig,
+    checkpoint_dir: Option<&Path>,
+    seed: u64,
+) -> Result<Vec<Solution>, String> {
+    let dir = checkpoint_dir.ok_or("a neural search needs a checkpoint_dir")?;
+    crate::neural::dispatch_backend!(
+        inference,
+        solve_with_checkpoint,
+        problems,
+        config,
+        dir,
+        seed
+    )
+}
+
+/// Loads the ConsFormer of the checkpoint on `device` and runs the neural search of `config`.
+fn solve_with_checkpoint<B: Backend>(
+    device: B::Device,
+    problems: &[Arc<Problem>],
+    config: &SolveConfig,
+    dir: &Path,
+    seed: u64,
+) -> Result<Vec<Solution>, String> {
+    // Building the network reads the variables of the problems, so they are checked first.
+    ConsFormerBatch::<B>::check_problems(problems)?;
+    let (_, network) =
+        load_network::<B, ConsFormerConfig>(dir, problems, &device).map_err(|e| {
+            format!(
+                "failed to load network from checkpoint {}: {e}",
+                dir.display()
+            )
+        })?;
+    solve_with_network::<B, ConsFormerBatch<B>, ConsFormer<B>>(
+        network, device, problems, config, seed,
+    )
+}
+
+/// Solves `problems` with the neural search of `config` driven by `network` on `device`, in
+/// batches (see [`super::run_batched`]). The network reads batches of type `Ba`, which decides
+/// what problems may share a batch.
+///
+/// # Errors
+///
+/// When `config` is not a neural search, or when the network cannot search these problems
+/// together.
+pub fn solve_with_network<B, Ba, N>(
+    network: N,
+    device: B::Device,
+    problems: &[Arc<Problem>],
+    config: &SolveConfig,
+    seed: u64,
+) -> Result<Vec<Solution>, String>
+where
+    B: Backend,
+    Ba: Batch<B>,
+    N: Network<B, Ba> + 'static,
+{
+    let engine = match &config.search {
+        SearchConfig::NeuralPrior(c) => LocalSearch::new(Box::new(
+            NeuralPriorSearch::<B, Ba, N>::new(network, c, device),
+        )),
+        SearchConfig::NeuralPriorBp(c) => LocalSearch::new(Box::new(
+            NeuralPriorBpSearch::<B, Ba, N>::new(network, c, device),
+        )),
+        SearchConfig::BeliefPropagation(_) => {
+            return Err("the belief-propagation search uses no network".to_string());
+        }
+    };
+    run_batched(&engine, problems, config.batch_size, config.budget, seed)
 }
 
 #[cfg(test)]

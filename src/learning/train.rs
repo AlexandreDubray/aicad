@@ -1,6 +1,6 @@
 //! The training loop of the neural networks.
 //!
-//! [`train_model`] fits a network on a set of problems with a [`Loss`](crate::learning::Loss): each
+//! [`train_model`] fits a network on a set of problems with a [`Loss`]: each
 //! epoch it goes through the training batches, takes an optimiser step per batch, and every
 //! `validation_interval` epochs scores the validation set. The weights with the lowest validation
 //! loss are saved in the output directory, so that a run can be loaded back (see
@@ -30,7 +30,7 @@ use crate::neural::{Batch, Network, NetworkConfig};
 
 /// Configuration of the training loop
 #[derive(Config, Debug)]
-pub(crate) struct TrainingConfig {
+pub struct TrainingConfig {
     /// Number of epochs
     #[config(default = 10)]
     pub num_epochs: usize,
@@ -83,7 +83,7 @@ pub(crate) struct TrainingConfig {
 /// `out_dir/weights`. When no validation check ran (for instance `num_epochs` is smaller than
 /// `validation_interval`), nothing is saved and the network as it is at the end is returned.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn train_model<B, NC, S, TBatch, Ba, L, SValid, VBatch>(
+pub fn train_model<B, NC, S, TBatch, Ba, L, SValid, VBatch>(
     network_config: NC,
     problems: &[Arc<Problem>],
     train_dataset: impl Dataset<S> + 'static,

@@ -6,7 +6,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rustc-hash = "2.1"
-pyo3 = { version= "0.28", features = ["extension-module", "num-bigint"] }
+pyo3 = { version = "0.28", features = ["num-bigint"], optional = true }
 num-bigint = "0.4"
 rayon = "1"
 rand = "0.10"
@@ -14,13 +14,24 @@ rand_xoshiro = "0.8"
 deepsize = "0.2.0"
 # need to deactivate op-fusion due to a bug in cubecl resulting in invalid memory access
 #burn = { version = "~0.21", features = ["train", "ndarray", "cuda"] }
-burn = { version = "~0.21", default-features = false, features = ["train", "ndarray", "cuda", "std", "autotune"] }
+burn = { version = "~0.21", default-features = false, features = ["train", "ndarray", "cuda", "std", "autotune"], optional = true }
 serde = "1.0"
 serde_json = "1.0"
 log = "0.4"
-pyo3-log = "0.13"
+pyo3-log = { version = "0.13", optional = true }
 dyn-clone = ">=0.1"
 indicatif = { version = "0.18", features = ["rayon"] }
 
+[features]
+default = []
+# Training and the neural searches: pulls in burn, which is heavy to build. The MDD compiler,
+# sampling, belief propagation and the belief-propagation local search do not need it.
+learning = ["dep:burn"]
+# The Python bindings (the `pyaicad` package), which ship training and so need `learning`. Built
+# by maturin, never needed from Rust.
+python = ["learning", "dep:pyo3", "dep:pyo3-log", "pyo3/extension-module"]
+
 [package.metadata.docs.rs]
+# The learning modules are documented too, although docs.rs has no GPU: it only builds the docs.
+features = ["learning"]
 rustdoc-args = [ "--html-in-header", "katex-header.html" ]
