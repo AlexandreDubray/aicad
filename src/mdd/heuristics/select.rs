@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn it_finds_nothing_to_split_once_the_diagram_is_exact() {
         let mut compiler = all_different_mdd();
-        compiler.refine(usize::MAX);
+        compiler.refine(usize::MAX, usize::MAX);
         let mdd = compiler.mdd();
         for layer in 0..mdd.number_layers() {
             assert_eq!(SelectHeuristic::Greedy.select_node(&compiler, layer), None);

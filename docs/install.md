@@ -59,3 +59,7 @@ maturin develop --features python,learning      # full build
 
 A `--features` given on the command line replaces the list in `pyproject.toml`, so `python` has to
 be named again.
+
+To run the Python tests, `pip install -r requirements.txt`; to build this documentation,
+`pip install -r docs/requirements.txt` and `sphinx-build -W docs docs/_build` (it needs the full build,
+since the guide runs the training).

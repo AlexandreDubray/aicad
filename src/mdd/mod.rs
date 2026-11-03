@@ -37,7 +37,7 @@
 //!     },
 //!     &[constraint],
 //! );
-//! compiler.refine(usize::MAX);
+//! compiler.refine(usize::MAX, usize::MAX);
 //! let mdd = compiler.into_mdd();
 //!
 //! // The permutations of three values.

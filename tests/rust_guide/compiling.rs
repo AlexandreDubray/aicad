@@ -63,7 +63,7 @@ fn an_exact_diagram_counts_and_samples_its_solutions() {
         CompilationHeuristic::default(),
         &constraints,
     );
-    compiler.refine(usize::MAX);
+    compiler.refine(usize::MAX, usize::MAX);
     let mdd = compiler.mdd();
     println!("solutions: {}", mdd.count_solutions()); // 576 latin squares of order 4
     // [docs:end exact]
@@ -103,7 +103,7 @@ fn the_heuristics_change_the_size_not_the_solutions() {
         selection: SelectHeuristic::Greedy,
     };
     let mut compiler = Compiler::new(problem.clone(), auto, &constraints);
-    compiler.refine(usize::MAX);
+    compiler.refine(usize::MAX, usize::MAX);
     println!("nodes per layer, auto order: {:?}", widths(compiler.mdd()));
 
     // Any other order is a list of variable indices, from the first layer to the last. It changes
@@ -114,7 +114,7 @@ fn the_heuristics_change_the_size_not_the_solutions() {
         ..CompilationHeuristic::default()
     };
     let mut other = Compiler::new(problem, by_rows, &constraints);
-    other.refine(usize::MAX);
+    other.refine(usize::MAX, usize::MAX);
     println!("nodes per layer, row by row: {:?}", widths(other.mdd()));
     // [docs:end heuristics]
     assert_eq!(
@@ -140,7 +140,7 @@ fn a_compiler_works_on_the_problem_it_was_given() {
         CompilationHeuristic::default(),
         &constraints,
     );
-    compiler.refine(usize::MAX);
+    compiler.refine(usize::MAX, usize::MAX);
     println!("with grid[0][0] = 2: {}", compiler.mdd().count_solutions()); // 576 / 4
     // [docs:end clue]
     assert_eq!(compiler.mdd().count_solutions().to_string(), "144");
@@ -161,7 +161,7 @@ fn contradictory_constraints_are_detected_while_compiling() {
         CompilationHeuristic::default(),
         &constraints,
     );
-    compiler.refine(usize::MAX);
+    compiler.refine(usize::MAX, usize::MAX);
     let impossible = compiler.mdd();
     println!(
         "unsatisfiable: {} - solutions: {} - {:?}",
@@ -189,7 +189,7 @@ fn a_diagram_can_be_drawn_with_graphviz() {
         CompilationHeuristic::default(),
         &[constraint],
     );
-    compiler.refine(usize::MAX);
+    compiler.refine(usize::MAX, usize::MAX);
     let dot = compiler.mdd().as_graphviz(); // `dot -Tpdf`
     println!("{}", &dot[..60]);
     // [docs:end dot]

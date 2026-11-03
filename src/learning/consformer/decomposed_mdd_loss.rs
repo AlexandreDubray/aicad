@@ -154,12 +154,13 @@ pub struct DecomposedMddLoss {
 
 impl DecomposedMddLoss {
     /// A loss for a network predicting `domain_size` values per variable. `compilation` chooses
-    /// the variable ordering and the heuristics; its width bound is ignored, since the loss needs
-    /// exact diagrams.
+    /// the variable ordering and the heuristics; its width bound and iteration limit are ignored,
+    /// since the loss needs exact diagrams.
     pub fn new(compilation: MddCompilationConfig, domain_size: usize) -> Self {
         Self {
             compilation: MddCompilationConfig {
                 max_width: usize::MAX,
+                max_iterations: usize::MAX,
                 ..compilation
             },
             domain_size,
@@ -973,6 +974,7 @@ mod loss_tests {
             constraint,
             &crate::mdd::heuristics::OrderingHeuristic::MinDomMaxLinked,
             &crate::mdd::arena::nominal_domain(domain_size),
+            usize::MAX,
             usize::MAX,
         );
 

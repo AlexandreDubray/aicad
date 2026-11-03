@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use num_bigint::BigUint;
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 use crate::mdd::heuristics::*;
@@ -28,11 +28,13 @@ impl PyCompiler {
     /// Compiles a fresh `Mdd`. `constraints` selects, by index, the subset of the problem's
     /// constraints to compile over; when omitted, all constraints are used. If `max_width` is
     /// given, the returned `Mdd` is immediately refined to that width; otherwise it is returned
-    /// as the universe MDD with constraint propagation applied
+    /// as the universe MDD with constraint propagation applied. `max_iterations` limits the passes
+    /// of the fix-point loop of that refinement; it must be at least 1 and defaults to no limit.
     #[pyo3(signature = (constraints=None, max_width=None,
             pyordering=PyOrderingHeuristic::MinDomMaxLinked(),
             pymerge=PyMergeHeuristic::StateSimilarity,
-            pyselect=PySelectHeuristic::Greedy))]
+            pyselect=PySelectHeuristic::Greedy,
+            max_iterations=None))]
     fn compile(
         &self,
         constraints: Option<Vec<usize>>,
@@ -40,7 +42,13 @@ impl PyCompiler {
         pyordering: PyOrderingHeuristic,
         pymerge: PyMergeHeuristic,
         pyselect: PySelectHeuristic,
-    ) -> PyMdd {
+        max_iterations: Option<usize>,
+    ) -> PyResult<PyMdd> {
+        if max_iterations == Some(0) {
+            return Err(PyValueError::new_err(
+                "max_iterations must be at least 1: with 0 passes the refinement would do nothing",
+            ));
+        }
         let ordering: OrderingHeuristic = pyordering.into();
         let merge = pymerge.into_heuristic(&self.problem);
         let select: SelectHeuristic = pyselect.into();
@@ -59,11 +67,11 @@ impl PyCompiler {
             &constraints,
         );
         if let Some(width) = max_width {
-            compiler.refine(width);
+            compiler.refine(width, max_iterations.unwrap_or(usize::MAX));
         }
-        PyMdd {
+        Ok(PyMdd {
             held: Held::Compiling(Box::new(compiler)),
-        }
+        })
     }
 
     // --- MODEL INFO --- //
@@ -124,12 +132,17 @@ impl PyMdd {
 
 #[pymethods]
 impl PyMdd {
-    /// Refines this Mdd in place, allowing up to `max_width` nodes per layer. Fails on a frozen
-    /// Mdd.
-    fn refine(&mut self, max_width: usize) -> PyResult<()> {
+    /// Refines this Mdd in place, allowing up to `max_width` nodes per layer and at most
+    /// `max_iterations` passes of the fix-point loop (at least 1). Fails on a frozen Mdd.
+    fn refine(&mut self, max_width: usize, max_iterations: usize) -> PyResult<()> {
+        if max_iterations == 0 {
+            return Err(PyValueError::new_err(
+                "max_iterations must be at least 1: with 0 passes the refinement would do nothing",
+            ));
+        }
         match &mut self.held {
             Held::Compiling(compiler) => {
-                compiler.refine(max_width);
+                compiler.refine(max_width, max_iterations);
                 Ok(())
             }
             _ => Err(PyRuntimeError::new_err(

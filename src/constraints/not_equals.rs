@@ -364,7 +364,7 @@ mod test_not_equals {
             &constraints,
         );
         if width > 1 {
-            compiler.refine(width);
+            compiler.refine(width, usize::MAX);
         }
         compiler
     }

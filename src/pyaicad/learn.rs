@@ -264,6 +264,7 @@ pub(crate) fn train_consformer_mdd(
         merge,
         select: pyselect.into(),
         max_width: usize::MAX,
+        max_iterations: usize::MAX,
     };
 
     py.detach(move || {

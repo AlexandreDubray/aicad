@@ -48,6 +48,10 @@ budget and splits nodes where the relaxation lost information. The path count on
 never below the number of solutions. `refine(None)` goes on until the diagram is as exact as the
 propagation allows.
 
+`compile` and `refine` also take `max_iterations`, the most passes over the layers that the
+refinement makes. The later passes tighten the diagram little for what they cost, so a limit trades
+a looser diagram, still a relaxation, for time; it is chosen at each call.
+
 ```{code-cell} python
 mdd = compiler.compile(width=2)
 for width in (4, 8, 32, None):

@@ -184,7 +184,7 @@ mod tests {
             },
             &constraints,
         );
-        compiler.refine(usize::MAX);
+        compiler.refine(usize::MAX, usize::MAX);
         compiler.into_mdd()
     }
 

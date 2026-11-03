@@ -420,7 +420,7 @@ mod tests {
             },
             constraints,
         );
-        compiler.refine(usize::MAX);
+        compiler.refine(usize::MAX, usize::MAX);
         CompiledConstraint::from_mdd(compiler.into_mdd())
     }
 

@@ -27,8 +27,9 @@ the order of the layers):
 ## Compiling
 
 `Compiler::new` takes the problem (as an `Arc`, since compilation shares it), the heuristics and the
-constraints to compile. It starts from the loosest diagram; `refine(width)` tightens it up to
-`width` nodes per layer, and `usize::MAX` lifts the limit, so the diagram is exact.
+constraints to compile. It starts from the loosest diagram; `refine(width, max_iterations)` tightens it up to
+`width` nodes per layer in at most `max_iterations` passes. `usize::MAX` lifts a limit: with both
+lifted the diagram is as exact as the propagation allows.
 
 ```{literalinclude} ../../tests/rust_guide/compiling.rs
 :language: rust

@@ -49,6 +49,16 @@ def _ordering(order: Union[str, Sequence[Union[Var, int]]], model: Model) -> Any
     return _core.PyOrderingHeuristic.Custom(indices)
 
 
+def _iterations(max_iterations: Optional[int]) -> Optional[int]:
+    """``max_iterations`` checked: ``None`` (no limit) or an integer of at least 1."""
+    if max_iterations is None:
+        return None
+    max_iterations = operator.index(max_iterations)
+    if max_iterations < 1:
+        raise ValueError(f"max_iterations must be at least 1, got {max_iterations}")
+    return max_iterations
+
+
 class Compiler:
     """Compiles a model into decision diagrams.
 
@@ -98,7 +108,7 @@ class Compiler:
         """The model this compiler was made for, as it was then."""
         return self._model
 
-    def compile(self, width: Optional[int] = None) -> "MDD":
+    def compile(self, width: Optional[int] = None, max_iterations: Optional[int] = None) -> "MDD":
         """A new diagram of the model.
 
         Without ``width`` the diagram is exact: its paths are exactly the solutions of the model.
@@ -107,16 +117,23 @@ class Compiler:
 
         With ``width``, the diagram is relaxed: no layer has more than ``width`` nodes, and every
         solution of the model is still a path, but some paths are not solutions.
+
+        ``max_iterations`` is the most passes that the refinement makes (a pass visits every layer
+        once); by default it goes on until nothing more can be split. The later passes tighten a
+        diagram little for what they cost, so a limit trades a looser diagram, still a valid
+        relaxation, for time. At least 1.
         """
         if width is not None:
             width = operator.index(width)
             if width < 1:
                 raise ValueError(f"width must be at least 1, got {width}")
+        max_iterations = _iterations(max_iterations)
         native = self._native.compile(
             constraints=self._constraints,
             max_width=_USIZE_MAX if width is None else width,
             pyordering=self._ordering,
             pymerge=self._merge,
+            max_iterations=max_iterations,
         )
         return MDD(self._model, native, width)
 
@@ -152,12 +169,15 @@ class MDD:
         """Whether the model is proved to have no solution. A relaxed diagram can prove it too."""
         return bool(self._native.is_unsat())
 
-    def refine(self, width: Optional[int] = None) -> None:
+    def refine(self, width: Optional[int] = None, max_iterations: Optional[int] = None) -> None:
         """Tightens the diagram in place, up to ``width`` nodes per layer (``None``: exact).
 
         A diagram compiled with a small width can be refined step by step, each step keeping the
         solutions and removing paths that are not. Refining to a width below the current one
         merges nodes again, giving a looser diagram. Fails on a frozen diagram.
+
+        ``max_iterations`` limits the passes of this refinement, as in :meth:`Compiler.compile`,
+        and is chosen at each call: many passes to a small width, then few to a large one.
         """
         if self.is_frozen:
             raise RuntimeError("this diagram is frozen and cannot be refined")
@@ -165,7 +185,10 @@ class MDD:
             width = operator.index(width)
             if width < 1:
                 raise ValueError(f"width must be at least 1, got {width}")
-        self._native.refine(_USIZE_MAX if width is None else width)
+        self._native.refine(
+            _USIZE_MAX if width is None else width,
+            _USIZE_MAX if max_iterations is None else _iterations(max_iterations),
+        )
         self._width = width
 
     def freeze(self) -> "MDD":

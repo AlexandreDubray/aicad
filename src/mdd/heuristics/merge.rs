@@ -312,7 +312,7 @@ mod tests {
     /// An exact diagram: layers with several nodes to rank.
     fn exact_mdd(heuristic: MergeHeuristic) -> Compiler {
         let mut compiler = exact_mdd_unrefined(heuristic.clone());
-        compiler.refine(usize::MAX);
+        compiler.refine(usize::MAX, usize::MAX);
         let mdd = compiler.mdd();
         assert!(!mdd.is_unsat() && mdd.count_solutions() > 0u32.into());
         compiler
@@ -352,7 +352,7 @@ mod tests {
         for heuristic in all() {
             for width in [1, 2, 3, 6] {
                 let mut compiler = exact_mdd_unrefined(heuristic.clone());
-                compiler.refine(width);
+                compiler.refine(width, usize::MAX);
                 let mdd = compiler.mdd();
                 assert!(
                     (0..mdd.number_layers()).all(|l| mdd.number_nodes_in_layer(l) <= width),

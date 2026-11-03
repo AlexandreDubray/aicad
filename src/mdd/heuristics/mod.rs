@@ -42,7 +42,7 @@
 //!     },
 //!     &[constraint],
 //! );
-//! compiler.refine(2);
+//! compiler.refine(2, usize::MAX);
 //! let mdd = compiler.into_mdd();
 //!
 //! assert_eq!(mdd.decision_at_layer(0), vars[3]);

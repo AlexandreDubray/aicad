@@ -45,7 +45,7 @@
 //!
 //! [`Compiler::refine`] splits nodes whose parents bring different properties (see "Exact and
 //! relaxed nodes" below) until none is left or the layers are full. For a fixed `max_width` it is
-//! a fix-point loop:
+//! a fix-point loop (one pass of the loop is one iteration; the caller can limit their number):
 //!
 //! ```text
 //! repeat
@@ -415,9 +415,23 @@ impl Compiler {
     // --- split and refine strategy ---- //
 
     /// Tightens the diagram by splitting the nodes that mix paths of different states, with at
-    /// most `max_width` nodes per layer. The relaxed flags of the diagram are up to date when it
-    /// returns.
-    pub fn refine(&mut self, max_width: usize) {
+    /// most `max_width` nodes per layer and in at most `max_iterations` passes of the fix-point
+    /// loop (a pass visits every layer once, see "Refinement" in the module documentation).
+    /// `usize::MAX` for `max_iterations` runs the loop until nothing more can be split.
+    ///
+    /// The later passes tighten the diagram little for what they cost, so a limit trades a looser
+    /// diagram, still a valid relaxation, for time. It is chosen at each call: a solver can refine
+    /// to a small width with many passes, then to a large one with a few. The relaxed flags of the
+    /// diagram are up to date when it returns.
+    ///
+    /// # Panics
+    ///
+    /// If `max_iterations` is 0, which would make the call do nothing: do not call it instead.
+    pub fn refine(&mut self, max_width: usize, max_iterations: usize) {
+        assert!(
+            max_iterations >= 1,
+            "max_iterations must be at least 1: with 0 passes `refine` would do nothing"
+        );
         if self.mdd.is_unsat() {
             return;
         }
@@ -425,7 +439,12 @@ impl Compiler {
         let mut merged_lossily = false;
         let mut seen_fingerprints: HashSet<u64> = HashSet::default();
         seen_fingerprints.insert(self.fingerprint());
+        let mut iterations = 0;
         loop {
+            if iterations == max_iterations {
+                break;
+            }
+            iterations += 1;
             let mut any_split = false;
             for layer in 1..self.mdd.nodes.len() - 1 {
                 let selected = if self.mdd.number_nodes_in_layer(layer) == max_width {
@@ -1457,7 +1476,7 @@ pub mod test_mdd {
                 },
                 &constraints,
             );
-            compiler.refine(usize::MAX);
+            compiler.refine(usize::MAX, usize::MAX);
             let solutions = get_all_solutions(compiler.mdd());
             let mut factorial = 1usize;
             for k in 1..=n {
@@ -1502,7 +1521,7 @@ pub mod test_mdd {
             },
             &constraints,
         );
-        compiler.refine(4);
+        compiler.refine(4, usize::MAX);
         assert!(compiler.mdd().count_solutions() >= BigUint::from(720u32));
     }
 
@@ -1549,7 +1568,7 @@ pub mod test_mdd {
                     },
                     &constraints,
                 );
-                compiler.refine(max_width);
+                compiler.refine(max_width, usize::MAX);
                 let candidate_solutions = get_all_solutions(compiler.mdd());
                 for solution in permutations_of(n) {
                     assert!(
@@ -1606,7 +1625,7 @@ pub mod test_mdd {
                 },
                 &constraints,
             );
-            compiler.refine(max_width);
+            compiler.refine(max_width, usize::MAX);
 
             for layer in 1..compiler.mdd().number_layers() {
                 assert!(
@@ -1653,7 +1672,7 @@ pub mod test_mdd {
             },
             &constraints,
         );
-        compiler.refine(usize::MAX);
+        compiler.refine(usize::MAX, usize::MAX);
 
         let true_count = candidates
             .iter()
@@ -1717,7 +1736,7 @@ pub mod test_mdd {
                 },
                 &constraints,
             );
-            compiler.refine(max_width);
+            compiler.refine(max_width, usize::MAX);
             let true_count = candidates
                 .iter()
                 .filter(|assignment| problem.is_solution(assignment))
@@ -1730,6 +1749,93 @@ pub mod test_mdd {
                 true_count
             );
         }
+    }
+
+    /// The compiler of the tests of the iteration limit of `refine`: an all-different of `n`
+    /// variables over `n` values.
+    fn all_different_compiler(n: usize) -> Compiler {
+        let mut problem = Problem::default();
+        let vars: Vec<_> = (0..n)
+            .map(|_| problem.add_variable((0..n as isize).collect()))
+            .collect();
+        all_different(&mut problem, vars);
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        Compiler::new(
+            problem,
+            CompilationHeuristic {
+                ordering: OrderingHeuristic::MinDomMaxLinked,
+                merge: MergeHeuristic::StateSimilarity,
+                selection: SelectHeuristic::Greedy,
+            },
+            &constraints,
+        )
+    }
+
+    /// Paths of the all-different of 7 variables refined to `width` nodes per layer, with at most
+    /// `max_iterations` passes.
+    fn paths_after(width: usize, max_iterations: usize) -> BigUint {
+        let mut compiler = all_different_compiler(7);
+        compiler.refine(width, max_iterations);
+        compiler.mdd().count_solutions()
+    }
+
+    #[test]
+    fn a_generous_iteration_limit_changes_nothing() {
+        let mut unlimited = all_different_compiler(7);
+        unlimited.refine(6, usize::MAX);
+        let mut generous = all_different_compiler(7);
+        generous.refine(6, 1_000_000);
+        assert_eq!(unlimited.fingerprint(), generous.fingerprint());
+    }
+
+    #[test]
+    fn a_limited_refine_is_a_looser_but_sound_diagram_that_more_passes_tighten() {
+        // Every solution stays a path whatever the limit; the later passes remove some of the
+        // other paths, never add any.
+        let solutions = BigUint::from(5040u32);
+        let mut previous = None;
+        for limit in [1, 2, 3, usize::MAX] {
+            let paths = paths_after(6, limit);
+            assert!(
+                paths >= solutions,
+                "limit {}: {} paths is fewer than the {} solutions: unsound",
+                limit,
+                paths,
+                solutions
+            );
+            if let Some(previous) = &previous {
+                assert!(
+                    paths <= *previous,
+                    "limit {}: more passes gave a looser diagram",
+                    limit
+                );
+            }
+            previous = Some(paths);
+        }
+        assert!(
+            paths_after(6, 1) > paths_after(6, usize::MAX),
+            "a single pass should leave paths that the fix-point removes"
+        );
+    }
+
+    #[test]
+    fn the_limit_is_chosen_at_each_call() {
+        // A few passes to a small width, then more to a larger one: each call has its own limit.
+        let mut compiler = all_different_compiler(7);
+        compiler.refine(6, 1);
+        let after_one = compiler.mdd().count_solutions();
+        compiler.refine(6, usize::MAX);
+        let after_all = compiler.mdd().count_solutions();
+        // The second call continues from the diagram the first one left.
+        assert!(after_all < after_one);
+        assert!(after_all >= BigUint::from(5040u32));
+    }
+
+    #[test]
+    #[should_panic(expected = "max_iterations must be at least 1")]
+    fn a_zero_iteration_limit_is_refused() {
+        all_different_compiler(3).refine(usize::MAX, 0);
     }
 
     #[test]
@@ -1752,7 +1858,7 @@ pub mod test_mdd {
             },
             &constraints,
         );
-        compiler.refine(usize::MAX);
+        compiler.refine(usize::MAX, usize::MAX);
         let solutions = get_all_solutions(compiler.mdd());
         for x in 0..3 {
             for y in 0..3 {
@@ -1805,8 +1911,8 @@ pub mod test_mdd {
     #[test]
     fn refining_an_unsatisfiable_diagram_changes_nothing() {
         let mut compiler = unsatisfiable();
-        compiler.refine(usize::MAX);
-        compiler.refine(2);
+        compiler.refine(usize::MAX, usize::MAX);
+        compiler.refine(2, usize::MAX);
         assert!(compiler.mdd().is_unsat());
         assert!(compiler.mdd().nodes.is_empty());
     }
@@ -1828,7 +1934,7 @@ pub mod test_mdd {
                 },
                 &constraints,
             );
-            compiler.refine(width);
+            compiler.refine(width, usize::MAX);
             compiler.mdd().debug_assert_root_and_sink();
             let last_layer = compiler.mdd().number_layers() - 1;
             assert_eq!(compiler.mdd().root(), NodeIndex(0, 0), "width {width}");
@@ -1867,7 +1973,7 @@ pub mod test_mdd {
         let mut compiler = five_different_variables();
         assert!(compiler.mdd().count_solutions() >= 120u32.into());
         for width in [1, 2, 4, 8, 16] {
-            compiler.refine(width);
+            compiler.refine(width, usize::MAX);
             let mdd = compiler.mdd();
             let layers = mdd.number_layers();
             assert!((0..layers).all(|layer| mdd.number_nodes_in_layer(layer) <= width));
@@ -1908,7 +2014,7 @@ pub mod test_mdd {
             },
             &[constraint],
         );
-        compiler.refine(usize::MAX);
+        compiler.refine(usize::MAX, usize::MAX);
         let (values, variables) = compiler.mdd().get_solution().expect("satisfiable");
         assert_eq!(variables, vec![VariableIndex(3), VariableIndex(1)]);
         assert_eq!(values.len(), 2);
@@ -2054,7 +2160,7 @@ pub mod test_mdd {
                         &constraints,
                     );
                     for &width in schedule.iter().chain(&[usize::MAX]) {
-                        compiler.refine(width);
+                        compiler.refine(width, usize::MAX);
                         let mdd = compiler.mdd();
                         assert!(
                             solutions.iter().all(|solution| is_a_path(mdd, solution)),
@@ -2080,7 +2186,7 @@ pub mod test_mdd {
     fn refining_in_several_calls_ends_as_exact_as_refining_once() {
         let exact = {
             let mut compiler = five_different_variables();
-            compiler.refine(usize::MAX);
+            compiler.refine(usize::MAX, usize::MAX);
             compiler.into_mdd()
         };
         let widths = |mdd: &Mdd| -> Vec<usize> {
@@ -2099,7 +2205,7 @@ pub mod test_mdd {
         ] {
             let mut compiler = five_different_variables();
             for &width in &schedule {
-                compiler.refine(width);
+                compiler.refine(width, usize::MAX);
             }
             let mdd = compiler.into_mdd();
             assert_eq!(
@@ -2125,9 +2231,9 @@ pub mod test_mdd {
     #[test]
     fn the_diagram_can_be_read_between_refinements_and_taken_at_the_end() {
         let mut compiler = five_different_variables();
-        compiler.refine(16);
+        compiler.refine(16, usize::MAX);
         let coarse_layers = compiler.mdd().number_layers();
-        compiler.refine(usize::MAX);
+        compiler.refine(usize::MAX, usize::MAX);
         let mdd = compiler.into_mdd();
         assert_eq!(mdd.number_layers(), coarse_layers);
         assert_eq!(mdd.count_solutions(), 120u32.into());
@@ -2159,7 +2265,7 @@ pub mod test_mdd {
     fn most_likely_takes_the_probabilities_it_is_given() {
         let probabilities = vec![vec![0.2, 0.3, 0.5], vec![1.0, 0.0, 0.0]];
         let mut compiler = two_variables_with(MergeHeuristic::MostLikely(probabilities));
-        compiler.refine(1);
+        compiler.refine(1, usize::MAX);
         assert!(!compiler.mdd().is_unsat());
     }
 
@@ -2221,7 +2327,7 @@ pub mod test_mdd {
                 )
             };
             let mut once = build();
-            once.refine(usize::MAX);
+            once.refine(usize::MAX, usize::MAX);
             let expected = once.mdd().count_solutions();
             for schedule in [
                 vec![1, usize::MAX],
@@ -2230,7 +2336,7 @@ pub mod test_mdd {
             ] {
                 let mut compiler = build();
                 for &width in &schedule {
-                    compiler.refine(width);
+                    compiler.refine(width, usize::MAX);
                 }
                 assert_eq!(
                     compiler.mdd().count_solutions(),
@@ -2270,7 +2376,7 @@ pub mod test_mdd {
         // `AllDifferent`, takes the same set of values) and its parents are exact.
         for width in [1, 2, 3, 4, 5, 6, 8, 12, 16, usize::MAX] {
             let mut compiler = five_different_variables();
-            compiler.refine(width);
+            compiler.refine(width, usize::MAX);
             let mdd = compiler.mdd();
             let sets = value_sets_of_paths(mdd);
             let mut expected: Vec<Vec<bool>> = vec![];
@@ -2302,7 +2408,7 @@ pub mod test_mdd {
     #[test]
     fn an_exact_diagram_has_no_relaxed_node() {
         let mut compiler = five_different_variables();
-        compiler.refine(usize::MAX);
+        compiler.refine(usize::MAX, usize::MAX);
         let mdd = compiler.mdd();
         assert!(
             (0..mdd.number_layers())

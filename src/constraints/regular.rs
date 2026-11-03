@@ -608,7 +608,7 @@ mod test_regular {
             &constraints,
         );
         if width > 1 {
-            compiler.refine(width);
+            compiler.refine(width, usize::MAX);
         }
         compiler
     }
@@ -1606,7 +1606,7 @@ mod test_regular {
             },
             &constraints,
         );
-        compiler.refine(usize::MAX);
+        compiler.refine(usize::MAX, usize::MAX);
         assert_eq!(accepted(compiler.mdd()), vec![vec![0, 0, 1]]);
     }
 

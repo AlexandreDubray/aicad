@@ -539,7 +539,7 @@ mod test_gcc {
             &constraints,
         );
         if width > 1 {
-            compiler.refine(width);
+            compiler.refine(width, usize::MAX);
         }
         compiler
     }

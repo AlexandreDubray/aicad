@@ -54,7 +54,7 @@
 //!     CompilationHeuristic::default(),
 //!     &[constraint],
 //! );
-//! compiler.refine(usize::MAX);
+//! compiler.refine(usize::MAX, usize::MAX);
 //! assert_eq!(compiler.into_mdd().count_solutions().to_string(), "6");
 //! ```
 

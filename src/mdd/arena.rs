@@ -68,7 +68,7 @@ use crate::mdd::{Compiler, Mdd};
 use crate::modelling::{ConstraintIndex, Problem, VariableIndex};
 
 /// Everything the compiled structure of a constraint depends on: its shape, the domain of its
-/// variables and the width limit. Two constraints with the same key share one structure,
+/// variables and the width and iteration limits. Two constraints with the same key share one structure,
 /// whichever variables and problem they belong to.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct ConstraintCompileKey {
@@ -78,6 +78,8 @@ pub(crate) struct ConstraintCompileKey {
     domain: Vec<isize>,
     /// Width limit the template is refined to (`usize::MAX` for an exact structure).
     max_width: usize,
+    /// Most passes the refinement of the template is allowed (`usize::MAX` for no limit).
+    max_iterations: usize,
 }
 
 /// The nominal domain `0..domain_size`, for variables that take the values
@@ -94,11 +96,13 @@ fn constraint_shape_key(
     constraint: ConstraintIndex,
     domain: &[isize],
     max_width: usize,
+    max_iterations: usize,
 ) -> ConstraintCompileKey {
     ConstraintCompileKey {
         shape: problem[constraint].structural_key(problem),
         domain: domain.to_vec(),
         max_width,
+        max_iterations,
     }
 }
 
@@ -194,7 +198,7 @@ fn compile_template(key: &ConstraintCompileKey) -> Mdd {
         },
         &constraints,
     );
-    compiler.refine(key.max_width);
+    compiler.refine(key.max_width, key.max_iterations);
     compiler.into_mdd()
 }
 
@@ -303,7 +307,9 @@ fn compute_constraint_order(
 ///
 /// `domain` is the nominal domain of the variables (`nominal_domain(n)` for the values
 /// `0..n`). `max_width` is the width the structure is refined to, `usize::MAX` for an
-/// exact one.
+/// exact one. The refinement stops after `max_iterations` passes of its fix-point loop (see
+/// [`Compiler::refine`], `usize::MAX` for no limit): a structure compiled with
+/// another limit is another structure of the arena.
 pub(crate) fn compile_constraint(
     arena: &MddArena,
     problem: &Problem,
@@ -311,8 +317,9 @@ pub(crate) fn compile_constraint(
     ordering: &OrderingHeuristic,
     domain: &[isize],
     max_width: usize,
+    max_iterations: usize,
 ) -> CompiledConstraint {
-    let key = constraint_shape_key(problem, constraint, domain, max_width);
+    let key = constraint_shape_key(problem, constraint, domain, max_width, max_iterations);
     let structure = arena.structure_for(&key);
     let order = compute_constraint_order(problem, constraint, ordering);
     // An unsatisfiable structure has no layer at all, whatever the scope.
@@ -339,6 +346,11 @@ pub struct MddCompilationConfig {
     pub select: SelectHeuristic,
     /// Width the structures are refined to, `usize::MAX` for exact ones.
     pub max_width: usize,
+    /// Most passes of the fix-point loop of the refinement of a structure, `usize::MAX` for no
+    /// limit. The later passes tighten a structure little for what they cost; with a limit a
+    /// structure can be left looser than the width allows, still a valid relaxation (see
+    /// [`Compiler::refine`]). Must be at least 1.
+    pub max_iterations: usize,
 }
 
 impl Default for MddCompilationConfig {
@@ -348,6 +360,7 @@ impl Default for MddCompilationConfig {
             merge: MergeHeuristic::default(),
             select: SelectHeuristic::Greedy,
             max_width: usize::MAX,
+            max_iterations: usize::MAX,
         }
     }
 }
@@ -393,6 +406,7 @@ pub fn compile_constraints(
                 &config.ordering,
                 &domain,
                 config.max_width,
+                config.max_iterations,
             );
 
             if compiled.structure.is_unsat() {
@@ -500,6 +514,7 @@ mod tests {
                 &OrderingHeuristic::MinDomMaxLinked,
                 &nominal_domain(3),
                 usize::MAX,
+                usize::MAX,
             );
             for tuple in all_tuples(4, 3) {
                 assert_eq!(
@@ -525,6 +540,7 @@ mod tests {
                     &OrderingHeuristic::MinDomMaxLinked,
                     &nominal_domain(3),
                     width,
+                    usize::MAX,
                 );
                 for tuple in all_tuples(4, 3) {
                     if problem[constraint].is_satisfied(&tuple) {
@@ -551,6 +567,7 @@ mod tests {
                 constraint,
                 &OrderingHeuristic::MinDomMaxLinked,
                 &nominal_domain(3),
+                usize::MAX,
                 usize::MAX,
             );
             let declared: Vec<_> = problem[constraint].iter_scope().collect();
@@ -581,6 +598,7 @@ mod tests {
                 &OrderingHeuristic::MinDomMaxLinked,
                 &nominal_domain(domain_size),
                 max_width,
+                usize::MAX,
             )
         };
         let exact = compile(3, usize::MAX);
@@ -593,6 +611,31 @@ mod tests {
         assert_eq!(arena.len(), 3);
         assert!(!arena.is_empty());
         assert!(MddArena::new().is_empty());
+    }
+
+    #[test]
+    fn the_iteration_limit_is_part_of_the_key() {
+        let mut problem = Problem::default();
+        let v = problem.add_variables(4, (0..4isize).collect());
+        let c = all_different(&mut problem, v);
+        let arena = MddArena::new();
+        let compile = |max_iterations: usize| {
+            compile_constraint(
+                &arena,
+                &problem,
+                c,
+                &OrderingHeuristic::MinDomMaxLinked,
+                &nominal_domain(4),
+                usize::MAX,
+                max_iterations,
+            )
+        };
+        let unlimited = compile(usize::MAX);
+        let limited = compile(1);
+        let limited_again = compile(1);
+        assert!(!Arc::ptr_eq(&unlimited.structure, &limited.structure));
+        assert!(Arc::ptr_eq(&limited.structure, &limited_again.structure));
+        assert_eq!(arena.len(), 2);
     }
 
     #[test]
@@ -611,6 +654,7 @@ mod tests {
                             c,
                             &OrderingHeuristic::MinDomMaxLinked,
                             &nominal_domain(5),
+                            usize::MAX,
                             usize::MAX,
                         )
                         .structure
@@ -653,6 +697,7 @@ mod tests {
             &OrderingHeuristic::MinDomMaxLinked,
             &nominal_domain(3),
             usize::MAX,
+            usize::MAX,
         );
         let b = compile_constraint(
             &arena,
@@ -660,6 +705,7 @@ mod tests {
             g2,
             &OrderingHeuristic::MinDomMaxLinked,
             &nominal_domain(3),
+            usize::MAX,
             usize::MAX,
         );
         assert!(Arc::ptr_eq(&a.structure, &b.structure));
@@ -686,6 +732,7 @@ mod tests {
             &OrderingHeuristic::MinDomMaxLinked,
             &nominal_domain(3),
             usize::MAX,
+            usize::MAX,
         );
         let b = compile_constraint(
             &arena,
@@ -693,6 +740,7 @@ mod tests {
             g2,
             &OrderingHeuristic::MinDomMaxLinked,
             &nominal_domain(3),
+            usize::MAX,
             usize::MAX,
         );
         assert!(!Arc::ptr_eq(&a.structure, &b.structure));
@@ -717,6 +765,7 @@ mod tests {
             &OrderingHeuristic::MinDomMaxLinked,
             &nominal_domain(4),
             usize::MAX,
+            usize::MAX,
         );
         let b = compile_constraint(
             &arena,
@@ -724,6 +773,7 @@ mod tests {
             g4,
             &OrderingHeuristic::MinDomMaxLinked,
             &nominal_domain(4),
+            usize::MAX,
             usize::MAX,
         );
         assert!(!Arc::ptr_eq(&a.structure, &b.structure));
@@ -761,6 +811,7 @@ mod tests {
             &OrderingHeuristic::MinDomMaxLinked,
             &nominal_domain(3),
             usize::MAX,
+            usize::MAX,
         );
         let b = compile_constraint(
             &arena,
@@ -768,6 +819,7 @@ mod tests {
             e2,
             &OrderingHeuristic::MinDomMaxLinked,
             &nominal_domain(3),
+            usize::MAX,
             usize::MAX,
         );
         assert!(

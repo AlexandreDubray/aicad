@@ -282,7 +282,7 @@ mod tests {
             },
             &[c],
         );
-        compiler.refine(usize::MAX);
+        compiler.refine(usize::MAX, usize::MAX);
         compiler.into_mdd()
     }
 

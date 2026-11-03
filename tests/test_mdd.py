@@ -257,3 +257,34 @@ def test_a_frozen_diagram_answers_but_cannot_be_refined():
     assert m.check(mdd.sample(1)[0])
     with pytest.raises(RuntimeError, match="frozen"):
         mdd.refine(8)
+
+
+def test_an_iteration_limit_gives_a_looser_but_sound_diagram():
+    model = ac.Model()
+    model.add(ac.all_different(model.int_vars(7, domain=range(7))))
+    compiler = ac.Compiler(model)
+    full = compiler.compile(width=6).count()
+    limited = compiler.compile(width=6, max_iterations=1).count()
+    # Every one of the 7! solutions stays a path; the later passes remove the other paths.
+    assert limited > full >= 5040
+    # A limit that is never reached changes nothing.
+    assert compiler.compile(width=6, max_iterations=1000).count() == full
+
+
+def test_the_iteration_limit_is_chosen_at_each_call():
+    model = ac.Model()
+    model.add(ac.all_different(model.int_vars(7, domain=range(7))))
+    mdd = ac.Compiler(model).compile(width=6, max_iterations=1)
+    once = mdd.count()
+    mdd.refine(6)  # no limit this time
+    assert mdd.count() < once
+
+
+@pytest.mark.parametrize("bad", [0, -1])
+def test_an_iteration_limit_below_one_is_refused(bad):
+    model = ac.Model()
+    model.add(ac.all_different(model.int_vars(2, domain=range(2))))
+    with pytest.raises(ValueError, match="at least 1"):
+        ac.Compiler(model).compile(max_iterations=bad)
+    with pytest.raises(ValueError, match="at least 1"):
+        ac.Compiler(model).compile().refine(max_iterations=bad)

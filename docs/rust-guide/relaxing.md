@@ -23,10 +23,15 @@ Compilers are independent: make as many as you need for the same problem.
 
 ## Refinement
 
-A diagram can be tightened in place instead of compiled again: `refine(width)` raises the budget
-and splits nodes where the relaxation lost information. The path count only goes down, and never
-below the number of solutions. `refine(usize::MAX)` goes on until the diagram is as exact as the
-propagation allows.
+A diagram can be tightened in place instead of compiled again: `refine(width, max_iterations)`
+raises the budget and splits nodes where the relaxation lost information. The path count only goes
+down, and never below the number of solutions. `refine(usize::MAX, usize::MAX)` goes on until the
+diagram is as exact as the propagation allows.
+
+The second argument limits the passes over the layers that the refinement makes. The later passes
+tighten the diagram little for what they cost, so a solver can spend many passes on a small width
+and only a few on a large one: the limit is chosen at each call, and what a limited call leaves is
+a looser diagram, still a relaxation.
 
 ```{literalinclude} ../../tests/rust_guide/relaxing.rs
 :language: rust

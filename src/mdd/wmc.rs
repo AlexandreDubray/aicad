@@ -150,7 +150,7 @@
 //!     },
 //!     &[constraint],
 //! );
-//! compiler.refine(usize::MAX);
+//! compiler.refine(usize::MAX, usize::MAX);
 //! let mdd = compiler.into_mdd();
 //!
 //! // One row of weights per layer: here the first layer is `x`, the second `y`.
@@ -392,7 +392,7 @@ mod tests {
             },
             constraints,
         );
-        compiler.refine(usize::MAX);
+        compiler.refine(usize::MAX, usize::MAX);
         compiler.into_mdd()
     }
 
@@ -680,6 +680,7 @@ mod tests {
             constraint,
             &OrderingHeuristic::MinDomMaxLinked,
             &nominal_domain(3),
+            usize::MAX,
             usize::MAX,
         );
 

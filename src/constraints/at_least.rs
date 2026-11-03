@@ -439,7 +439,7 @@ mod test_at_least {
             &constraints,
         );
         if width > 1 {
-            compiler.refine(width);
+            compiler.refine(width, usize::MAX);
         }
         compiler
     }

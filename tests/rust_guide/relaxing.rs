@@ -21,7 +21,7 @@ fn a_relaxed_diagram_has_more_paths_than_solutions() {
         CompilationHeuristic::default(),
         &constraints,
     );
-    exact.refine(usize::MAX);
+    exact.refine(usize::MAX, usize::MAX);
     let solutions = exact.mdd().count_solutions();
 
     // At most 2 nodes per layer: every solution is still a path, and many paths are not solutions.
@@ -30,7 +30,7 @@ fn a_relaxed_diagram_has_more_paths_than_solutions() {
         CompilationHeuristic::default(),
         &constraints,
     );
-    compiler.refine(2);
+    compiler.refine(2, usize::MAX);
     println!(
         "width 2: {} paths for {solutions} solutions",
         compiler.mdd().count_solutions()
@@ -45,7 +45,7 @@ fn a_relaxed_diagram_has_more_paths_than_solutions() {
         CompilationHeuristic::default(),
         &constraints,
     );
-    relaxed.refine(256);
+    relaxed.refine(256, usize::MAX);
     println!("width 256: {} paths", relaxed.mdd().count_solutions());
     let path = sample_assignment(relaxed.mdd());
     println!(
@@ -65,15 +65,15 @@ fn refinement_tightens_a_diagram_in_place() {
         CompilationHeuristic::default(),
         &constraints,
     );
-    exact.refine(usize::MAX);
+    exact.refine(usize::MAX, usize::MAX);
     let solutions = exact.mdd().count_solutions();
 
     // [docs:start refine]
     let mut compiler = Compiler::new(problem, CompilationHeuristic::default(), &constraints);
-    compiler.refine(2);
+    compiler.refine(2, usize::MAX);
     let mut previous = compiler.mdd().count_solutions();
     for width in [4, 8, 32, usize::MAX] {
-        compiler.refine(width);
+        compiler.refine(width, usize::MAX);
         let paths = compiler.mdd().count_solutions();
         let widest = widths(compiler.mdd()).into_iter().max().unwrap();
         println!("width {width}: {paths} paths, widest layer {widest}");
@@ -102,7 +102,7 @@ fn a_subset_of_the_constraints_can_be_compiled() {
     // The first four constraints of `latin_square` are the rows.
     let rows: Vec<ConstraintIndex> = problem.iter_constraints().take(4).collect();
     let mut compiler = Compiler::new(Arc::new(problem), CompilationHeuristic::default(), &rows);
-    compiler.refine(usize::MAX);
+    compiler.refine(usize::MAX, usize::MAX);
     let mdd = compiler.mdd();
     // A variable in none of the compiled constraints has no layer.
     let scope: Vec<_> = (0..mdd.number_decisions())
@@ -142,7 +142,7 @@ fn the_merge_heuristic_changes_how_tight_a_relaxation_is() {
             ..CompilationHeuristic::default()
         };
         let mut compiler = Compiler::new(problem.clone(), heuristic, &constraints);
-        compiler.refine(4);
+        compiler.refine(4, usize::MAX);
         println!("{name}: {} paths", compiler.mdd().count_solutions());
     }
     // [docs:end merge]
@@ -169,7 +169,7 @@ fn a_relaxed_diagram_decides_less_than_an_exact_one() {
             CompilationHeuristic::default(),
             &constraints,
         );
-        compiler.refine(width);
+        compiler.refine(width, usize::MAX);
         let mdd = compiler.mdd();
         // `get_solution` returns a solution only if the diagram holds a path of exact nodes, so
         // `None` proves nothing, unless the diagram is unsatisfiable.
@@ -183,7 +183,7 @@ fn a_relaxed_diagram_decides_less_than_an_exact_one() {
     // Even a relaxed diagram can prove that a problem has no solution.
     let (problem, constraints) = pigeons(5, 4);
     let mut compiler = Compiler::new(problem, CompilationHeuristic::default(), &constraints);
-    compiler.refine(1);
+    compiler.refine(1, usize::MAX);
     println!(
         "5 pigeons, 4 holes, width 1: unsat = {}",
         compiler.mdd().is_unsat()
@@ -197,7 +197,7 @@ fn a_relaxed_diagram_decides_less_than_an_exact_one() {
         CompilationHeuristic::default(),
         &constraints,
     );
-    narrow.refine(1);
+    narrow.refine(1, usize::MAX);
     assert!(!narrow.mdd().is_unsat());
     assert!(narrow.mdd().get_solution().is_none());
     let mut exact = Compiler::new(
@@ -205,7 +205,7 @@ fn a_relaxed_diagram_decides_less_than_an_exact_one() {
         CompilationHeuristic::default(),
         &constraints,
     );
-    exact.refine(usize::MAX);
+    exact.refine(usize::MAX, usize::MAX);
     let (values, _) = exact.mdd().get_solution().unwrap();
     assert_eq!(values.len(), 5);
 }
