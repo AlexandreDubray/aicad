@@ -1,0 +1,6 @@
+# What building the documentation needs, on top of the package itself (full build: the guide runs the training).
+# Keep in sync with the `docs` extra of pyproject.toml.
+sphinx>=7
+furo
+myst-nb>=1
+sphinx-copybutton

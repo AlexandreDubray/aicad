@@ -13,7 +13,9 @@ dependencies = []
 # Building models from CPMpy expressions is done by the scripts that need it; the library itself
 # does not depend on it.
 cpmpy = ["cpmpy>=0.9.0"]
-test = ["pytest>=7"]
+# numpy: the runtime tests check that numpy integers are accepted. Mirrored in requirements.txt.
+test = ["pytest>=7", "numpy"]
+# Mirrored in docs/requirements.txt.
 # The Python guide executes its examples, so building it needs the full build for the training chapter.
 docs = ["sphinx>=7", "furo", "myst-nb>=1", "sphinx-copybutton"]
 

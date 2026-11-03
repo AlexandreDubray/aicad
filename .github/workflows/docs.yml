@@ -37,11 +37,11 @@ jobs:
           key: docs
 
       # The guide executes its examples, so it needs the full build of the Python package.
-      - run: python -m venv .venv && .venv/bin/pip install maturin pytest
+      - run: python -m venv .venv && .venv/bin/pip install maturin
       - run: .venv/bin/maturin develop --release --features python,learning
         env:
           VIRTUAL_ENV: ${{ github.workspace }}/.venv
-      - run: .venv/bin/pip install sphinx furo "myst-nb>=1" sphinx-copybutton
+      - run: .venv/bin/pip install -r docs/requirements.txt
       - name: Build the Sphinx site
         run: .venv/bin/python -m sphinx -b html -W --keep-going docs site
 

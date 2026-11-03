@@ -1,0 +1,4 @@
+# What the Python test suite needs, on top of the package itself (which has no runtime dependency).
+# Keep in sync with the `test` extra of pyproject.toml.
+pytest>=7
+numpy

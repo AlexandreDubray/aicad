@@ -97,7 +97,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.name }}
-      - run: python -m venv .venv && .venv/bin/pip install maturin pytest
+      - run: python -m venv .venv && .venv/bin/pip install maturin -r requirements.txt
       - run: .venv/bin/maturin develop --release --features ${{ matrix.features }}
         env:
           VIRTUAL_ENV: ${{ github.workspace }}/.venv
@@ -105,7 +105,7 @@ jobs:
       - name: Build the user guide
         if: matrix.name == 'full'
         run: |
-          .venv/bin/pip install sphinx furo "myst-nb>=1" sphinx-copybutton
+          .venv/bin/pip install -r docs/requirements.txt
           .venv/bin/python -m sphinx -b html -W --keep-going docs docs/_build
 
   coverage:
