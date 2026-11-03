@@ -1,9 +1,9 @@
 # AICAD
 
-![](docs/assets/logo.png#gh-light-mode-only)
-![](docs/assets/logo_rev.png#gh-dark-mode-only)
+![](docs/_static/logo.png#gh-light-mode-only)
+![](docs/_static/logo_rev.png#gh-dark-mode-only)
 
-MDD compilation for constraint satisfaction with search strategies built on top of it.
+_Blazingly fast_ MDD compilation for constraint satisfaction problems with search strategies built on top of it.
 Compile a set of constraints into a decision diagram, query it, or solve it, with or without a
 trained neural network.
 
