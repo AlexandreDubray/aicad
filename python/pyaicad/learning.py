@@ -5,6 +5,9 @@ list into training and validation sets; :func:`fit` trains a network on it with 
 recipe. The problems you evaluate on are kept apart by you and never given to :func:`fit`; the trained network is a :class:`Checkpoint` that the neural searches (:class:`pyaicad.NeuralPriorSearch`,
 :class:`pyaicad.NeuralPriorBPSearch`) solve with.
 
+Each network has its own restrictions on the problems it can be trained on and used with; they are
+documented with the network in the Rust crate (``neural::consformer`` for ConsFormer), not here.
+
 >>> import pyaicad as ac
 >>> from pyaicad import learning
 >>> ckpt = learning.fit(train_problems, "consformer-mdd", checkpoint_dir="ckpt", epochs=50)  # doctest: +SKIP

@@ -163,8 +163,8 @@ class NeuralPriorSearch(_LocalSearch):
     assignment is destroyed and repaired from the network's predictions (its prior over the
     values).
 
-    The networks that can be trained are ConsFormer ones, which need every problem of a batch to
-    have the same number of variables.
+    What problems a network accepts depends on the network: see its documentation in the Rust
+    crate (``neural::consformer`` for ConsFormer).
 
     Args:
         checkpoint: The trained network, a :class:`~pyaicad.learning.Checkpoint` or the path of
@@ -211,8 +211,8 @@ class NeuralPriorBPSearch(_LocalSearch):
     """Solves by local search guided by a trained network whose predictions are the prior of
     belief propagation on the MDDs of the constraints, which chooses the values.
 
-    The networks that can be trained are ConsFormer ones, which need every problem of a batch to
-    have the same number of variables.
+    What problems a network accepts depends on the network: see its documentation in the Rust
+    crate (``neural::consformer`` for ConsFormer).
 
     Args:
         checkpoint: The trained network, a :class:`~pyaicad.learning.Checkpoint` or the path of

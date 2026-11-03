@@ -16,9 +16,18 @@ This chapter needs the full build of pyaicad (see [](../install.md)).
 ```
 
 The neural searches repair with the predictions of a network. A network is trained on a set of
-problems, one problem per example. The problems have their own constraints but the same variables,
-which is what a ConsFormer network needs. The trained network lives in a *checkpoint* directory,
-so a network trained once can be used by any later program.
+problems, one problem per example, and the trained network lives in a *checkpoint* directory, so a
+network trained once can be used by any later program.
+
+```{admonition} Each network has its own restrictions
+:class: important
+This chapter shows the workflow. What a given network accepts (how its problems may differ, how
+many variables or values it handles, what it needs from a model) depends on the network, and is
+documented with it in the Rust documentation of the `aicad` crate, for the ConsFormer network in
+the `neural::consformer` module. The examples below use graph colourings of the same size because
+that is what the ConsFormer network accepts. `fit` and the searches check what they can and raise
+an error that names the problem.
+```
 
 ```{code-cell} python
 :tags: [hide-input]
@@ -113,8 +122,9 @@ for name, search in searches.items():
 
 ## Using a checkpoint later
 
-`learning.load` reads a checkpoint back. A network is tied to the problems it was trained on:
-same number of variables, same values. New problems of that family are solved with it directly.
+`learning.load` reads a checkpoint back. A network is tied to the problems it was trained on, in a
+way that depends on the network (see the note at the top of the chapter): problems that fit it are
+solved with it directly.
 `batch_size=1` solves them one after the other, each with its own limits, as a deployment would;
 by default all the problems are stepped together on the device.
 
