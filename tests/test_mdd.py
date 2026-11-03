@@ -240,3 +240,20 @@ def test_a_compiler_hands_out_independent_diagrams_of_the_model_it_was_made_for(
     model.add(ac.equal(x[0], 0))
     assert compiler.compile().count() == 6 and compiler.model.num_constraints == 1
     assert ac.Compiler(model).compile().count() == 2
+
+
+def test_a_frozen_diagram_answers_but_cannot_be_refined():
+    m = ac.Model()
+    x = m.int_vars(4, domain=range(4))
+    m.add(ac.all_different(x))
+    mdd = ac.Compiler(m).compile(width=2)
+    mdd.refine()
+    assert not mdd.is_frozen
+    before = (mdd.count(), mdd.widths, mdd.scope)
+    assert mdd.freeze() is mdd
+    assert mdd.is_frozen
+    assert (mdd.count(), mdd.widths, mdd.scope) == before
+    assert mdd.freeze().is_frozen  # idempotent
+    assert m.check(mdd.sample(1)[0])
+    with pytest.raises(RuntimeError, match="frozen"):
+        mdd.refine(8)

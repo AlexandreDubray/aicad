@@ -55,7 +55,7 @@ class Compiler:
     The compiler is made for a model and the heuristics that drive the compilation; it then hands
     out diagrams, as exact or as relaxed as asked: :meth:`compile`. It works on the model as it is
     when the compiler is created. Each diagram is independent of the others and can be refined
-    further (:meth:`MDD.refine`).
+    further (:meth:`MDD.refine`) until it is frozen (:meth:`MDD.freeze`).
 
     >>> import pyaicad as ac
     >>> m = ac.Model()
@@ -157,14 +157,31 @@ class MDD:
 
         A diagram compiled with a small width can be refined step by step, each step keeping the
         solutions and removing paths that are not. Refining to a width below the current one
-        merges nodes again, giving a looser diagram.
+        merges nodes again, giving a looser diagram. Fails on a frozen diagram.
         """
+        if self.is_frozen:
+            raise RuntimeError("this diagram is frozen and cannot be refined")
         if width is not None:
             width = operator.index(width)
             if width < 1:
                 raise ValueError(f"width must be at least 1, got {width}")
         self._native.refine(_USIZE_MAX if width is None else width)
         self._width = width
+
+    def freeze(self) -> "MDD":
+        """Drops what only refining needs and keeps the diagram. Returns the diagram itself.
+
+        A diagram that can still be refined keeps its compilation alive: the constraints, their
+        properties and the heuristics, which is often most of the memory. Freeze it once it is
+        tight enough. Everything but :meth:`refine` keeps working, and freezing twice does nothing.
+        """
+        self._native.freeze()
+        return self
+
+    @property
+    def is_frozen(self) -> bool:
+        """Whether :meth:`freeze` was called: the diagram cannot be refined any more."""
+        return bool(self._native.is_frozen())
 
     def count(self) -> int:
         """The number of paths. For an exact diagram, the number of solutions of the model.
