@@ -5,6 +5,8 @@ not match the library fails the build. The chapters about training need the full
 pyaicad (the ``learning`` feature) and are skipped when it is not installed.
 """
 
+html_static_path=["_static"]
+
 import pyaicad
 
 project = "pyaicad"
@@ -21,7 +23,8 @@ extensions = [
 ]
 
 html_theme = "furo"
-html_title = f"pyaicad {release}"
+html_title = f"Aicad {release}"
+html_theme_options = {"light_logo": "logo.png", "dark_logo": "logo_rev.png"}
 
 myst_enable_extensions = ["colon_fence", "deflist"]
 

@@ -14,7 +14,7 @@ once, as a model, and then
 The **Python guide** and the **Rust guide** go through these in the same order, with the same
 examples: the Python ones are run when the documentation is built, the Rust ones are compiled and
 run by `cargo test`. The [Python API reference](api.md) lists everything of the Python package with
-its signature; the Rust API is on docs.rs. People who want to change the library, or to plug their
+its signature; the Rust API is on docs.rs, and the [all-items Rust API](https://alexandredubray.github.io/aicad/rust-api/aicad/index.html) (private items included, for contributors) is published with this documentation. People who want to change the library, or to plug their
 own constraint, destroy operator, search or network into it, should read *Contributing*.
 
 ```{toctree}
@@ -51,6 +51,7 @@ rust-guide/learning
 :caption: Reference
 
 api
+All-items Rust API <https://alexandredubray.github.io/aicad/rust-api/aicad/index.html>
 ```
 
 ```{toctree}

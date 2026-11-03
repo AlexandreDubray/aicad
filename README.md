@@ -1,7 +1,7 @@
 # AICAD
 
-![](assets/logo.png#gh-light-mode-only)
-![](assets/logo_rev.png#gh-dark-mode-only)
+![](docs/assets/logo.png#gh-light-mode-only)
+![](docs/assets/logo_rev.png#gh-dark-mode-only)
 
 MDD compilation for constraint satisfaction with search strategies built on top of it.
 Compile a set of constraints into a decision diagram, query it, or solve it, with or without a

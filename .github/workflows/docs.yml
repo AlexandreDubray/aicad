@@ -1,0 +1,71 @@
+name: Documentation
+
+# Builds the whole documentation and publishes it on GitHub Pages:
+#   /            the Sphinx site (Python guide, Rust guide, Python API reference, contributing)
+#   /rust-api/   the rustdoc of the crate with every item, private ones included
+#
+# One-time setup: Settings > Pages > Source: "GitHub Actions".
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; a running one is finished rather than cancelled.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: docs
+
+      # The guide executes its examples, so it needs the full build of the Python package.
+      - run: python -m venv .venv && .venv/bin/pip install maturin pytest
+      - run: .venv/bin/maturin develop --release --features python,learning
+        env:
+          VIRTUAL_ENV: ${{ github.workspace }}/.venv
+      - run: .venv/bin/pip install sphinx furo "myst-nb>=1" sphinx-copybutton
+      - name: Build the Sphinx site
+        run: .venv/bin/python -m sphinx -b html -W --keep-going docs site
+
+      # Every item of the crate, as in the contributing guide. The katex header renders the maths.
+      - name: Build the Rust API with all items
+        run: cargo doc --no-deps --features learning --document-private-items
+        env:
+          RUSTDOCFLAGS: "-D warnings --html-in-header katex-header.html"
+      - name: Put the Rust API next to the site
+        run: |
+          cp -r target/doc site/rust-api
+          touch site/.nojekyll
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
