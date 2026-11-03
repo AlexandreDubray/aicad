@@ -27,8 +27,8 @@
 //!   and the local searches that use them. It pulls in [burn](https://burn.dev), which is heavy to
 //!   build; the compiler, sampling, belief propagation and the belief-propagation local search do
 //!   not need it.
-//! - `python` (off by default): the bindings built by maturin into `pyaicad`. It implies
-//!   `learning`, and is never needed from Rust.
+//! - `python` (off by default): the bindings built by maturin into `pyaicad`, and never needed from
+//!   Rust. Combined with `learning` they give the full wheel; alone, the slim one.
 //!
 //! # Settings
 //!

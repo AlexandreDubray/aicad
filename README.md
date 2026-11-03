@@ -35,7 +35,7 @@ mdd.solution()                                            # one latin square
 - **Learn**: `pyaicad.learning` trains the networks used by the neural searches: `Dataset` (a train/validation split), `fit` with a named
   recipe (`"consformer"`, `"consformer-mdd"`), `load`.
 
-The user guide (`docs/`) goes through all of this with small examples that are run when it is built:
+The documentation (`docs/`) has a Python guide and a Rust guide that go through all of this with small examples that are run when it is built:
 `pip install -e ".[docs]"` then `sphinx-build docs docs/_build`.
 
 Build the extension with `maturin develop` and run the tests with `pytest`. That is the slim build: the

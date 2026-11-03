@@ -136,11 +136,12 @@ pub trait SearchState {
     fn retain(&mut self, _keep: &[bool]) {}
 }
 
-/// A random starting assignment for each of `problems`, each value drawn from its domain.
-fn random_assignments(problems: &[Arc<Problem>]) -> Vec<Vec<isize>> {
+/// A random starting assignment for each of `problems`, each value drawn from its domain by `rng`,
+/// the generator of the run, so that the seed of the run decides where it starts.
+fn random_assignments(problems: &[Arc<Problem>], rng: &mut StdRng) -> Vec<Vec<isize>> {
     problems
         .iter()
-        .map(|problem| crate::sampling::random_assignment(problem))
+        .map(|problem| crate::sampling::random_assignment_with(problem, rng))
         .collect()
 }
 
@@ -238,7 +239,7 @@ impl LocalSearch {
         let mut active: Vec<usize> = (0..problems.len()).collect();
         // The problem and the assignment of each row, in the order of `active`.
         let mut row_problems: Vec<Arc<Problem>> = problems.to_vec();
-        let mut assignments = random_assignments(problems);
+        let mut assignments = random_assignments(problems, &mut rng);
         // Sets of found solution for this batch.
         let mut solutions: Vec<Option<Solution>> = vec![None; problems.len()];
 
@@ -522,5 +523,31 @@ mod tests {
             let key = Arc::as_ptr(unsolved) as usize;
             assert_eq!(calls[&key], 250);
         }
+    }
+
+    #[test]
+    fn the_seed_of_a_run_decides_where_it_starts_and_how_it_goes() {
+        use crate::constraints::all_different;
+
+        // Nothing but the seed of the run is allowed to decide: the process-wide generator is
+        // left as it is, and a run of the same seed must be identical to the previous one.
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(8, (0..8).collect());
+        all_different(&mut problem, vars);
+        let problems = vec![Arc::new(problem)];
+        let search = LocalSearch::new(Box::new(BeliefPropagationSearch::new(
+            &BeliefPropagationSearchConfig {
+                destroy_fraction: 0.3,
+                ..BeliefPropagationSearchConfig::default()
+            },
+        )));
+        let budget = Budget {
+            time_limit: Duration::MAX,
+            iteration_limit: 500,
+        };
+        let first = search.run(&problems, budget, 7, None).unwrap();
+        let second = search.run(&problems, budget, 7, None).unwrap();
+        assert_eq!(first[0].iterations(), second[0].iterations());
+        assert_eq!(first[0].assignment(), second[0].assignment());
     }
 }

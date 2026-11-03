@@ -11,6 +11,10 @@ kernelspec:
 
 # Installation
 
+`aicad` is a Rust crate, and `pyaicad` is the Python package built from it. Install the one you need.
+
+## Python
+
 ```
 pip install pyaicad
 ```
@@ -32,6 +36,17 @@ import pyaicad as ac
 
 print(ac.__version__, "- learning included:", ac.HAS_LEARNING)
 ```
+
+## Rust
+
+```
+cargo add aicad                       # the compiler, belief propagation, local search
+cargo add aicad --features learning   # and the neural networks, their training and the neural searches
+```
+
+The `learning` feature pulls in [burn](https://burn.dev), which takes a long time to compile, and is
+off by default, as for the Python wheel. The code that needs it is gated with
+`#[cfg(feature = "learning")]`, and the Rust guide marks the chapter that needs it.
 
 ## Building from source
 

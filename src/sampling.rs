@@ -21,8 +21,9 @@
 //!
 //! - **Two sources of randomness.** [`sample_categorical`] draws from the process-wide generator
 //!   (see `crate::utils`), so a run follows the seed given with `set_seed`;
-//!   [`sample_categorical_with`] takes the generator of the caller, for work done in parallel,
-//!   where the process-wide one would make the result depend on the thread schedule.
+//!   [`sample_categorical_with`] and [`random_assignment_with`] take the generator of the caller,
+//!   for work done in parallel, where the process-wide one would make the result depend on the
+//!   thread schedule, and for a run that has a seed of its own.
 
 #![deny(missing_docs)]
 #![warn(clippy::missing_docs_in_private_items)]
@@ -89,12 +90,17 @@ pub fn sample_categorical(weights: &[f64]) -> usize {
 /// A random assignment of `problem`: every variable takes a value of its domain, drawn uniformly
 /// from the process-wide generator, whatever the constraints say.
 pub fn random_assignment(problem: &Problem) -> Vec<isize> {
+    crate::utils::with_rng(|rng| random_assignment_with(problem, rng))
+}
+
+/// Like [`random_assignment`], drawing from the generator of the caller: a run that has its own
+/// seed does not depend on what else draws from the process-wide one.
+pub fn random_assignment_with<R: Rng + ?Sized>(problem: &Problem, rng: &mut R) -> Vec<isize> {
     problem
         .iter_variables()
         .map(|variable| {
             let size = problem[variable].domain_size();
-            let position = crate::utils::with_rng(|rng| rng.random_range(0..size));
-            problem[variable].value(ValueIndex(position))
+            problem[variable].value(ValueIndex(rng.random_range(0..size)))
         })
         .collect()
 }

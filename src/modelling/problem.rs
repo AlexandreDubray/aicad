@@ -108,6 +108,16 @@ impl Problem {
     }
 }
 
+/// A summary: the size of the problem, not its content, which can be large.
+impl std::fmt::Debug for Problem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Problem")
+            .field("variables", &self.number_variables())
+            .field("constraints", &self.number_constraints())
+            .finish()
+    }
+}
+
 impl std::ops::Index<VariableIndex> for Problem {
     type Output = Variable;
 

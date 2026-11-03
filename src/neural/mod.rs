@@ -26,7 +26,7 @@ use std::sync::Arc;
 use burn::config::Config;
 use burn::module::Module;
 use burn::record::CompactRecorder;
-use burn::tensor::backend::Backend;
+use burn::tensor::backend::{AutodiffBackend, Backend};
 use burn::tensor::{Bool, Int, Tensor};
 
 use crate::modelling::Problem;
@@ -86,6 +86,53 @@ macro_rules! dispatch_backend {
     };
 }
 pub(crate) use dispatch_backend;
+
+/// Work to run on the best inference backend (see [`run_inference`]), written once for every
+/// backend. A generic method cannot be given as a closure, hence a trait.
+pub trait InferenceJob {
+    /// What the job returns.
+    type Output;
+
+    /// Runs the job on the backend `B`, on `device`.
+    fn run<B: Backend>(self, device: B::Device) -> Self::Output;
+}
+
+/// Work to run on the best training backend (see [`run_training`]): the backend is wrapped in
+/// `Autodiff`.
+pub trait TrainingJob {
+    /// What the job returns.
+    type Output;
+
+    /// Runs the job on the backend `B`, on `device`.
+    fn run<B: AutodiffBackend>(self, device: B::Device) -> Self::Output;
+}
+
+/// Runs `job` on the best device found at run time: `Cuda` if [`cuda_available`], `NdArray`
+/// otherwise. A network defined outside the crate is used through this, as the crate's own entry
+/// points do, without choosing a backend by hand.
+pub fn run_inference<J: InferenceJob>(job: J) -> J::Output {
+    use burn::backend::cuda::{Cuda, CudaDevice};
+    use burn::backend::ndarray::{NdArray, NdArrayDevice};
+
+    if cuda_available() {
+        job.run::<Cuda>(CudaDevice::default())
+    } else {
+        job.run::<NdArray>(NdArrayDevice::default())
+    }
+}
+
+/// Like [`run_inference`], for work that trains: the backend is wrapped in `Autodiff`.
+pub fn run_training<J: TrainingJob>(job: J) -> J::Output {
+    use burn::backend::Autodiff;
+    use burn::backend::cuda::{Cuda, CudaDevice};
+    use burn::backend::ndarray::{NdArray, NdArrayDevice};
+
+    if cuda_available() {
+        job.run::<Autodiff<Cuda>>(CudaDevice::default())
+    } else {
+        job.run::<Autodiff<NdArray>>(NdArrayDevice::default())
+    }
+}
 
 /// A group of problems prepared for one forward pass of a network: what the network reads, what
 /// the loss scores and what the training monitor decodes.
