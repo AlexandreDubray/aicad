@@ -1,6 +1,6 @@
 //! Functions that build a constraint and add it to a [`Problem`], one per kind of constraint.
 
-use super::{AllDifferent, Among, AtLeast, Gcc, NotEquals, Regular, Sum};
+use super::{AllDifferent, Among, AtLeast, Gcc, NotEquals, Regular, Sum, Table};
 use crate::modelling::{ConstraintIndex, Problem, VariableIndex};
 use rustc_hash::FxHashSet;
 
@@ -113,4 +113,19 @@ pub fn regular(
         FxHashSet::from_iter(accepting_states.iter().copied()),
         problem,
     ))
+}
+
+/// Adds [`Table`] to `problem` and returns its index: `variables` take the values of one of the
+/// `tuples`, column `j` of a tuple being the value of `variables[j]`.
+///
+/// # Panics
+///
+/// As [`Table::new`]: if a variable appears more than once in `variables`, or a tuple does not
+/// have one value per variable.
+pub fn table(
+    problem: &mut Problem,
+    variables: Vec<VariableIndex>,
+    tuples: Vec<Vec<isize>>,
+) -> ConstraintIndex {
+    problem.add_constraint(Table::new(variables, tuples))
 }

@@ -41,7 +41,9 @@
 //!   constraint only computes its own order. This is correct because the constraints are
 //!   symmetric in their scope, so any assignment of variables to layers gives the same set of
 //!   accepted tuples; the exception, `Regular`, has its order forced by `precedence_edges`, which
-//!   both orders respect.
+//!   both orders respect. `Table` is not symmetric either, and is free of any order: its key is
+//!   read once the constraint knows its order, and lists the tuples with one column per layer,
+//!   and its template is compiled in the order of its variables.
 //! - **The kept diagram refers to the synthetic problem.** An `Mdd` holds the problem it was
 //!   compiled from, here the template's few variables, and its own order, which names those
 //!   variables. Neither is read through the arena: a [`CompiledConstraint`] brings the order of
@@ -59,6 +61,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::constraints::{
     AllDifferent, Among, AtLeast, Constraint, ConstraintShapeKey, Gcc, NotEquals, Regular, Sum,
+    Table,
 };
 use crate::mdd::compiler::enforce_precedence_order;
 use crate::mdd::heuristics::{
@@ -94,12 +97,17 @@ pub(crate) fn nominal_domain(domain_size: usize) -> Vec<isize> {
 fn constraint_shape_key(
     problem: &Problem,
     constraint: ConstraintIndex,
+    order: &[VariableIndex],
     domain: &[isize],
     max_width: usize,
     max_iterations: usize,
 ) -> ConstraintCompileKey {
+    // The key is read from a constraint that knows its order, as in a compilation, because the
+    // shape of a constraint that is not symmetric in its scope depends on it.
+    let mut constraint = problem[constraint].clone();
+    constraint.update_variable_ordering(order);
     ConstraintCompileKey {
-        shape: problem[constraint].structural_key(problem),
+        shape: constraint.structural_key(problem),
         domain: domain.to_vec(),
         max_width,
         max_iterations,
@@ -168,6 +176,10 @@ fn instantiate_constraint(
             FxHashSet::from_iter(accepting_states.iter().copied()),
             synthetic_problem,
         )),
+        ConstraintShapeKey::Table { arity: _, tuples } => Box::new(Table::new(
+            synthetic_variables,
+            tuples.iter().map(|tuple| tuple.to_vec()).collect(),
+        )),
         ConstraintShapeKey::Sum { arity: _, target } => {
             Box::new(Sum::new(synthetic_variables, *target, synthetic_problem))
         }
@@ -184,6 +196,13 @@ fn compile_template(key: &ConstraintCompileKey) -> Mdd {
         .map(|_| synthetic_problem.add_variable(key.domain.clone()))
         .collect();
 
+    let ordering = match key.shape {
+        // The columns of the key are the layers, in this order.
+        ConstraintShapeKey::Table { .. } => {
+            OrderingHeuristic::Custom((0..key.shape.arity()).collect())
+        }
+        _ => OrderingHeuristic::MinDomMaxLinked,
+    };
     let constraint = instantiate_constraint(&key.shape, synthetic_vars, &synthetic_problem);
     synthetic_problem.add_constraint_boxed(constraint);
 
@@ -192,7 +211,7 @@ fn compile_template(key: &ConstraintCompileKey) -> Mdd {
     let mut compiler = Compiler::new(
         Arc::clone(&synthetic_problem),
         CompilationHeuristic {
-            ordering: OrderingHeuristic::MinDomMaxLinked,
+            ordering,
             merge: MergeHeuristic::StateSimilarity,
             selection: SelectHeuristic::Greedy,
         },
@@ -319,9 +338,16 @@ pub(crate) fn compile_constraint(
     max_width: usize,
     max_iterations: usize,
 ) -> CompiledConstraint {
-    let key = constraint_shape_key(problem, constraint, domain, max_width, max_iterations);
-    let structure = arena.structure_for(&key);
     let order = compute_constraint_order(problem, constraint, ordering);
+    let key = constraint_shape_key(
+        problem,
+        constraint,
+        &order,
+        domain,
+        max_width,
+        max_iterations,
+    );
+    let structure = arena.structure_for(&key);
     // An unsatisfiable structure has no layer at all, whatever the scope.
     debug_assert!(
         structure.is_unsat() || order.len() + 1 == structure.number_layers(),
@@ -424,7 +450,9 @@ pub fn compile_constraints(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constraints::{all_different, among, at_least, gcc, not_equals, regular, sum};
+    use crate::constraints::{
+        all_different, among, at_least, gcc, not_equals, regular, sum, table,
+    };
     use crate::mdd::NodeIndex;
     use crate::modelling::ValueIndex;
 
@@ -485,6 +513,20 @@ mod tests {
             at_least(&mut problem, v.clone(), vec![2], 2),
             gcc(&mut problem, v.clone(), vec![(0, 1, 2), (2, 0, 1)]),
             sum(&mut problem, v.clone(), 5),
+            // Declared in an order that no heuristic would branch in.
+            table(
+                &mut problem,
+                vec![v[2], v[0], v[3], v[1]],
+                vec![
+                    vec![0, 1, 2, 0],
+                    vec![0, 2, 2, 1],
+                    vec![1, 1, 0, 2],
+                    vec![1, 0, 1, 2],
+                    vec![2, 2, 0, 0],
+                    vec![2, 1, 1, 1],
+                    vec![2, 0, 1, 0],
+                ],
+            ),
             // Two consecutive equal values are forbidden.
             regular(
                 &mut problem,

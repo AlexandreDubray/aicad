@@ -2,7 +2,8 @@
 //!
 //! This page is the reference for anyone who uses a constraint through its traits or adds a new
 //! one. The meaning of each constraint and the way it is compiled are in its own module:
-//! [`AllDifferent`], [`NotEquals`], [`Sum`], [`Among`], [`AtLeast`], [`Gcc`] and [`Regular`].
+//! [`AllDifferent`], [`NotEquals`], [`Sum`], [`Among`], [`AtLeast`], [`Gcc`], [`Regular`] and
+//! [`Table`].
 //!
 //! # Meaning
 //!
@@ -33,8 +34,10 @@
 //!    pair of [`precedence_edges`](Constraint::precedence_edges) holds, which is how
 //!    [`Regular`] gets its variables in the order of its automaton.
 //! 3. [`update_variable_ordering`](Constraint::update_variable_ordering) is called once on every
-//!    constraint with the final order. This is when a constraint learns which layers are its own.
-//!    [`is_layer_in_scope`](Constraint::is_layer_in_scope) is meaningless before.
+//!    constraint with the final order, before any property is created. This is when a constraint
+//!    learns which layers are its own ([`is_layer_in_scope`](Constraint::is_layer_in_scope) is
+//!    meaningless before), and when it can build what depends on the order, as [`Table`] does with
+//!    its MDD.
 //!
 //! ## Properties
 //!
@@ -112,6 +115,7 @@
 //! | [`AtLeast`] | the same, capped at the lower bound | smallest min, largest max | the largest count cannot reach the lower bound | the interval is a point |
 //! | [`Gcc`] | one interval per bounded value, capped at its lower bound when its upper bound cannot bind | per value | a bound is out of its interval (bounds only) | every interval is a point |
 //! | [`Regular`] | bitset of automaton states | union | no state of the parent leads into the child | at most one state |
+//! | [`Table`] | sorted set of nodes of the reduced MDD of the tuples | union | no node of the parent leads into a node of the child | at most one node |
 //!
 //! "Bounds only" means that a count that is inside the interval but not reachable is not
 //! detected: a compiled MDD can keep violating paths until nodes are split enough for the
@@ -136,6 +140,29 @@
 //! - **The set of constraints is closed.** [`ConstraintShapeKey`] is an enum that the arena
 //!   matches exhaustively to rebuild a constraint from its key, so a constraint cannot be added
 //!   from outside the crate: adding one means editing it, which the checklist below describes.
+//!
+//! # References
+//!
+//! The scheme above, a relaxed MDD that is refined by splitting nodes and filtered with local
+//! information kept on its nodes, comes from the literature on MDD-based constraint programming.
+//! The references that are specific to a constraint are in its module.
+//!
+//! - H. R. Andersen, T. Hadzic, J. N. Hooker and P. Tiedemann. *A constraint store based on
+//!   multivalued decision diagrams.* CP 2007, LNCS 4741, pp. 118-132. The MDD as a relaxed
+//!   constraint store of limited width, which is a domain store when the width is one, and the
+//!   first propagators on it.
+//! - T. Hadzic, J. N. Hooker, B. O'Sullivan and P. Tiedemann. *Approximate compilation of
+//!   constraints into multivalued decision diagrams.* CP 2008, LNCS 5202, pp. 448-462. Node
+//!   splitting driven by an equivalence test of the partial assignments, which gives the exact
+//!   diagram, and its relaxation by a distance between them.
+//! - S. Hoda, W.-J. van Hoeve and J. N. Hooker. *A systematic approach to MDD-based constraint
+//!   programming.* CP 2010, LNCS 6308, pp. 266-280. Propagators written as a top-down and a
+//!   bottom-up information on the nodes, combined along the edges, which is the shape of a
+//!   [`ConstraintProperty`].
+//! - R. Gentzel, L. Michel and W.-J. van Hoeve. *HADDOCK: a language and architecture for decision
+//!   diagram compilation.* CP 2020. The same scheme made generic: states, forward and reverse
+//!   transitions, relaxation and transition existence functions as the specification of a
+//!   constraint, and construction by a width-one diagram that is split and filtered.
 //!
 //! # Adding a constraint
 //!
@@ -196,6 +223,7 @@ pub mod gcc;
 pub mod not_equals;
 pub mod regular;
 pub mod sum;
+pub mod table;
 
 use std::any::Any;
 
@@ -208,6 +236,7 @@ pub use gcc::Gcc;
 pub use not_equals::NotEquals;
 pub use regular::Regular;
 pub use sum::Sum;
+pub use table::Table;
 
 #[doc(inline)]
 pub use crate::modelling::{Constraint, ConstraintProperty, ConstraintShapeKey};
@@ -290,6 +319,19 @@ mod test_contract {
             vec![None, Some(2), Some(3)],
             vec![Some(1), Some(2), Some(3)],
         ]
+    }
+
+    /// `count` distinct tuples of `arity` values below `values`, drawn with a fixed seed.
+    fn table_tuples(arity: usize, values: usize, count: usize, seed: u64) -> Vec<Vec<isize>> {
+        let mut rng = Lcg(seed);
+        let mut tuples: Vec<Vec<isize>> = vec![];
+        while tuples.len() < count {
+            let tuple: Vec<isize> = (0..arity).map(|_| rng.below(values) as isize).collect();
+            if !tuples.contains(&tuple) {
+                tuples.push(tuple);
+            }
+        }
+        tuples
     }
 
     /// One or two instances of each constraint, some with layers out of their scope.
@@ -384,6 +426,27 @@ mod test_contract {
                 doms(4, 3),
                 &[0, 1, 2, 3],
                 |v, p| Regular::new(v, no_one_then_zero(), 0, FxHashSet::from_iter([0, 1, 2]), p),
+                true,
+            ),
+            Instance::new(
+                "Table",
+                doms(4, 3),
+                &[0, 1, 2, 3],
+                |v, _| Table::new(v, table_tuples(4, 3, 20, 11)),
+                true,
+            ),
+            Instance::new(
+                "Table, partial scope, scope out of order",
+                doms(5, 3),
+                &[3, 0, 2],
+                |v, _| Table::new(v, table_tuples(3, 3, 9, 12)),
+                true,
+            ),
+            Instance::new(
+                "Table, one column",
+                doms(3, 3),
+                &[1],
+                |v, _| Table::new(v, vec![vec![0], vec![2]]),
                 true,
             ),
             Instance::new(
@@ -923,7 +986,8 @@ mod test_contract {
                 "GCC",
                 "Not Equals",
                 "Regular",
-                "Sum"
+                "Sum",
+                "Table"
             ]
         );
     }
@@ -1128,6 +1192,13 @@ mod test_contract {
                     target: 3,
                 },
                 8,
+            ),
+            (
+                ConstraintShapeKey::Table {
+                    arity: 2,
+                    tuples: std::sync::Arc::new(vec![vec![0, 1].into_boxed_slice()]),
+                },
+                2,
             ),
         ];
         for (key, arity) in keys {

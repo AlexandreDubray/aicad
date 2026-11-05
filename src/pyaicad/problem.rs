@@ -115,6 +115,19 @@ impl PyProblem {
         Ok(())
     }
 
+    fn add_table(&mut self, scope: Vec<usize>, tuples: Vec<Vec<isize>>) -> PyResult<()> {
+        if let Some(tuple) = tuples.iter().find(|tuple| tuple.len() != scope.len()) {
+            return Err(PyValueError::new_err(format!(
+                "tuples: a tuple has {} values for a scope of {} variables",
+                tuple.len(),
+                scope.len()
+            )));
+        }
+        let vars = scope.into_iter().map(VariableIndex).collect();
+        table(self.mutate()?, vars, tuples);
+        Ok(())
+    }
+
     fn negate(&mut self, x: usize) -> PyResult<usize> {
         let y = self.add_bool_var()?;
         self.add_not_equals(x, y)?;

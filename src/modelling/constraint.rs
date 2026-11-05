@@ -17,7 +17,7 @@ use std::hash::Hasher;
 pub trait Constraint: DeepSizeOf + DynClone + Send + Sync {
     /// Tells the constraint the order of the layers: `order[layer]` is the variable branched at
     /// that layer. Every variable of the scope appears in `order`. Called once, by `Mdd::new`,
-    /// before any other method that depends on layers.
+    /// before any other method that depends on layers, and before any property is created.
     fn update_variable_ordering(&mut self, order: &[VariableIndex]);
     /// Exact, hashable description of the structure that this constraint compiles to, used as
     /// the key of the arena that shares compiled structures.
@@ -135,6 +135,14 @@ pub enum ConstraintShapeKey {
         /// The accepting states, sorted.
         accepting_states: Vec<usize>,
     },
+    /// [`Table`](crate::constraints::Table).
+    Table {
+        /// Number of variables in the scope.
+        arity: usize,
+        /// The tuples, sorted and without duplicates, in the order of the scope. Shared with the
+        /// constraint, so that building a key does not copy the table.
+        tuples: std::sync::Arc<Vec<Box<[isize]>>>,
+    },
     /// [`Sum`](crate::constraints::Sum).
     Sum {
         /// Number of variables in the scope.
@@ -154,6 +162,7 @@ impl ConstraintShapeKey {
             | Self::AtLeast { arity, .. }
             | Self::Gcc { arity, .. }
             | Self::Regular { arity, .. }
+            | Self::Table { arity, .. }
             | Self::Sum { arity, .. } => *arity,
         }
     }

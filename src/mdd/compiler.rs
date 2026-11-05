@@ -278,10 +278,22 @@ impl Compiler {
             }
         }
         let number_layers = scope.len();
-        let constraints = constraints
+        let mut constraints = constraints
             .iter()
             .map(|&constraint| problem[constraint].clone() as Box<dyn Constraint>)
             .collect::<Vec<Box<dyn Constraint>>>();
+
+        // Set the variable order in the MDD given the heuristics
+        // We get for each layer its decision variable
+        let var_order = ordering.get_order(&problem, &scope);
+        // Repair the heuristic's order to take into account order-sensitive constraints (e.g.,
+        // Regular)
+        let var_order = enforce_precedence_order(var_order, &constraints);
+        // The constraints learn the order before the first property is created: the properties
+        // of some of them (e.g., Table) are built from it.
+        for constraint in constraints.iter_mut() {
+            constraint.update_variable_ordering(&var_order);
+        }
         let mut compiler = Self {
             mdd: Mdd::with_layers(problem, number_layers),
             constraints,
@@ -295,16 +307,6 @@ impl Compiler {
         // last layer is the sink node. Each layer has one node at creation.
         for layer in 0..compiler.mdd.number_layers() {
             compiler.add_node(layer);
-        }
-
-        // Set the variable order in the MDD given the heuristics
-        // We get for each layer its decision variable
-        let var_order = ordering.get_order(&compiler.mdd.problem, &scope);
-        // Repair the heuristic's order to take into account order-sensitive constraints (e.g.,
-        // Regular)
-        let var_order = enforce_precedence_order(var_order, &compiler.constraints);
-        for i in 0..compiler.constraints.len() {
-            compiler.constraints[i].update_variable_ordering(&var_order);
         }
         compiler.mdd.order = var_order;
 

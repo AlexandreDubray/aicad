@@ -42,6 +42,12 @@ def test_constraint_validation():
     with pytest.raises(ModelError):
         ac.regular(x, [[1], [None]], 0, [5])
     with pytest.raises(ModelError):
+        ac.table(x, [(0, 1, 2), (0, 1)])  # a tuple of the wrong length
+    with pytest.raises(ModelError):
+        ac.table([x[0], x[0]], [(0, 0)])  # a repeated variable
+    with pytest.raises(ModelError):
+        ac.table(x, [(0, 1, "a")])  # not an integer
+    with pytest.raises(ModelError):
         m.add(ac.not_equal(x[0], other))  # variable from another model
     with pytest.raises(ModelError):
         m.add(ac.equal(x[0], 9))  # not in the domain

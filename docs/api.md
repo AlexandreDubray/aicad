@@ -22,6 +22,7 @@
 .. autofunction:: sum_equals
 .. autofunction:: gcc
 .. autofunction:: regular
+.. autofunction:: table
 ```
 
 ## Compiling

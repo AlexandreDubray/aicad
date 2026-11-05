@@ -49,6 +49,7 @@ __all__ = [
     "sum_equals",
     "gcc",
     "regular",
+    "table",
 ]
 
 _model_ids = itertools.count()
@@ -223,6 +224,15 @@ class _Regular(Constraint):
         )
 
 
+@dataclass(frozen=True)
+class _Table(Constraint):
+    scope: Tuple[Var, ...]
+    tuples: Tuple[Tuple[int, ...], ...]
+
+    def _apply(self, native: Any) -> None:
+        native.add_table(_idx(self.scope), [list(t) for t in self.tuples])
+
+
 def all_different(variables: Iterable[Var]) -> Constraint:
     """The variables take pairwise different values."""
     return _AllDifferent(_variables(variables, "all_different", distinct=True))
@@ -318,6 +328,32 @@ def regular(
             if t is not None and not 0 <= t < states:
                 raise ModelError(f"regular: a transition leads to {t}, which is not a state")
     return _Regular(scope, table, initial_state, accepting)
+
+
+def table(variables: Iterable[Var], tuples: Iterable[Iterable[int]]) -> Constraint:
+    """The variables take the values of one of the ``tuples``.
+
+    Column ``j`` of a tuple is the value of the ``j``-th variable. Duplicate tuples are ignored,
+    and a tuple with a value that is not in the domain of its variable is never used. With no
+    tuple at all the constraint cannot be satisfied.
+
+    >>> import pyaicad as ac
+    >>> m = ac.Model()
+    >>> x, y = m.int_vars(2, domain=range(3))
+    >>> m.add(ac.table([x, y], [(0, 1), (1, 2), (2, 0)]))
+    >>> m.check([1, 2]), m.check([1, 1])
+    (True, False)
+    """
+    scope = _variables(variables, "table", distinct=True)
+    rows = []
+    for row in tuples:
+        values = _ints(row, "table")
+        if len(values) != len(scope):
+            raise ModelError(
+                f"table: a tuple has {len(values)} values for a scope of {len(scope)} variables"
+            )
+        rows.append(values)
+    return _Table(scope, tuple(sorted(set(rows))))
 
 
 # --------------------------------------------------------------------------------------------

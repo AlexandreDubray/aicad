@@ -23,6 +23,8 @@ def holds(c, a):
         return sum(vals) == c.target
     if isinstance(c, _m._Gcc):
         return all(lo <= vals.count(value) <= hi for value, lo, hi in c.bounds)
+    if isinstance(c, _m._Table):
+        return tuple(vals) in c.tuples
     if isinstance(c, _m._Regular):
         # columns are the sorted values found in the domains of the scope
         raise NotImplementedError("use holds_regular")

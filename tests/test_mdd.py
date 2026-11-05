@@ -108,6 +108,18 @@ def test_regular_count_matches_enumeration():
     assert ac.Compiler(m).compile().count() == 21
 
 
+def test_table_count_matches_enumeration():
+    m = ac.Model()
+    x = m.int_vars(4, domain=range(3))
+    m.add(ac.table([x[2], x[0], x[3]], [(0, 1, 2), (1, 1, 0), (2, 0, 2), (2, 0, 1), (0, 1, 2)]))
+    m.add(ac.not_equal(x[1], x[0]))
+    expected = solutions(m)
+    assert len(expected) > 0
+    assert ac.Compiler(m).compile().count() == len(expected)
+    for width in (1, 2):
+        assert ac.Compiler(m).compile(width=width).count() >= len(expected)
+
+
 @pytest.mark.parametrize("build", MODELS)
 def test_relaxed_diagram_is_a_superset(build):
     m = build()
