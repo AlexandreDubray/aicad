@@ -99,6 +99,9 @@ jobs:
           git config user.email "noreply@github.com"
           git add "data/$SHA.json"
           git commit -m "bench: ${SHA:0:12} $subject"
+          # The build may have rewritten tracked files (Cargo.lock); only the snapshot is kept.
+          git status --short
+          git restore --worktree .
           # Another run may have pushed in the meantime.
           for attempt in 1 2 3 4 5; do
             if git pull --rebase origin main && git push origin HEAD:main; then exit 0; fi
