@@ -1,0 +1,114 @@
+name: Benchmarks
+
+# On every push to main: measure the commit with the micro-benchmarks of the aicad-benchs
+# repository, file the snapshot there, and rebuild the documentation, which publishes the timeline
+# on /bench/. The measurements are instruction counts under valgrind: they do not depend on how
+# busy the shared runner is, so a point of the timeline can be compared with any other.
+#
+# The page generator, the comparison and the data all live in aicad-benchs; this file only links
+# the two repositories.
+#
+# One-time setup: the secret BENCH_DEPLOY_KEY holds the private key of a deploy key of
+# aicad-benchs that has write access.
+#
+# Run by hand to measure a commit that was skipped (a push that arrived while another was being
+# measured replaces the one waiting): give its hash as `ref`.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit (or branch) of aicad to measure; default: the one selected above"
+        required: false
+
+permissions:
+  contents: read
+  actions: write # to start the documentation build once the snapshot is filed
+
+# Snapshots are pushed to one repository: one run at a time.
+concurrency:
+  group: bench
+  cancel-in-progress: false
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: aicad
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 2
+      - uses: actions/checkout@v4
+        with:
+          repository: AlexandreDubray/aicad-benchs
+          ref: main
+          path: aicad-benchs
+          ssh-key: ${{ secrets.BENCH_DEPLOY_KEY }}
+
+      - name: Is this commit already measured?
+        id: todo
+        run: |
+          sha=$(git -C aicad rev-parse HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          if [ -f "aicad-benchs/data/$sha.json" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "data/$sha.json exists: nothing to do" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.todo.outputs.run == 'true'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+      - if: steps.todo.outputs.run == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: aicad-benchs
+          key: bench
+      - if: steps.todo.outputs.run == 'true'
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+
+      - name: Build the benchmark binary
+        if: steps.todo.outputs.run == 'true'
+        working-directory: aicad-benchs
+        run: cargo build --release --bin icount
+
+      - name: Measure
+        if: steps.todo.outputs.run == 'true'
+        working-directory: aicad-benchs
+        run: python3 tools/snapshot.py --aicad ../aicad
+
+      - name: What moved since the previous snapshot
+        if: steps.todo.outputs.run == 'true'
+        working-directory: aicad-benchs
+        # Informative only: a regression is sometimes the price of a fix, so this never fails.
+        run: python3 tools/compare.py --data data --new "data/${{ steps.todo.outputs.sha }}.json" --github
+
+      - name: File the snapshot in aicad-benchs
+        if: steps.todo.outputs.run == 'true'
+        working-directory: aicad-benchs
+        env:
+          SHA: ${{ steps.todo.outputs.sha }}
+        run: |
+          subject=$(git -C ../aicad log -1 --format=%s)
+          git config user.name "aicad benchmarks"
+          git config user.email "noreply@github.com"
+          git add "data/$SHA.json"
+          git commit -m "bench: ${SHA:0:12} $subject"
+          # Another run may have pushed in the meantime.
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin main && git push origin HEAD:main; then exit 0; fi
+            sleep $((attempt * 5))
+          done
+          echo "could not push the snapshot" >&2
+          exit 1
+
+      - name: Rebuild the documentation, which includes the timeline
+        if: steps.todo.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run docs.yml --repo "${{ github.repository }}" --ref main

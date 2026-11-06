@@ -3,6 +3,7 @@ name: Documentation
 # Builds the whole documentation and publishes it on GitHub Pages:
 #   /            the Sphinx site (Python guide, Rust guide, Python API reference, contributing)
 #   /rust-api/   the rustdoc of the crate with every item, private ones included
+#   /bench/      the benchmark timeline (built from the aicad-benchs repository)
 #
 # One-time setup: Settings > Pages > Source: "GitHub Actions".
 
@@ -54,6 +55,15 @@ jobs:
         run: |
           cp -r target/doc site/rust-api
           touch site/.nojekyll
+
+      # The benchmark timeline, on /bench/. Its data and the script that turns it into a page both
+      # live in the aicad-benchs repository (bench.yml adds a snapshot there for every commit).
+      - uses: actions/checkout@v4
+        with:
+          repository: AlexandreDubray/aicad-benchs
+          path: aicad-benchs
+      - name: Build the benchmark page
+        run: python3 aicad-benchs/tools/build_site.py --data aicad-benchs/data --out site/bench --repo ${{ github.repository }}
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

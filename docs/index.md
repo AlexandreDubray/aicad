@@ -52,6 +52,7 @@ rust-guide/learning
 
 api
 All-items Rust API <https://alexandredubray.github.io/aicad/rust-api/aicad/index.html>
+Benchmarks <https://alexandredubray.github.io/aicad/bench/>
 ```
 
 ```{toctree}
