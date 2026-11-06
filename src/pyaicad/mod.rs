@@ -1,5 +1,6 @@
 use pyo3::prelude::*;
 
+mod build;
 mod compiler;
 mod heuristics;
 #[cfg(feature = "learning")]
@@ -11,6 +12,7 @@ mod optimiser;
 mod problem;
 mod threads;
 
+pub(crate) use build::build_info;
 pub(crate) use compiler::{PyCompiler, PyMdd};
 pub(crate) use heuristics::{PyMergeHeuristic, PyOrderingHeuristic, PySelectHeuristic};
 #[cfg(feature = "learning")]
@@ -63,6 +65,7 @@ fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySolveConfig>()?;
     m.add_class::<PySolution>()?;
     m.add_class::<PyStatus>()?;
+    m.add_function(wrap_pyfunction!(build_info, m)?)?;
     m.add_function(wrap_pyfunction!(set_seed, m)?)?;
     m.add_function(wrap_pyfunction!(set_num_threads, m)?)?;
     m.add_function(wrap_pyfunction!(get_num_threads, m)?)?;

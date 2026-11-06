@@ -23,7 +23,15 @@ Networks for the neural searches are trained with :mod:`pyaicad.learning`.
 """
 
 from . import learning
-from ._runtime import HAS_LEARNING, get_num_threads, set_log_level, set_num_threads, set_seed
+from ._runtime import (
+    HAS_LEARNING,
+    BuildInfo,
+    get_num_threads,
+    set_log_level,
+    set_num_threads,
+    set_seed,
+    version,
+)
 from .errors import AicadError, CheckpointError, FeatureUnavailableError, ModelError
 from .mdd import MDD, Compiler
 from .model import (
@@ -50,7 +58,7 @@ from .search import (
     local_search,
 )
 
-__version__ = "0.0.1"
+__version__ = version().version
 
 __all__ = [
     # modelling
@@ -84,11 +92,13 @@ __all__ = [
     "set_num_threads",
     "get_num_threads",
     "set_log_level",
+    # build
+    "version",
+    "BuildInfo",
     # errors
     "AicadError",
     "ModelError",
     "CheckpointError",
     "FeatureUnavailableError",
-    # build
     "HAS_LEARNING",
 ]

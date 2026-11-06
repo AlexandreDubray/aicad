@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import logging
 import operator
-from typing import Dict
+from dataclasses import dataclass
+from typing import Dict, Optional, Tuple
 
 from . import _core
 from .errors import FeatureUnavailableError
 
 __all__ = [
     "HAS_LEARNING",
+    "BuildInfo",
+    "version",
     "set_seed",
     "set_num_threads",
     "get_num_threads",
@@ -22,6 +25,55 @@ __all__ = [
 #: feature of the native library, which is heavy to build). Compilation, sampling and the
 #: belief-propagation search are always there.
 HAS_LEARNING: bool = bool(getattr(_core, "HAS_LEARNING", False))
+
+
+@dataclass(frozen=True)
+class BuildInfo:
+    """The build of the library that is running: what was compiled into the native extension.
+
+    The version of the source tree says little about the code that runs, which may be an
+    installed copy of another commit. Record this next to any measurement.
+    """
+
+    #: The version of the library.
+    version: str
+    #: The full hash of the commit it was built from, or ``None`` if it could not be known (a
+    #: build from a source archive without ``.git``).
+    commit: Optional[str]
+    #: The Rust compiler, as printed by ``rustc --version``; empty if it could not be run.
+    rustc: str
+    #: The compilation target, for example ``x86_64-unknown-linux-gnu``.
+    target: str
+    #: The cargo profile, ``"debug"`` or ``"release"``. A debug build is much slower.
+    profile: str
+    #: The optimisation level of the profile: ``"0"``, ``"1"``, ``"2"``, ``"3"``, ``"s"`` or ``"z"``.
+    opt_level: str
+    #: The cargo features that were on, sorted (``"learning"``, ``"python"``).
+    features: Tuple[str, ...]
+
+    def __str__(self) -> str:
+        commit = self.commit[:12] if self.commit else "unknown"
+        return (
+            f"{self.version} (commit {commit}, {self.rustc or 'rustc unknown'}, {self.profile} "
+            f"opt-level {self.opt_level}, {self.target}, features: [{', '.join(self.features)}])"
+        )
+
+
+def version() -> BuildInfo:
+    """Returns the build of the library that is running: its version, the commit it was built
+    from, the Rust compiler and the build settings.
+
+    >>> import pyaicad as ac
+    >>> ac.version().profile in ("debug", "release")
+    True
+
+    Benchmarks are only comparable between commits, so run them from a clean copy of a commit
+    and keep this with the results. The same record is the first line of every file written by
+    :func:`pyaicad.diagnostics.enable_data_log`.
+    """
+    info = dict(_core.build_info())
+    info["features"] = tuple(info["features"])
+    return BuildInfo(**info)
 
 
 def require_learning(what: str) -> None:

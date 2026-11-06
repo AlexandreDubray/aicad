@@ -2,6 +2,8 @@
 
 This is for experiments and may change between releases. While recording is on, the library
 writes one JSON object per line to a file, which ``pandas.read_json(path, lines=True)`` reads.
+The first line is always the ``build_info`` event: the version, commit, compiler and build
+settings of the library that wrote the file (see :func:`pyaicad.version`).
 """
 
 from __future__ import annotations

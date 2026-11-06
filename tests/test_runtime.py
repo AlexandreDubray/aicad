@@ -54,3 +54,29 @@ def test_it_can_be_changed_between_uses(restore_threads):
     assert ac.Compiler(m).compile().count() == 24
     ac.set_num_threads(2)
     assert ac.Compiler(m).compile().count() == 24
+
+
+def test_version_reports_the_running_build():
+    info = ac.version()
+    assert info.version == ac.__version__
+    assert info.commit is None or len(info.commit) == 40
+    assert info.rustc.startswith("rustc ")
+    assert info.profile in ("debug", "release")
+    assert ("learning" in info.features) == ac.HAS_LEARNING
+    assert "python" in info.features
+    assert info.version in str(info)
+
+
+def test_a_data_log_starts_with_the_build_info(tmp_path):
+    import json
+
+    import pyaicad.diagnostics as diag
+
+    path = tmp_path / "log.jsonl"
+    diag.enable_data_log(path)
+    diag.disable_data_log()
+    first = json.loads(path.read_text().splitlines()[0])
+    assert first["event"] == "build_info"
+    assert first["version"] == ac.version().version
+    assert first["commit"] == ac.version().commit
+    assert tuple(first["features"]) == ac.version().features

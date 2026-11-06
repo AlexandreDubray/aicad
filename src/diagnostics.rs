@@ -23,6 +23,9 @@
 //! Each line has an `"event"` field naming its kind, plus the fields given at the call site.
 //! The scripts in `cpaior27` read these by name, so changing one is a change to that interface.
 //!
+//! - `build_info` (written by [`enable`], always the first line): the build that produced the
+//!   log, see [`crate::build_info`]. `version`, `commit` (`null` if unknown), `rustc`, `target`,
+//!   `profile`, `opt_level` and `features` (a list).
 //! - `train_epoch` (`learning::train`): `epoch`, the phase timings `t_batch`, `t_forward`,
 //!   `t_monitor`, `t_loss`, `t_backward`, `epoch_rt_s` and `epoch_loss`.
 //! - `valid_epoch` (`learning::train`): `epoch`, `t_batch`, `t_forward`, `t_score`, `total_s`
@@ -98,6 +101,8 @@ pub fn enable(path: &Path) -> std::io::Result<()> {
         path: path.to_path_buf(),
     });
     ENABLED.store(true, Ordering::Relaxed);
+    drop(sink);
+    log_build_info();
     Ok(())
 }
 
@@ -177,6 +182,23 @@ macro_rules! data_log {
 )]
 pub(crate) use data_log;
 
+/// Says which build writes the log: one `log::info!` record and, as the first line of a data log,
+/// the `build_info` event. See [`crate::build_info`].
+fn log_build_info() {
+    let info = crate::build_info::version();
+    log::info!("aicad {info}");
+    data_log!(
+        "build_info",
+        version = info.version,
+        commit = info.commit,
+        rustc = info.rustc,
+        target = info.target,
+        profile = info.profile,
+        opt_level = info.opt_level,
+        features = info.features,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,6 +258,24 @@ mod tests {
         assert_eq!(lines[0]["loss"], 0.5);
         assert_eq!(lines[0]["split"], "train");
         assert_eq!(lines[1]["values"], serde_json::json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn a_log_starts_with_the_build_that_wrote_it() {
+        let s = Scenario::new("build_info");
+        enable(&s.path).unwrap();
+        disable();
+        let first: serde_json::Value = serde_json::from_str(
+            std::fs::read_to_string(&s.path)
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(first["event"], "build_info");
+        assert_eq!(first["version"], env!("CARGO_PKG_VERSION"));
+        assert!(first["features"].is_array());
     }
 
     #[test]

@@ -20,10 +20,11 @@ import sys
 from pathlib import Path
 
 # Rank of each top-level module of the crate. Equal ranks may depend on each other freely.
-# `diagnostics` is a leaf shared by all layers, so it sits next to `utils`.
+# `diagnostics` and `build_info` are leaves shared by all layers, so they sit next to `utils`.
 LAYERS = [
     ("utils", 0),
     ("diagnostics", 0),
+    ("build_info", 0),
     ("modelling", 1),
     ("constraints", 2),
     ("mdd", 3),

@@ -66,6 +66,10 @@
 .. autofunction:: set_num_threads
 .. autofunction:: get_num_threads
 .. autofunction:: set_log_level
+.. autofunction:: version
+
+.. autoclass:: BuildInfo
+   :members:
 
 .. autodata:: HAS_LEARNING
 

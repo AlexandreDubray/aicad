@@ -61,6 +61,7 @@
 #![cfg_attr(not(test), warn(unreachable_pub))]
 
 pub mod bp;
+pub mod build_info;
 pub mod constraints;
 pub mod destroy;
 pub mod diagnostics;
@@ -79,6 +80,7 @@ mod pyaicad;
 
 mod utils;
 
+pub use build_info::{BuildInfo, version};
 pub use utils::{default_num_threads, num_threads, set_num_threads};
 
 /// Seeds every source of randomness of the crate, so that a later run of a compilation, a
