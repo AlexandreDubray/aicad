@@ -104,7 +104,7 @@ use std::sync::Arc;
 /// $A \cap A'$ and $S \cup S'$, so a merged node over-approximates both parents. See the
 /// [module documentation](self).
 #[derive(Clone, PartialEq, Eq, deepsize::DeepSizeOf)]
-struct AllDifferentProperty {
+pub(super) struct AllDifferentProperty {
     /// The bit of each value, shared with the constraint.
     map: Arc<FxHashMap<isize, usize>>,
     /// $A$: values taken on all paths.
@@ -127,6 +127,15 @@ impl AllDifferentProperty {
             value_all_path,
             value_some_path,
         }
+    }
+
+    /// Number of different values in $S \cup S' \cup \{v\}$, where $S$ is the set of `self` and
+    /// $S'$ the one of `other`. Used by constraints that embed an `AllDifferent` and know that
+    /// every value has to be taken (see `Disjunctive`).
+    pub(super) fn count_some_with(&self, other: &Self, value: isize) -> usize {
+        let bit = *self.map.get(&value).unwrap();
+        let is_new = !self.value_some_path.contains(bit) && !other.value_some_path.contains(bit);
+        self.value_some_path.size_union(&other.value_some_path) + usize::from(is_new)
     }
 }
 
@@ -184,6 +193,18 @@ impl AllDifferent {
             layer_in_scope: vec![],
             has_duplicate,
         }
+    }
+}
+
+impl AllDifferent {
+    /// The seed of a fold, as a concrete property (see `identity_property`).
+    pub(super) fn identity(&self) -> AllDifferentProperty {
+        AllDifferentProperty::new(self.domain.len(), self.val_to_bit.clone(), !0)
+    }
+
+    /// The property of the empty path, as a concrete property (see `empty_property`).
+    pub(super) fn empty(&self) -> AllDifferentProperty {
+        AllDifferentProperty::new(self.domain.len(), self.val_to_bit.clone(), 0)
     }
 }
 
@@ -295,19 +316,11 @@ impl Constraint for AllDifferent {
     }
 
     fn identity_property(&self) -> Box<dyn ConstraintProperty> {
-        Box::new(AllDifferentProperty::new(
-            self.domain.len(),
-            self.val_to_bit.clone(),
-            !0,
-        ))
+        Box::new(self.identity())
     }
 
     fn empty_property(&self) -> Box<dyn ConstraintProperty> {
-        Box::new(AllDifferentProperty::new(
-            self.domain.len(),
-            self.val_to_bit.clone(),
-            0,
-        ))
+        Box::new(self.empty())
     }
 }
 

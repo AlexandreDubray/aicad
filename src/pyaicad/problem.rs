@@ -128,6 +128,34 @@ impl PyProblem {
         Ok(())
     }
 
+    fn add_disjunctive(
+        &mut self,
+        scope: Vec<usize>,
+        release: Vec<isize>,
+        deadline: Vec<isize>,
+        duration: Vec<isize>,
+    ) -> PyResult<()> {
+        for (name, list) in [
+            ("release", &release),
+            ("deadline", &deadline),
+            ("duration", &duration),
+        ] {
+            if list.len() != scope.len() {
+                return Err(PyValueError::new_err(format!(
+                    "{name}: {} values for a scope of {} variables",
+                    list.len(),
+                    scope.len()
+                )));
+            }
+        }
+        if duration.iter().any(|&p| p < 0) {
+            return Err(PyValueError::new_err("duration: a duration is negative"));
+        }
+        let vars = scope.into_iter().map(VariableIndex).collect();
+        disjunctive(self.mutate()?, vars, release, deadline, duration);
+        Ok(())
+    }
+
     fn negate(&mut self, x: usize) -> PyResult<usize> {
         let y = self.add_bool_var()?;
         self.add_not_equals(x, y)?;

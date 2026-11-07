@@ -48,6 +48,12 @@ def test_constraint_validation():
     with pytest.raises(ModelError):
         ac.table(x, [(0, 1, "a")])  # not an integer
     with pytest.raises(ModelError):
+        ac.disjunctive(x, [0, 0], [5, 5, 5], [1, 1, 1])  # a list of the wrong length
+    with pytest.raises(ModelError):
+        ac.disjunctive(x, [0, 0, 0], [5, 5, 5], [1, -1, 1])  # a negative duration
+    with pytest.raises(ModelError):
+        ac.disjunctive([x[0], x[0]], [0, 0], [5, 5], [1, 1])  # a repeated variable
+    with pytest.raises(ModelError):
         m.add(ac.not_equal(x[0], other))  # variable from another model
     with pytest.raises(ModelError):
         m.add(ac.equal(x[0], 9))  # not in the domain

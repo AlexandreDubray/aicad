@@ -25,10 +25,26 @@ def holds(c, a):
         return all(lo <= vals.count(value) <= hi for value, lo, hi in c.bounds)
     if isinstance(c, _m._Table):
         return tuple(vals) in c.tuples
+    if isinstance(c, _m._Disjunctive):
+        return holds_disjunctive(c, vals)
     if isinstance(c, _m._Regular):
         # columns are the sorted values found in the domains of the scope
         raise NotImplementedError("use holds_regular")
     raise AssertionError(c)
+
+
+def holds_disjunctive(c, jobs):
+    """The jobs are a permutation, and the schedule that starts every job as soon as it can meets
+    the deadlines."""
+    if sorted(jobs) != list(range(len(jobs))):
+        return False
+    free_at = None
+    for j in jobs:
+        start = c.release[j] if free_at is None else max(free_at, c.release[j])
+        free_at = start + c.duration[j]
+        if free_at > c.deadline[j]:
+            return False
+    return True
 
 
 def holds_regular(c, a, symbols):

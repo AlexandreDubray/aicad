@@ -40,10 +40,10 @@
 //!   `MinDomMaxLinked`, `StateSimilarity` and `Greedy` on its synthetic variables, and a real
 //!   constraint only computes its own order. This is correct because the constraints are
 //!   symmetric in their scope, so any assignment of variables to layers gives the same set of
-//!   accepted tuples; the exception, `Regular`, has its order forced by `precedence_edges`, which
-//!   both orders respect. `Table` is not symmetric either, and is free of any order: its key is
-//!   read once the constraint knows its order, and lists the tuples with one column per layer,
-//!   and its template is compiled in the order of its variables.
+//!   accepted tuples; the exceptions, `Regular` and `Disjunctive`, have their order forced by
+//!   `precedence_edges`, which both orders respect. `Table` is not symmetric either, and is free
+//!   of any order: its key is read once the constraint knows its order, and lists the tuples with
+//!   one column per layer, and its template is compiled in the order of its variables.
 //! - **The kept diagram refers to the synthetic problem.** An `Mdd` holds the problem it was
 //!   compiled from, here the template's few variables, and its own order, which names those
 //!   variables. Neither is read through the arena: a [`CompiledConstraint`] brings the order of
@@ -60,8 +60,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use crate::constraints::{
-    AllDifferent, Among, AtLeast, Constraint, ConstraintShapeKey, Gcc, NotEquals, Regular, Sum,
-    Table,
+    AllDifferent, Among, AtLeast, Constraint, ConstraintShapeKey, Disjunctive, Gcc, NotEquals,
+    Regular, Sum, Table,
 };
 use crate::mdd::compiler::enforce_precedence_order;
 use crate::mdd::heuristics::{
@@ -179,6 +179,18 @@ fn instantiate_constraint(
         ConstraintShapeKey::Table { arity: _, tuples } => Box::new(Table::new(
             synthetic_variables,
             tuples.iter().map(|tuple| tuple.to_vec()).collect(),
+        )),
+        ConstraintShapeKey::Disjunctive {
+            arity: _,
+            release,
+            deadline,
+            duration,
+        } => Box::new(Disjunctive::new(
+            synthetic_variables,
+            release.clone(),
+            deadline.clone(),
+            duration.clone(),
+            synthetic_problem,
         )),
         ConstraintShapeKey::Sum { arity: _, target } => {
             Box::new(Sum::new(synthetic_variables, *target, synthetic_problem))
@@ -451,7 +463,7 @@ pub fn compile_constraints(
 mod tests {
     use super::*;
     use crate::constraints::{
-        all_different, among, at_least, gcc, not_equals, regular, sum, table,
+        all_different, among, at_least, disjunctive, gcc, not_equals, regular, sum, table,
     };
     use crate::mdd::NodeIndex;
     use crate::modelling::ValueIndex;
@@ -526,6 +538,14 @@ mod tests {
                     vec![2, 1, 1, 1],
                     vec![2, 0, 1, 0],
                 ],
+            ),
+            // A unary resource over three jobs, the values 0..3.
+            disjunctive(
+                &mut problem,
+                vec![v[0], v[1], v[2]],
+                vec![0, 0, 1],
+                vec![9, 4, 7],
+                vec![3, 2, 2],
             ),
             // Two consecutive equal values are forbidden.
             regular(

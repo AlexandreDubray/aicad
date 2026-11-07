@@ -23,6 +23,7 @@
 .. autofunction:: gcc
 .. autofunction:: regular
 .. autofunction:: table
+.. autofunction:: disjunctive
 ```
 
 ## Compiling

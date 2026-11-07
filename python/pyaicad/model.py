@@ -50,6 +50,7 @@ __all__ = [
     "gcc",
     "regular",
     "table",
+    "disjunctive",
 ]
 
 _model_ids = itertools.count()
@@ -233,6 +234,19 @@ class _Table(Constraint):
         native.add_table(_idx(self.scope), [list(t) for t in self.tuples])
 
 
+@dataclass(frozen=True)
+class _Disjunctive(Constraint):
+    scope: Tuple[Var, ...]
+    release: Tuple[int, ...]
+    deadline: Tuple[int, ...]
+    duration: Tuple[int, ...]
+
+    def _apply(self, native: Any) -> None:
+        native.add_disjunctive(
+            _idx(self.scope), list(self.release), list(self.deadline), list(self.duration)
+        )
+
+
 def all_different(variables: Iterable[Var]) -> Constraint:
     """The variables take pairwise different values."""
     return _AllDifferent(_variables(variables, "all_different", distinct=True))
@@ -354,6 +368,44 @@ def table(variables: Iterable[Var], tuples: Iterable[Iterable[int]]) -> Constrai
             )
         rows.append(values)
     return _Table(scope, tuple(sorted(set(rows))))
+
+
+def disjunctive(
+    variables: Iterable[Var],
+    release: Iterable[int],
+    deadline: Iterable[int],
+    duration: Iterable[int],
+) -> Constraint:
+    """The variables are a sequence of all the jobs, processed one at a time (a unary resource).
+
+    ``variables[k]`` is the job processed in position ``k``: its value is a job number ``0..n-1``,
+    where ``n`` is the number of variables, so the values are a permutation of the jobs. Job ``j``
+    has release date ``release[j]``, deadline ``deadline[j]`` (the latest time at which it may be
+    completed) and duration ``duration[j]``. Each job starts as soon as the machine is free and the
+    job is released, and runs without interruption. Setup times and precedences are not supported.
+
+    >>> import pyaicad as ac
+    >>> m = ac.Model()
+    >>> x = m.int_vars(3, domain=range(3))
+    >>> # Job 1 has to be over by time 4: it cannot come after job 0.
+    >>> m.add(ac.disjunctive(x, release=[0, 0, 0], deadline=[10, 4, 10], duration=[3, 2, 2]))
+    >>> m.check([1, 0, 2]), m.check([0, 1, 2])
+    (True, False)
+    """
+    scope = _variables(variables, "disjunctive", distinct=True)
+    lists = {
+        "release": _ints(release, "disjunctive"),
+        "deadline": _ints(deadline, "disjunctive"),
+        "duration": _ints(duration, "disjunctive"),
+    }
+    for name, values in lists.items():
+        if len(values) != len(scope):
+            raise ModelError(
+                f"disjunctive: {name} has {len(values)} values for a scope of {len(scope)} variables"
+            )
+    if any(p < 0 for p in lists["duration"]):
+        raise ModelError("disjunctive: a duration is negative")
+    return _Disjunctive(scope, lists["release"], lists["deadline"], lists["duration"])
 
 
 # --------------------------------------------------------------------------------------------

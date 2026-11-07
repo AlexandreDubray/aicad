@@ -4,7 +4,7 @@ The three things you do with it:
 
 * **Model** a problem: :class:`Model`, with the constraints :func:`all_different`,
   :func:`not_equal`, :func:`equal`, :func:`among`, :func:`at_least`, :func:`sum_equals`,
-  :func:`gcc`, :func:`regular` and :func:`table`.
+  :func:`gcc`, :func:`regular`, :func:`table` and :func:`disjunctive`.
 * **Compile** it into a decision diagram: a :class:`Compiler` made for the model and its
   heuristics hands out an :class:`MDD`, as exact or as relaxed as you ask, to count, sample and
   refine.
@@ -47,6 +47,7 @@ from .model import (
     regular,
     sum_equals,
     table,
+    disjunctive,
 )
 from .search import (
     BeliefPropagationSearch,
@@ -74,6 +75,7 @@ __all__ = [
     "gcc",
     "regular",
     "table",
+    "disjunctive",
     # compiling
     "Compiler",
     "MDD",

@@ -143,6 +143,17 @@ pub enum ConstraintShapeKey {
         /// constraint, so that building a key does not copy the table.
         tuples: std::sync::Arc<Vec<Box<[isize]>>>,
     },
+    /// [`Disjunctive`](crate::constraints::Disjunctive).
+    Disjunctive {
+        /// Number of variables in the scope, which is the number of jobs.
+        arity: usize,
+        /// Release date of each job.
+        release: Vec<isize>,
+        /// Deadline of each job.
+        deadline: Vec<isize>,
+        /// Duration of each job.
+        duration: Vec<isize>,
+    },
     /// [`Sum`](crate::constraints::Sum).
     Sum {
         /// Number of variables in the scope.
@@ -163,6 +174,7 @@ impl ConstraintShapeKey {
             | Self::Gcc { arity, .. }
             | Self::Regular { arity, .. }
             | Self::Table { arity, .. }
+            | Self::Disjunctive { arity, .. }
             | Self::Sum { arity, .. } => *arity,
         }
     }

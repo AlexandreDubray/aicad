@@ -2,8 +2,8 @@
 //!
 //! This page is the reference for anyone who uses a constraint through its traits or adds a new
 //! one. The meaning of each constraint and the way it is compiled are in its own module:
-//! [`AllDifferent`], [`NotEquals`], [`Sum`], [`Among`], [`AtLeast`], [`Gcc`], [`Regular`] and
-//! [`Table`].
+//! [`AllDifferent`], [`NotEquals`], [`Sum`], [`Among`], [`AtLeast`], [`Gcc`], [`Regular`],
+//! [`Table`] and [`Disjunctive`].
 //!
 //! # Meaning
 //!
@@ -116,6 +116,7 @@
 //! | [`Gcc`] | one interval per bounded value, capped at its lower bound when its upper bound cannot bind | per value | a bound is out of its interval (bounds only) | every interval is a point |
 //! | [`Regular`] | bitset of automaton states | union | no state of the parent leads into the child | at most one state |
 //! | [`Table`] | sorted set of nodes of the reduced MDD of the tuples | union | no node of the parent leads into a node of the child | at most one node |
+//! | [`Disjunctive`] | the two sets of [`AllDifferent`], plus the earliest completion time (top-down) or the latest start time (bottom-up), each as a best and a worst case | as [`AllDifferent`]; smallest best case, largest worst case (reversed bottom-up) | the job is placed already, a job cannot be placed anywhere, or it cannot end in its window | the sets are equal and each time has one case |
 //!
 //! "Bounds only" means that a count that is inside the interval but not reachable is not
 //! detected: a compiled MDD can keep violating paths until nodes are split enough for the
@@ -219,6 +220,7 @@ pub mod all_different;
 pub mod among;
 pub mod at_least;
 mod builders;
+pub mod disjunctive;
 pub mod gcc;
 pub mod not_equals;
 pub mod regular;
@@ -232,6 +234,7 @@ use crate::modelling::*;
 pub use all_different::AllDifferent;
 pub use among::Among;
 pub use at_least::AtLeast;
+pub use disjunctive::Disjunctive;
 pub use gcc::Gcc;
 pub use not_equals::NotEquals;
 pub use regular::Regular;
@@ -447,6 +450,22 @@ mod test_contract {
                 doms(3, 3),
                 &[1],
                 |v, _| Table::new(v, vec![vec![0], vec![2]]),
+                true,
+            ),
+            Instance::new(
+                "Disjunctive",
+                doms(4, 4),
+                &[0, 1, 2, 3],
+                |v, p| {
+                    Disjunctive::new(v, vec![0, 1, 0, 3], vec![9, 6, 12, 14], vec![3, 2, 4, 2], p)
+                },
+                true,
+            ),
+            Instance::new(
+                "Disjunctive, partial scope",
+                doms(5, 3),
+                &[0, 2, 3],
+                |v, p| Disjunctive::new(v, vec![2, 0, 1], vec![9, 5, 6], vec![3, 2, 2], p),
                 true,
             ),
             Instance::new(
@@ -983,6 +1002,7 @@ mod test_contract {
                 "AllDifferent",
                 "Among",
                 "AtLeast",
+                "Disjunctive",
                 "GCC",
                 "Not Equals",
                 "Regular",
@@ -1192,6 +1212,15 @@ mod test_contract {
                     target: 3,
                 },
                 8,
+            ),
+            (
+                ConstraintShapeKey::Disjunctive {
+                    arity: 3,
+                    release: vec![0, 0, 0],
+                    deadline: vec![5, 5, 5],
+                    duration: vec![1, 1, 1],
+                },
+                3,
             ),
             (
                 ConstraintShapeKey::Table {

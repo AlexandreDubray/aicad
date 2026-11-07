@@ -38,8 +38,8 @@ that `int_vars` returned.
 Constraints are built by functions and added to the model with `add`, one at a time or as any
 iterable. The available ones are {func}`~pyaicad.all_different`, {func}`~pyaicad.not_equal`,
 {func}`~pyaicad.equal`, {func}`~pyaicad.among`, {func}`~pyaicad.at_least`,
-{func}`~pyaicad.sum_equals`, {func}`~pyaicad.gcc`, {func}`~pyaicad.regular` and
-{func}`~pyaicad.table`.
+{func}`~pyaicad.sum_equals`, {func}`~pyaicad.gcc`, {func}`~pyaicad.regular`,
+{func}`~pyaicad.table` and {func}`~pyaicad.disjunctive`.
 
 ```{code-cell} python
 # Every day has exactly one nurse on the night shift and one or two on the day shift.

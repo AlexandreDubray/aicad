@@ -1,6 +1,6 @@
 //! Functions that build a constraint and add it to a [`Problem`], one per kind of constraint.
 
-use super::{AllDifferent, Among, AtLeast, Gcc, NotEquals, Regular, Sum, Table};
+use super::{AllDifferent, Among, AtLeast, Disjunctive, Gcc, NotEquals, Regular, Sum, Table};
 use crate::modelling::{ConstraintIndex, Problem, VariableIndex};
 use rustc_hash::FxHashSet;
 
@@ -128,4 +128,23 @@ pub fn table(
     tuples: Vec<Vec<isize>>,
 ) -> ConstraintIndex {
     problem.add_constraint(Table::new(variables, tuples))
+}
+
+/// Adds [`Disjunctive`] to `problem` and returns its index: `variables` is a sequence of all the
+/// jobs, processed one at a time, where job `j` has release date `release[j]`, deadline
+/// `deadline[j]` and duration `duration[j]`.
+///
+/// # Panics
+///
+/// As [`Disjunctive::new`]: if a variable appears more than once in `variables`, if the lists do
+/// not have one entry per variable, or if a duration is negative.
+pub fn disjunctive(
+    problem: &mut Problem,
+    variables: Vec<VariableIndex>,
+    release: Vec<isize>,
+    deadline: Vec<isize>,
+    duration: Vec<isize>,
+) -> ConstraintIndex {
+    let constraint = Disjunctive::new(variables, release, deadline, duration, problem);
+    problem.add_constraint(constraint)
 }

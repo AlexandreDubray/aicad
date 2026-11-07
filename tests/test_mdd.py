@@ -120,6 +120,17 @@ def test_table_count_matches_enumeration():
         assert ac.Compiler(m).compile(width=width).count() >= len(expected)
 
 
+def test_disjunctive_count_matches_enumeration():
+    m = ac.Model()
+    x = m.int_vars(4, domain=range(4))
+    m.add(ac.disjunctive(x, [0, 1, 0, 3], [9, 6, 12, 14], [3, 2, 4, 2]))
+    expected = solutions(m)
+    assert 0 < len(expected) < 24
+    assert ac.Compiler(m).compile().count() == len(expected)
+    for width in (1, 2):
+        assert ac.Compiler(m).compile(width=width).count() >= len(expected)
+
+
 @pytest.mark.parametrize("build", MODELS)
 def test_relaxed_diagram_is_a_superset(build):
     m = build()

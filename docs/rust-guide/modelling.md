@@ -7,7 +7,7 @@ which `cargo test` compiles and runs, so it matches the library.
 A problem is a `Problem`: variables with finite integer domains, and constraints over them.
 Everything else in the library starts from a problem. The constraints are built by functions of
 `aicad::constraints` that add them to a problem: `all_different`, `not_equals`, `equal` (in
-`aicad::modelling`), `among`, `at_least`, `sum`, `gcc`, `regular` and `table`.
+`aicad::modelling`), `among`, `at_least`, `sum`, `gcc`, `regular`, `table` and `disjunctive`.
 
 ## The model
 
