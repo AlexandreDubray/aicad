@@ -131,6 +131,22 @@ def test_disjunctive_count_matches_enumeration():
         assert ac.Compiler(m).compile(width=width).count() >= len(expected)
 
 
+def test_disjunctive_with_precedences_count_matches_enumeration():
+    m = ac.Model()
+    x = m.int_vars(4, domain=range(4))
+    m.add(
+        ac.disjunctive(
+            x, [0, 1, 0, 3], [12, 12, 12, 14], [3, 2, 4, 2], precedences=[(2, 0), (1, 3), (1, 3)]
+        )
+    )
+    with_precedences = solutions(m)
+    plain = ac.Model()
+    y = plain.int_vars(4, domain=range(4))
+    plain.add(ac.disjunctive(y, [0, 1, 0, 3], [12, 12, 12, 14], [3, 2, 4, 2]))
+    assert 0 < len(with_precedences) < len(solutions(plain))
+    assert ac.Compiler(m).compile().count() == len(with_precedences)
+
+
 @pytest.mark.parametrize("build", MODELS)
 def test_relaxed_diagram_is_a_superset(build):
     m = build()

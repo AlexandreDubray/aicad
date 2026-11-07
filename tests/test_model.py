@@ -54,6 +54,12 @@ def test_constraint_validation():
     with pytest.raises(ModelError):
         ac.disjunctive([x[0], x[0]], [0, 0], [5, 5], [1, 1])  # a repeated variable
     with pytest.raises(ModelError):
+        ac.disjunctive(x, [0] * 3, [5] * 3, [1] * 3, precedences=[(0, 3)])  # not a job
+    with pytest.raises(ModelError):
+        ac.disjunctive(x, [0] * 3, [5] * 3, [1] * 3, precedences=[(1, 1)])  # itself
+    with pytest.raises(ModelError):
+        ac.disjunctive(x, [0] * 3, [5] * 3, [1] * 3, precedences=[(0, 1), (1, 2), (2, 0)])  # cycle
+    with pytest.raises(ModelError):
         m.add(ac.not_equal(x[0], other))  # variable from another model
     with pytest.raises(ModelError):
         m.add(ac.equal(x[0], 9))  # not in the domain

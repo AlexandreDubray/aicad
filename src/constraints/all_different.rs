@@ -129,6 +129,13 @@ impl AllDifferentProperty {
         }
     }
 
+    /// True if `value` is on some path, that is in $S$. A value that has no bit is on no path.
+    pub(super) fn is_some(&self, value: isize) -> bool {
+        self.map
+            .get(&value)
+            .is_some_and(|&bit| self.value_some_path.contains(bit))
+    }
+
     /// Number of different values in $S \cup S' \cup \{v\}$, where $S$ is the set of `self` and
     /// $S'$ the one of `other`. Used by constraints that embed an `AllDifferent` and know that
     /// every value has to be taken (see `Disjunctive`).

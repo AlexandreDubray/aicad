@@ -132,19 +132,22 @@ pub fn table(
 
 /// Adds [`Disjunctive`] to `problem` and returns its index: `variables` is a sequence of all the
 /// jobs, processed one at a time, where job `j` has release date `release[j]`, deadline
-/// `deadline[j]` and duration `duration[j]`.
+/// `deadline[j]` and duration `duration[j]`. `precedences` lists pairs `(i, j)` of jobs, `i`
+/// having to come before `j`.
 ///
 /// # Panics
 ///
 /// As [`Disjunctive::new`]: if a variable appears more than once in `variables`, if the lists do
-/// not have one entry per variable, or if a duration is negative.
+/// not have one entry per variable, if a duration is negative, or if the precedences are not
+/// valid (a job that does not exist, a job before itself, a cycle).
 pub fn disjunctive(
     problem: &mut Problem,
     variables: Vec<VariableIndex>,
     release: Vec<isize>,
     deadline: Vec<isize>,
     duration: Vec<isize>,
+    precedences: Option<Vec<(usize, usize)>>,
 ) -> ConstraintIndex {
-    let constraint = Disjunctive::new(variables, release, deadline, duration, problem);
+    let constraint = Disjunctive::new(variables, release, deadline, duration, precedences, problem);
     problem.add_constraint(constraint)
 }

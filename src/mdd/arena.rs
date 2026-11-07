@@ -185,11 +185,13 @@ fn instantiate_constraint(
             release,
             deadline,
             duration,
+            precedences,
         } => Box::new(Disjunctive::new(
             synthetic_variables,
             release.clone(),
             deadline.clone(),
             duration.clone(),
+            Some(precedences.clone()),
             synthetic_problem,
         )),
         ConstraintShapeKey::Sum { arity: _, target } => {
@@ -546,6 +548,7 @@ mod tests {
                 vec![0, 0, 1],
                 vec![9, 4, 7],
                 vec![3, 2, 2],
+                Some(vec![(0, 2)]),
             ),
             // Two consecutive equal values are forbidden.
             regular(

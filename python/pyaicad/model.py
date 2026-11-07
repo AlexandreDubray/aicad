@@ -240,10 +240,15 @@ class _Disjunctive(Constraint):
     release: Tuple[int, ...]
     deadline: Tuple[int, ...]
     duration: Tuple[int, ...]
+    precedences: Tuple[Tuple[int, int], ...]
 
     def _apply(self, native: Any) -> None:
         native.add_disjunctive(
-            _idx(self.scope), list(self.release), list(self.deadline), list(self.duration)
+            _idx(self.scope),
+            list(self.release),
+            list(self.deadline),
+            list(self.duration),
+            list(self.precedences),
         )
 
 
@@ -375,6 +380,7 @@ def disjunctive(
     release: Iterable[int],
     deadline: Iterable[int],
     duration: Iterable[int],
+    precedences: Optional[Iterable[Tuple[int, int]]] = None,
 ) -> Constraint:
     """The variables are a sequence of all the jobs, processed one at a time (a unary resource).
 
@@ -382,7 +388,10 @@ def disjunctive(
     where ``n`` is the number of variables, so the values are a permutation of the jobs. Job ``j``
     has release date ``release[j]``, deadline ``deadline[j]`` (the latest time at which it may be
     completed) and duration ``duration[j]``. Each job starts as soon as the machine is free and the
-    job is released, and runs without interruption. Setup times and precedences are not supported.
+    job is released, and runs without interruption. Setup times are not supported.
+
+    ``precedences`` is an optional list of pairs ``(i, j)`` of job numbers: job ``i`` is processed
+    before job ``j`` (not necessarily right before). The precedences must not form a cycle.
 
     >>> import pyaicad as ac
     >>> m = ac.Model()
@@ -390,6 +399,12 @@ def disjunctive(
     >>> # Job 1 has to be over by time 4: it cannot come after job 0.
     >>> m.add(ac.disjunctive(x, release=[0, 0, 0], deadline=[10, 4, 10], duration=[3, 2, 2]))
     >>> m.check([1, 0, 2]), m.check([0, 1, 2])
+    (True, False)
+
+    >>> m = ac.Model()
+    >>> x = m.int_vars(3, domain=range(3))
+    >>> m.add(ac.disjunctive(x, [0, 0, 0], [10, 4, 10], [3, 2, 2], precedences=[(2, 1)]))
+    >>> m.check([2, 1, 0]), m.check([1, 0, 2])
     (True, False)
     """
     scope = _variables(variables, "disjunctive", distinct=True)
@@ -405,7 +420,48 @@ def disjunctive(
             )
     if any(p < 0 for p in lists["duration"]):
         raise ModelError("disjunctive: a duration is negative")
-    return _Disjunctive(scope, lists["release"], lists["deadline"], lists["duration"])
+    pairs = []
+    for pair in precedences if precedences is not None else ():
+        values = _ints(pair, "disjunctive")
+        if len(values) != 2:
+            raise ModelError("disjunctive: a precedence is a pair of job numbers")
+        before, after = values
+        if not (0 <= before < len(scope) and 0 <= after < len(scope)):
+            raise ModelError(
+                f"disjunctive: the precedence ({before}, {after}) names a job that is not in "
+                f"0..{len(scope)}"
+            )
+        if before == after:
+            raise ModelError(f"disjunctive: job {before} cannot precede itself")
+        pairs.append((before, after))
+    if _has_cycle(len(scope), pairs):
+        raise ModelError("disjunctive: the precedences contain a cycle")
+    return _Disjunctive(
+        scope,
+        lists["release"],
+        lists["deadline"],
+        lists["duration"],
+        tuple(sorted(set(pairs))),
+    )
+
+
+def _has_cycle(n: int, pairs: Sequence[Tuple[int, int]]) -> bool:
+    """Whether the directed graph on ``0..n`` with the edges ``pairs`` has a cycle."""
+    missing = [0] * n
+    successors: List[List[int]] = [[] for _ in range(n)]
+    for before, after in pairs:
+        missing[after] += 1
+        successors[before].append(after)
+    ready = [job for job in range(n) if missing[job] == 0]
+    done = 0
+    while ready:
+        job = ready.pop()
+        done += 1
+        for nxt in successors[job]:
+            missing[nxt] -= 1
+            if missing[nxt] == 0:
+                ready.append(nxt)
+    return done < n
 
 
 # --------------------------------------------------------------------------------------------

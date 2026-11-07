@@ -457,7 +457,30 @@ mod test_contract {
                 doms(4, 4),
                 &[0, 1, 2, 3],
                 |v, p| {
-                    Disjunctive::new(v, vec![0, 1, 0, 3], vec![9, 6, 12, 14], vec![3, 2, 4, 2], p)
+                    Disjunctive::new(
+                        v,
+                        vec![0, 1, 0, 3],
+                        vec![9, 6, 12, 14],
+                        vec![3, 2, 4, 2],
+                        None,
+                        p,
+                    )
+                },
+                true,
+            ),
+            Instance::new(
+                "Disjunctive, with precedences",
+                doms(4, 4),
+                &[0, 1, 2, 3],
+                |v, p| {
+                    Disjunctive::new(
+                        v,
+                        vec![0, 0, 0, 2],
+                        vec![12, 12, 12, 14],
+                        vec![3, 2, 4, 2],
+                        Some(vec![(2, 0), (1, 3)]),
+                        p,
+                    )
                 },
                 true,
             ),
@@ -465,7 +488,7 @@ mod test_contract {
                 "Disjunctive, partial scope",
                 doms(5, 3),
                 &[0, 2, 3],
-                |v, p| Disjunctive::new(v, vec![2, 0, 1], vec![9, 5, 6], vec![3, 2, 2], p),
+                |v, p| Disjunctive::new(v, vec![2, 0, 1], vec![9, 5, 6], vec![3, 2, 2], None, p),
                 true,
             ),
             Instance::new(
@@ -1219,6 +1242,7 @@ mod test_contract {
                     release: vec![0, 0, 0],
                     deadline: vec![5, 5, 5],
                     duration: vec![1, 1, 1],
+                    precedences: vec![(0, 2)],
                 },
                 3,
             ),

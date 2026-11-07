@@ -153,6 +153,8 @@ pub enum ConstraintShapeKey {
         deadline: Vec<isize>,
         /// Duration of each job.
         duration: Vec<isize>,
+        /// The pairs `(i, j)` of jobs, `i` before `j`, sorted and without duplicates.
+        precedences: Vec<(usize, usize)>,
     },
     /// [`Sum`](crate::constraints::Sum).
     Sum {

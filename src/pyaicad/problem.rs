@@ -134,6 +134,7 @@ impl PyProblem {
         release: Vec<isize>,
         deadline: Vec<isize>,
         duration: Vec<isize>,
+        precedences: Vec<(usize, usize)>,
     ) -> PyResult<()> {
         for (name, list) in [
             ("release", &release),
@@ -151,8 +152,17 @@ impl PyProblem {
         if duration.iter().any(|&p| p < 0) {
             return Err(PyValueError::new_err("duration: a duration is negative"));
         }
+        Disjunctive::check_precedences(scope.len(), &precedences)
+            .map_err(|reason| PyValueError::new_err(format!("precedences: {reason}")))?;
         let vars = scope.into_iter().map(VariableIndex).collect();
-        disjunctive(self.mutate()?, vars, release, deadline, duration);
+        disjunctive(
+            self.mutate()?,
+            vars,
+            release,
+            deadline,
+            duration,
+            Some(precedences),
+        );
         Ok(())
     }
 

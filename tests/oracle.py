@@ -44,7 +44,7 @@ def holds_disjunctive(c, jobs):
         free_at = start + c.duration[j]
         if free_at > c.deadline[j]:
             return False
-    return True
+    return all(jobs.index(a) < jobs.index(b) for a, b in c.precedences)
 
 
 def holds_regular(c, a, symbols):

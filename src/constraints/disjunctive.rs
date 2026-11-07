@@ -16,12 +16,19 @@
 //! diagrams: a layer is a position of the sequence, and an edge is a job. The start times are not
 //! variables: they follow from the order. A deadline is a bound on the *completion* time.
 //!
+//! Optionally, a set of *precedences* $(i, j)$, written $i \ll j$: job $i$ is processed before
+//! job $j$ (not necessarily right before). The constraint then also requires that $i$ comes
+//! earlier than $j$ in the sequence.
+//!
 //! The scope must have exactly one variable per job, and the values of the domains are job
 //! numbers. A value that is not a job number $0..n$ is never allowed. A variable may appear only
 //! once in the scope, and the three lists must have one entry per variable: [`Disjunctive::new`]
-//! panics otherwise, as for a negative duration. An empty scope is always satisfied.
+//! panics otherwise, as for a negative duration, and as for a precedence that is not between two
+//! different jobs, or that is part of a cycle (a cycle is a mistake of the model, not a
+//! constraint to detect). Duplicate precedences are stored once. An empty scope is always
+//! satisfied.
 //!
-//! Setup times and precedences between jobs are not part of this constraint (yet).
+//! Setup times are not part of this constraint (yet).
 //!
 //! # How it compiles
 //!
@@ -74,9 +81,14 @@
 //!
 //!    $$\max(e, r_j) + p_j > \min(l, d_j)$$
 //!
+//! 4. a precedence is broken: some job $i \ll j$ is in no set $S$ of the parent, so no path above
+//!    has placed it, or some job $j \ll k$ is in no set $S$ of the child, so no path below will.
+//!
 //! Rule 3 is exact on a single path, and on an exact node: it is the schedule that is built, and
 //! the deadlines of the jobs after the edge are taken into account through $l$. With merged
-//! nodes it is a necessary condition only.
+//! nodes it is a necessary condition only. Rule 4 is exact as well: on a single path, a job placed
+//! before one of its predecessors is caught at the edge that places it. It needs no state of its
+//! own, the sets $S$ that the permutation already carries are enough.
 //!
 //! ## Single state
 //!
@@ -93,6 +105,10 @@
 //! - **The scope is read as a sequence.** Like [`Regular`], the variables are branched in the
 //!   declared order, which `precedence_edges` forces. A shared structure of the arena therefore
 //!   serves any scope with the same jobs.
+//! - **Precedences are read from the permutation state.** They cost nothing in the property, so
+//!   they do not make nodes harder to merge: they only remove edges, and the structural key holds
+//!   them (sorted) next to the jobs. They do not tighten the time bounds, which could use them
+//!   (a job cannot start before the end of its predecessors).
 //! - **Time bounds are a single number per node**, not one per job. This is the recurrence of
 //!   Hoda et al. and of Cire and van Hoeve without setup times, where the extra condition on the
 //!   previous job (the arc rule $val(a) \neq val(a')$) is already implied by the permutation
@@ -112,22 +128,36 @@
 //! let vars = problem.add_variables(3, vec![0, 1, 2]);
 //! // Job 1 has to end before time 4, so it goes first or second.
 //! let disjunctive = Disjunctive::new(
-//!     vars,
+//!     vars.clone(),
 //!     vec![0, 0, 0],
 //!     vec![10, 4, 10],
 //!     vec![3, 2, 2],
+//!     None,
 //!     &problem,
 //! );
 //!
 //! assert!(disjunctive.is_satisfied(&[1, 0, 2]));
 //! assert!(!disjunctive.is_satisfied(&[0, 1, 2]));
+//!
+//! // With the precedence "job 2 before job 1", only [2, 1, 0] is left.
+//! let ordered = Disjunctive::new(
+//!     vars,
+//!     vec![0, 0, 0],
+//!     vec![10, 4, 10],
+//!     vec![3, 2, 2],
+//!     Some(vec![(2, 1)]),
+//!     &problem,
+//! );
+//! assert!(!ordered.is_satisfied(&[1, 0, 2]));
+//! assert!(ordered.is_satisfied(&[2, 1, 0]));
 //! ```
 //!
 //! # References
 //!
 //! - A. A. Cire and W.-J. van Hoeve. *Multivalued decision diagrams for sequencing problems.*
 //!   Operations Research 61(6), 2013, pp. 1411-1428. The permutation model, the states $All$ and
-//!   $Some$ and the earliest completion and latest start times (sections 4, 6.1 and 6.3).
+//!   $Some$, the earliest completion and latest start times and the filtering of precedences
+//!   (sections 4, 6.1, 6.2 and 6.3).
 //! - S. Hoda, W.-J. van Hoeve and J. N. Hooker. *A systematic approach to MDD-based constraint
 //!   programming.* CP 2010, pp. 266-280. The unary resource constraint (section 4.7), from which
 //!   the two time bounds are taken.
@@ -147,6 +177,12 @@ struct Jobs {
     deadline: Vec<isize>,
     /// Duration of each job.
     duration: Vec<isize>,
+    /// The precedences `(i, j)` (`i` before `j`), sorted and without duplicates.
+    precedences: Vec<(usize, usize)>,
+    /// For each job, the jobs that have to come before it.
+    predecessors: Vec<Vec<usize>>,
+    /// For each job, the jobs that have to come after it.
+    successors: Vec<Vec<usize>>,
 }
 
 /// Per-node state of [`Disjunctive`]: the permutation state of [`AllDifferent`] and the time
@@ -217,17 +253,22 @@ impl Disjunctive {
     /// Builds the constraint over `variables`, one per job. Job $j$ has release date
     /// `release[j]`, deadline `deadline[j]` (latest completion time) and duration `duration[j]`.
     ///
+    /// `precedences` lists pairs `(i, j)` of jobs, `i` having to come before `j`; `None` is no
+    /// precedence at all.
+    ///
     /// `problem` is read for the domains of the variables, as in [`AllDifferent::new`].
     ///
     /// # Panics
     ///
-    /// If a variable is repeated, if the three lists do not have one entry per variable, or if a
-    /// duration is negative.
+    /// If a variable is repeated, if the three lists do not have one entry per variable, if a
+    /// duration is negative, or if the precedences are not valid (see
+    /// [`check_precedences`](Self::check_precedences)).
     pub fn new(
         variables: Vec<VariableIndex>,
         release: Vec<isize>,
         deadline: Vec<isize>,
         duration: Vec<isize>,
+        precedences: Option<Vec<(usize, usize)>>,
         problem: &Problem,
     ) -> Self {
         let distinct: FxHashSet<VariableIndex> = variables.iter().copied().collect();
@@ -250,6 +291,18 @@ impl Disjunctive {
         if let Some(job) = duration.iter().position(|&p| p < 0) {
             panic!("Disjunctive: job {job} has a negative duration");
         }
+        let mut precedences = precedences.unwrap_or_default();
+        if let Err(message) = Self::check_precedences(n, &precedences) {
+            panic!("Disjunctive: {message}");
+        }
+        precedences.sort_unstable();
+        precedences.dedup();
+        let mut predecessors = vec![vec![]; n];
+        let mut successors = vec![vec![]; n];
+        for &(before, after) in precedences.iter() {
+            predecessors[after].push(before);
+            successors[before].push(after);
+        }
         let all_different = AllDifferent::new(variables.clone(), problem);
         Self {
             variables,
@@ -257,10 +310,51 @@ impl Disjunctive {
                 release,
                 deadline,
                 duration,
+                precedences,
+                predecessors,
+                successors,
             }),
             all_different,
             layer_in_scope: vec![],
         }
+    }
+
+    /// Checks that `precedences` are a valid set of precedences between `n` jobs: each one is
+    /// between two different jobs of `0..n`, and together they have no cycle (which no sequence
+    /// could respect). Returns the reason if not.
+    pub fn check_precedences(n: usize, precedences: &[(usize, usize)]) -> Result<(), String> {
+        for &(before, after) in precedences {
+            if before >= n || after >= n {
+                return Err(format!(
+                    "the precedence ({before}, {after}) names a job that is not in 0..{n}"
+                ));
+            }
+            if before == after {
+                return Err(format!("job {before} cannot precede itself"));
+            }
+        }
+        // Kahn's algorithm: a cycle is what stays when no job without predecessor is left.
+        let mut missing = vec![0usize; n];
+        let mut successors = vec![vec![]; n];
+        for &(before, after) in precedences {
+            missing[after] += 1;
+            successors[before].push(after);
+        }
+        let mut ready: Vec<usize> = (0..n).filter(|&job| missing[job] == 0).collect();
+        let mut done = 0;
+        while let Some(job) = ready.pop() {
+            done += 1;
+            for &next in &successors[job] {
+                missing[next] -= 1;
+                if missing[next] == 0 {
+                    ready.push(next);
+                }
+            }
+        }
+        if done < n {
+            return Err("the precedences contain a cycle".to_string());
+        }
+        Ok(())
     }
 
     /// Number of jobs, which is the size of the scope.
@@ -276,6 +370,7 @@ impl Constraint for Disjunctive {
             release: self.jobs.release.clone(),
             deadline: self.jobs.deadline.clone(),
             duration: self.jobs.duration.clone(),
+            precedences: self.jobs.precedences.clone(),
         }
     }
 
@@ -325,6 +420,8 @@ impl Constraint for Disjunctive {
         // `assignment` is indexed by variable index and must cover the scope.
         let n = self.len();
         let mut placed = vec![false; n];
+        // The position of each job, to check the precedences once all the jobs are known.
+        let mut position = vec![0usize; n];
         let mut time = isize::MIN;
         for &variable in self.variables.iter() {
             let job = match usize::try_from(assignment[*variable]) {
@@ -334,6 +431,7 @@ impl Constraint for Disjunctive {
             if std::mem::replace(&mut placed[job], true) {
                 return false;
             }
+            position[job] = placed.iter().filter(|&&p| p).count();
             let end = time
                 .max(self.jobs.release[job])
                 .saturating_add(self.jobs.duration[job]);
@@ -342,7 +440,10 @@ impl Constraint for Disjunctive {
             }
             time = end;
         }
-        true
+        self.jobs
+            .precedences
+            .iter()
+            .all(|&(before, after)| position[before] < position[after])
     }
 
     fn name(&self) -> &'static str {
@@ -381,6 +482,17 @@ impl Constraint for Disjunctive {
             .permutation
             .count_some_with(&child.permutation, assignment)
             < self.len()
+        {
+            return true;
+        }
+        // Rule 4: a predecessor of the job is on no path above, or a successor is on no path
+        // below.
+        if self.jobs.predecessors[job]
+            .iter()
+            .any(|&before| !parent.permutation.is_some(before as isize))
+            || self.jobs.successors[job]
+                .iter()
+                .any(|&after| !child.permutation.is_some(after as isize))
         {
             return true;
         }
@@ -570,7 +682,7 @@ mod test_disjunctive {
         let mut problem = Problem::default();
         let vars = problem.add_variables(spec.len(), (0..n).collect());
         let (r, d, p) = lists(spec);
-        let mut c = Disjunctive::new(vars.clone(), r, d, p, &problem);
+        let mut c = Disjunctive::new(vars.clone(), r, d, p, None, &problem);
         c.update_variable_ordering(&vars);
         c
     }
@@ -581,7 +693,7 @@ mod test_disjunctive {
         let mut problem = Problem::default();
         let vars = problem.add_variables(spec.len(), (0..n).collect());
         let (r, d, p) = lists(spec);
-        disjunctive(&mut problem, vars, r, d, p);
+        disjunctive(&mut problem, vars, r, d, p, None);
         problem
     }
 
@@ -756,7 +868,14 @@ mod test_disjunctive {
         let mut problem = Problem::default();
         let x = problem.add_variable(vec![0, 1]);
         let y = problem.add_variable(vec![0, 1]);
-        Disjunctive::new(vec![x, y, x], vec![0; 3], vec![9; 3], vec![1; 3], &problem);
+        Disjunctive::new(
+            vec![x, y, x],
+            vec![0; 3],
+            vec![9; 3],
+            vec![1; 3],
+            None,
+            &problem,
+        );
     }
 
     #[test]
@@ -764,7 +883,7 @@ mod test_disjunctive {
     fn a_list_of_the_wrong_length_is_refused() {
         let mut problem = Problem::default();
         let vars = problem.add_variables(2, vec![0, 1]);
-        Disjunctive::new(vars, vec![0, 0], vec![9], vec![1, 1], &problem);
+        Disjunctive::new(vars, vec![0, 0], vec![9], vec![1, 1], None, &problem);
     }
 
     #[test]
@@ -772,7 +891,7 @@ mod test_disjunctive {
     fn a_negative_duration_is_refused() {
         let mut problem = Problem::default();
         let vars = problem.add_variables(2, vec![0, 1]);
-        Disjunctive::new(vars, vec![0, 0], vec![9, 9], vec![1, -1], &problem);
+        Disjunctive::new(vars, vec![0, 0], vec![9, 9], vec![1, -1], None, &problem);
     }
 
     #[test]
@@ -781,7 +900,14 @@ mod test_disjunctive {
         let mut problem = Problem::default();
         let vars = problem.add_variables(3, vec![0, 1, 2]);
         let (r, d, p) = lists(&spec);
-        let c = Disjunctive::new(vars.clone(), r.clone(), d.clone(), p.clone(), &problem);
+        let c = Disjunctive::new(
+            vars.clone(),
+            r.clone(),
+            d.clone(),
+            p.clone(),
+            None,
+            &problem,
+        );
         assert_eq!(c.iter_scope().collect::<Vec<_>>(), vars);
         assert_eq!(c.name(), "Disjunctive");
         assert_eq!(
@@ -790,7 +916,8 @@ mod test_disjunctive {
                 arity: 3,
                 release: r,
                 deadline: d,
-                duration: p
+                duration: p,
+                precedences: vec![],
             }
         );
     }
@@ -799,7 +926,14 @@ mod test_disjunctive {
     fn the_scope_is_read_as_a_sequence() {
         let mut problem = Problem::default();
         let vars = problem.add_variables(3, vec![0, 1, 2]);
-        let c = Disjunctive::new(vars.clone(), vec![0; 3], vec![9; 3], vec![1; 3], &problem);
+        let c = Disjunctive::new(
+            vars.clone(),
+            vec![0; 3],
+            vec![9; 3],
+            vec![1; 3],
+            None,
+            &problem,
+        );
         assert_eq!(
             c.precedence_edges(),
             vec![(vars[0], vars[1]), (vars[1], vars[2])]
@@ -815,6 +949,7 @@ mod test_disjunctive {
             vec![0; 2],
             vec![9; 2],
             vec![1; 2],
+            None,
             &problem,
         );
         c.update_variable_ordering(&[vars[0], vars[1], vars[2], vars[3]]);
@@ -829,7 +964,14 @@ mod test_disjunctive {
     fn an_ordering_that_swaps_the_scope_is_refused() {
         let mut problem = Problem::default();
         let vars = problem.add_variables(2, vec![0, 1]);
-        let mut c = Disjunctive::new(vars.clone(), vec![0; 2], vec![9; 2], vec![1; 2], &problem);
+        let mut c = Disjunctive::new(
+            vars.clone(),
+            vec![0; 2],
+            vec![9; 2],
+            vec![1; 2],
+            None,
+            &problem,
+        );
         c.update_variable_ordering(&[vars[1], vars[0]]);
     }
 
@@ -839,7 +981,8 @@ mod test_disjunctive {
     fn is_layer_in_scope_panics_before_the_ordering_is_set() {
         let mut problem = Problem::default();
         let vars = problem.add_variables(2, vec![0, 1]);
-        Disjunctive::new(vars, vec![0; 2], vec![9; 2], vec![1; 2], &problem).is_layer_in_scope(0);
+        Disjunctive::new(vars, vec![0; 2], vec![9; 2], vec![1; 2], None, &problem)
+            .is_layer_in_scope(0);
     }
 
     // ----------------------------------------------------------------------------------------
@@ -902,7 +1045,7 @@ mod test_disjunctive {
     #[test]
     fn empty_and_single_scopes() {
         let problem = Problem::default();
-        let empty = Disjunctive::new(vec![], vec![], vec![], vec![], &problem);
+        let empty = Disjunctive::new(vec![], vec![], vec![], vec![], None, &problem);
         assert!(empty.is_satisfied(&[]));
         let c = disj(&vec![(2, 5, 3)]);
         assert!(c.is_satisfied(&[0]));
@@ -1298,7 +1441,7 @@ mod test_disjunctive {
         let mut problem = Problem::default();
         let vars = problem.add_variables(5, vec![0, 1, 2]);
         let (r, d, p) = lists(&spec);
-        disjunctive(&mut problem, vec![vars[0], vars[2], vars[4]], r, d, p);
+        disjunctive(&mut problem, vec![vars[0], vars[2], vars[4]], r, d, p, None);
         // A constraint that holds always, so that the variables 1 and 3 are in the diagram.
         among(&mut problem, vars.clone(), vec![0, 1, 2], 0, 5);
         let mdd = compile(problem, vec![0, 1, 2, 3, 4], usize::MAX);
@@ -1318,9 +1461,9 @@ mod test_disjunctive {
         let mut problem = Problem::default();
         let vars = problem.add_variables(3, vec![0, 1, 2]);
         let (r, d, p) = lists(&a);
-        disjunctive(&mut problem, vars.clone(), r, d, p);
+        disjunctive(&mut problem, vars.clone(), r, d, p, None);
         let (r, d, p) = lists(&b);
-        disjunctive(&mut problem, vars, r, d, p);
+        disjunctive(&mut problem, vars, r, d, p, None);
         let mdd = compile(problem, vec![0, 1, 2], usize::MAX);
         let want: Vec<Vec<isize>> = expected(&a)
             .into_iter()
@@ -1336,8 +1479,316 @@ mod test_disjunctive {
         let mut problem = Problem::default();
         let vars = problem.add_variables(3, (0..6).collect());
         let (r, d, p) = lists(&spec);
-        disjunctive(&mut problem, vars, r, d, p);
+        disjunctive(&mut problem, vars, r, d, p, None);
         let mdd = compile(problem, vec![0, 1, 2], usize::MAX);
         assert_eq!(accepted(&mdd), expected(&spec));
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // Precedences
+    // ----------------------------------------------------------------------------------------
+
+    type Pairs = Vec<(usize, usize)>;
+
+    /// Like `disj`, with precedences.
+    fn disj_prec(spec: &Spec, precedences: &Pairs) -> Disjunctive {
+        let n = spec.len() as isize;
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(spec.len(), (0..n).collect());
+        let (r, d, p) = lists(spec);
+        let mut c = Disjunctive::new(vars.clone(), r, d, p, Some(precedences.clone()), &problem);
+        c.update_variable_ordering(&vars);
+        c
+    }
+
+    /// Like `problem_of`, with precedences.
+    fn problem_prec(spec: &Spec, precedences: &Pairs) -> Problem {
+        let n = spec.len() as isize;
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(spec.len(), (0..n).collect());
+        let (r, d, p) = lists(spec);
+        disjunctive(&mut problem, vars, r, d, p, Some(precedences.clone()));
+        problem
+    }
+
+    /// The feasible permutations that also respect the precedences, read off the positions.
+    fn expected_prec(spec: &Spec, precedences: &Pairs) -> Vec<Vec<isize>> {
+        expected(spec)
+            .into_iter()
+            .filter(|order| {
+                precedences.iter().all(|&(before, after)| {
+                    let at = |job: usize| order.iter().position(|&j| j as usize == job).unwrap();
+                    at(before) < at(after)
+                })
+            })
+            .collect()
+    }
+
+    /// Random precedences without cycle: from a smaller to a larger number of a random relabelling.
+    fn random_precedences(rng: &mut Lcg, n: usize) -> Pairs {
+        let mut label: Vec<usize> = (0..n).collect();
+        for i in (1..n).rev() {
+            label.swap(i, rng.below(i as u64 + 1) as usize);
+        }
+        let mut pairs = vec![];
+        for _ in 0..rng.below(n as u64 + 1) {
+            let (a, b) = (rng.below(n as u64) as usize, rng.below(n as u64) as usize);
+            if a < b {
+                pairs.push((label[a], label[b]));
+            }
+        }
+        pairs
+    }
+
+    #[test]
+    fn no_precedences_and_an_empty_list_are_the_same_constraint() {
+        let spec = tight();
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(3, vec![0, 1, 2]);
+        let (r, d, p) = lists(&spec);
+        let none = Disjunctive::new(
+            vars.clone(),
+            r.clone(),
+            d.clone(),
+            p.clone(),
+            None,
+            &problem,
+        );
+        let empty = Disjunctive::new(vars, r, d, p, Some(vec![]), &problem);
+        assert_eq!(
+            none.structural_key(&problem),
+            empty.structural_key(&problem)
+        );
+    }
+
+    #[test]
+    fn the_key_holds_the_precedences_sorted_and_without_duplicates() {
+        let spec = tight();
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(3, vec![0, 1, 2]);
+        let (r, d, p) = lists(&spec);
+        let a = Disjunctive::new(
+            vars.clone(),
+            r.clone(),
+            d.clone(),
+            p.clone(),
+            Some(vec![(2, 1), (0, 2), (2, 1)]),
+            &problem,
+        );
+        let b = Disjunctive::new(vars, r, d, p, Some(vec![(0, 2), (2, 1)]), &problem);
+        assert_eq!(a.structural_key(&problem), b.structural_key(&problem));
+        let ConstraintShapeKey::Disjunctive { precedences, .. } = a.structural_key(&problem) else {
+            panic!("not a disjunctive key");
+        };
+        assert_eq!(precedences, vec![(0, 2), (2, 1)]);
+    }
+
+    #[test]
+    #[should_panic(expected = "names a job that is not in 0..3")]
+    fn a_precedence_on_a_job_that_does_not_exist_is_refused() {
+        disj_prec(&tight(), &vec![(0, 3)]);
+    }
+
+    #[test]
+    #[should_panic(expected = "job 1 cannot precede itself")]
+    fn a_precedence_of_a_job_on_itself_is_refused() {
+        disj_prec(&tight(), &vec![(1, 1)]);
+    }
+
+    #[test]
+    #[should_panic(expected = "contain a cycle")]
+    fn a_cycle_of_precedences_is_refused() {
+        disj_prec(&tight(), &vec![(0, 1), (1, 2), (2, 0)]);
+    }
+
+    #[test]
+    fn check_precedences_accepts_a_diamond_and_reports_the_reason() {
+        assert!(Disjunctive::check_precedences(4, &[(0, 1), (0, 2), (1, 3), (2, 3)]).is_ok());
+        assert!(Disjunctive::check_precedences(0, &[]).is_ok());
+        assert!(
+            Disjunctive::check_precedences(3, &[(0, 1), (1, 0)])
+                .unwrap_err()
+                .contains("cycle")
+        );
+    }
+
+    #[test]
+    fn is_satisfied_reads_the_precedences() {
+        // `tight` has the solutions [1, 0, 2], [1, 2, 0] and [2, 1, 0]; "2 before 0" keeps the
+        // last two, and "2 before 1" the last one only.
+        let c = disj_prec(&tight(), &vec![(2, 0)]);
+        assert!(!c.is_satisfied(&[1, 0, 2]));
+        assert!(c.is_satisfied(&[1, 2, 0]));
+        assert!(c.is_satisfied(&[2, 1, 0]));
+        let c = disj_prec(&tight(), &vec![(2, 1)]);
+        assert!(!c.is_satisfied(&[1, 2, 0]));
+        assert!(c.is_satisfied(&[2, 1, 0]));
+    }
+
+    #[test]
+    fn a_precedence_is_not_adjacency() {
+        // 0 before 2, with job 1 in between, is fine.
+        let spec = vec![(0, 99, 1), (0, 99, 1), (0, 99, 1)];
+        let c = disj_prec(&spec, &vec![(0, 2)]);
+        assert!(c.is_satisfied(&[0, 1, 2]));
+        assert!(c.is_satisfied(&[0, 2, 1]));
+        assert!(!c.is_satisfied(&[2, 0, 1]));
+    }
+
+    #[test]
+    fn is_satisfied_agrees_with_the_search_and_the_precedences() {
+        let mut rng = Lcg(808);
+        for _ in 0..60 {
+            let n = 1 + rng.below(4) as usize;
+            let spec = random_spec(&mut rng, n);
+            let precedences = random_precedences(&mut rng, n);
+            let c = disj_prec(&spec, &precedences);
+            let feasible = expected_prec(&spec, &precedences);
+            for tuple in all_tuples(n, n as isize + 2) {
+                let tuple: Vec<isize> = tuple.iter().map(|v| v - 1).collect();
+                assert_eq!(
+                    c.is_satisfied(&tuple),
+                    feasible.contains(&tuple),
+                    "{spec:?} {precedences:?} on {tuple:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_job_whose_predecessor_was_not_placed_is_removed() {
+        // 2 before 0: job 0 is removed at the root, and after 1 alone, but not after 2.
+        let spec = vec![(0, 99, 1), (0, 99, 1), (0, 99, 1)];
+        let c = disj_prec(&spec, &vec![(2, 0)]);
+        assert!(removed(&c, &[], 0, &[1, 2]));
+        assert!(removed(&c, &[1], 0, &[2]));
+        assert!(!removed(&c, &[2], 0, &[1]));
+        assert!(!removed(&c, &[1, 2], 0, &[]));
+    }
+
+    #[test]
+    fn a_job_whose_successor_cannot_follow_is_removed() {
+        // 2 before 0: job 2 is removed when job 0, its successor, is on no path below it.
+        let spec = vec![(0, 99, 1), (0, 99, 1), (0, 99, 1)];
+        let c = disj_prec(&spec, &vec![(2, 0)]);
+        // Job 2 at the last position has nothing below it.
+        assert!(removed(&c, &[0, 1], 2, &[]));
+        assert!(!removed(&c, &[1], 2, &[0]));
+    }
+
+    #[test]
+    fn the_precedences_of_a_merged_node_are_a_relaxation() {
+        // One path above has placed 2 and the other has not: job 0, which has to come after 2,
+        // is still possible, since some path above has placed 2.
+        let spec = vec![(0, 99, 1), (0, 99, 1), (0, 99, 1), (0, 99, 1)];
+        let c = disj_prec(&spec, &vec![(2, 0)]);
+        let above = merged(&[top_down(&c, &[2]), top_down(&c, &[1])]);
+        let below = bottom_up(&c, &[3]);
+        assert!(!c.is_assignment_invalid(&*above, &*below, 1, 0));
+    }
+
+    #[test]
+    fn a_single_path_is_removed_exactly_when_it_violates_the_precedences_too() {
+        let mut rng = Lcg(4242);
+        for _ in 0..40 {
+            let n = 2 + rng.below(3) as usize;
+            let spec = random_spec(&mut rng, n);
+            let precedences = random_precedences(&mut rng, n);
+            let c = disj_prec(&spec, &precedences);
+            for tuple in all_tuples(n, n as isize) {
+                let some_edge_removed = (0..n).any(|k| {
+                    c.is_assignment_invalid(
+                        &*top_down(&c, &tuple[..k]),
+                        &*bottom_up(&c, &tuple[k + 1..]),
+                        k,
+                        tuple[k],
+                    )
+                });
+                assert_eq!(
+                    some_edge_removed,
+                    !c.is_satisfied(&tuple),
+                    "{spec:?} {precedences:?} on {tuple:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_exact_mdd_with_precedences_agrees_with_the_search() {
+        let mut rng = Lcg(99);
+        for _ in 0..120 {
+            let n = 1 + rng.below(5) as usize;
+            let spec = random_spec(&mut rng, n);
+            let precedences = random_precedences(&mut rng, n);
+            let mdd = compile(
+                problem_prec(&spec, &precedences),
+                (0..n).collect(),
+                usize::MAX,
+            );
+            assert_eq!(
+                accepted(&mdd),
+                expected_prec(&spec, &precedences),
+                "{spec:?} {precedences:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn precedences_alone_give_the_linear_extensions() {
+        // No time pressure: the solutions are the orders that respect 0 < 1 and 2 < 1.
+        let spec = vec![(0, 99, 1), (0, 99, 1), (0, 99, 1)];
+        let mdd = compile(
+            problem_prec(&spec, &vec![(0, 1), (2, 1)]),
+            vec![0, 1, 2],
+            usize::MAX,
+        );
+        assert_eq!(accepted(&mdd), vec![vec![0, 2, 1], vec![2, 0, 1]]);
+    }
+
+    #[test]
+    fn a_chain_of_precedences_fixes_the_order_without_search() {
+        // Before any refinement, the first job has no predecessor to wait for and the last one
+        // has no successor to precede, which is all that the sets can tell on a 1-width diagram.
+        let spec = vec![(0, 99, 1); 4];
+        let mdd = compile(
+            problem_prec(&spec, &vec![(0, 1), (1, 2), (2, 3)]),
+            vec![0, 1, 2, 3],
+            1,
+        );
+        let got = accepted(&mdd);
+        assert!(got.contains(&vec![0, 1, 2, 3]));
+        for solution in &got {
+            assert_eq!(solution[0], 0, "{solution:?}");
+            assert_eq!(solution[3], 3, "{solution:?}");
+        }
+    }
+
+    #[test]
+    fn relaxed_mdds_with_precedences_never_lose_a_solution() {
+        let mut rng = Lcg(2718);
+        for _ in 0..60 {
+            let n = 2 + rng.below(4) as usize;
+            let spec = random_spec(&mut rng, n);
+            let precedences = random_precedences(&mut rng, n);
+            let want = expected_prec(&spec, &precedences);
+            for width in [1usize, 2, 3, usize::MAX] {
+                let mdd = compile(problem_prec(&spec, &precedences), (0..n).collect(), width);
+                let got = accepted(&mdd);
+                for solution in &want {
+                    assert!(
+                        got.contains(solution),
+                        "lost {solution:?}: {spec:?} {precedences:?} width {width}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn precedences_that_clash_with_the_windows_make_it_unsat() {
+        // Job 1 has to end by 2 and job 0 takes 2: "0 before 1" cannot be met.
+        let spec = vec![(0, 9, 2), (0, 2, 2)];
+        let mdd = compile(problem_prec(&spec, &vec![(0, 1)]), vec![0, 1], usize::MAX);
+        assert!(mdd.is_unsat());
     }
 }
