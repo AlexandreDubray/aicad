@@ -46,3 +46,6 @@ python = ["dep:pyo3", "dep:pyo3-log", "pyo3/extension-module"]
 # The learning modules are documented too, although docs.rs has no GPU: it only builds the docs.
 features = ["learning"]
 rustdoc-args = [ "--html-in-header", "katex-header.html" ]
+
+[profile.release]
+codegen-units = 1
