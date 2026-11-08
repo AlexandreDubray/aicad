@@ -129,20 +129,18 @@ impl AllDifferentProperty {
         }
     }
 
-    /// True if `value` is on some path, that is in $S$. A value that has no bit is on no path.
-    pub(super) fn is_some(&self, value: isize) -> bool {
-        self.map
-            .get(&value)
-            .is_some_and(|&bit| self.value_some_path.contains(bit))
+    /// True if the value with this bit (see [`AllDifferent::bit_of`]) is on some path, that is in
+    /// $S$. A value that has no bit is on no path.
+    pub(super) fn is_some_bit(&self, bit: Option<usize>) -> bool {
+        bit.is_some_and(|bit| self.value_some_path.contains(bit))
     }
 
-    /// Number of different values in $S \cup S' \cup \{v\}$, where $S$ is the set of `self` and
-    /// $S'$ the one of `other`. Used by constraints that embed an `AllDifferent` and know that
-    /// every value has to be taken (see `Disjunctive`).
-    pub(super) fn count_some_with(&self, other: &Self, value: isize) -> usize {
-        let bit = *self.map.get(&value).unwrap();
-        let is_new = !self.value_some_path.contains(bit) && !other.value_some_path.contains(bit);
-        self.value_some_path.size_union(&other.value_some_path) + usize::from(is_new)
+    /// The two numbers that order properties: $|A|$ and $|S|$.
+    pub(super) fn order_key_parts(&self) -> [f64; 2] {
+        [
+            self.value_all_path.size() as f64,
+            self.value_some_path.size() as f64,
+        ]
     }
 }
 
@@ -204,6 +202,46 @@ impl AllDifferent {
 }
 
 impl AllDifferent {
+    /// The bit that stands for `value` in the bitsets of the properties, if the value is in the
+    /// domain of a variable of the scope. Constraints that embed an `AllDifferent` use it to read
+    /// a property without a hash lookup per test.
+    pub(super) fn bit_of(&self, value: isize) -> Option<usize> {
+        self.val_to_bit.get(&value).copied()
+    }
+
+    /// The test of [`Constraint::is_assignment_invalid`], on concrete properties, plus one more
+    /// rule for constraints that embed an `AllDifferent` and know that every one of `must_cover`
+    /// values has to be taken: the edge is also invalid if fewer than `must_cover` values are on
+    /// some path through it, that is if $|S_{parent} \cup S_{child} \cup \{v\}| < $ `must_cover`.
+    /// The two rules read the same bit and the same union, which is why they are one function.
+    ///
+    /// The rules of the plain test are repeated here, and not shared with it, so that the plain
+    /// test costs exactly what it would alone.
+    pub(super) fn is_assignment_invalid_covering(
+        &self,
+        parent: &AllDifferentProperty,
+        child: &AllDifferentProperty,
+        layer: usize,
+        assignment: isize,
+        must_cover: usize,
+    ) -> bool {
+        if self.has_duplicate {
+            return true;
+        }
+        let bit = *self.val_to_bit.get(&assignment).unwrap();
+        if parent.value_all_path.contains(bit) || child.value_all_path.contains(bit) {
+            return true;
+        }
+        let (hall_set_size_up, hall_set_size_down) = self.hall_set_bounds[layer];
+        let combined_size = parent.value_some_path.size_union(&child.value_some_path);
+        let on_some_path =
+            || parent.value_some_path.contains(bit) || child.value_some_path.contains(bit);
+        if combined_size == hall_set_size_up + hall_set_size_down && on_some_path() {
+            return true;
+        }
+        combined_size + usize::from(!on_some_path()) < must_cover
+    }
+
     /// The seed of a fold, as a concrete property (see `identity_property`).
     pub(super) fn identity(&self) -> AllDifferentProperty {
         AllDifferentProperty::new(self.domain.len(), self.val_to_bit.clone(), !0)
@@ -454,6 +492,37 @@ mod test_all_diff {
     // ----------------------------------------------------------------------------------------
     // Helpers
     // ----------------------------------------------------------------------------------------
+
+    #[test]
+    fn the_covering_rule_asks_for_enough_values_on_some_path() {
+        // Three jobs: value 1 is placed at the first layer, value 2 at the last one, and the edge
+        // under test is at the middle layer.
+        let domains = vec![vec![0, 1, 2]; 3];
+        let constraint = ad(&domains);
+        let mut parent = constraint.identity();
+        parent.update(&constraint.empty(), 1, true);
+        let mut child = constraint.identity();
+        child.update_backward(&constraint.empty(), 2, true);
+        let invalid = |value: isize, must_cover: usize| {
+            constraint.is_assignment_invalid_covering(&parent, &child, 1, value, must_cover)
+        };
+        // Without a coverage requirement, it is the test of the constraint itself.
+        for value in 0..3 {
+            let plain = constraint.is_assignment_invalid(&parent, &child, 1, value);
+            assert_eq!(invalid(value, 0), plain, "value {value}");
+        }
+        // Value 0 is new: the values on some path are 1, 0 and 2, so three are covered.
+        assert!(!invalid(0, 3));
+        assert!(invalid(0, 4));
+        // Value 1 is already placed above: invalid whatever is asked.
+        assert!(invalid(1, 0));
+        assert!(invalid(1, 3));
+        // The property of a path reads the bit of a value, and a value with no bit is on no path.
+        assert!(parent.is_some_bit(constraint.bit_of(1)));
+        assert!(!parent.is_some_bit(constraint.bit_of(0)));
+        assert_eq!(constraint.bit_of(7), None);
+        assert!(!parent.is_some_bit(None));
+    }
 
     /// One variable per domain, and an AllDifferent over the variables listed in `scope`.
     fn scoped(domains: &[Vec<isize>], scope: &[usize]) -> (Problem, Vec<VariableIndex>) {

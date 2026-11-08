@@ -109,6 +109,12 @@
 //!   they do not make nodes harder to merge: they only remove edges, and the structural key holds
 //!   them (sorted) next to the jobs. They do not tighten the time bounds, which could use them
 //!   (a job cannot start before the end of its predecessors).
+//! - **The filtering rules are tried by increasing cost, and share their work.** The time rule
+//!   (3) is a few integer operations and comes first. The two permutation rules (1 and 2) read the
+//!   same bit and the same union of sets, so [`AllDifferent`] evaluates them in one call. The
+//!   precedence rule (4) reads the sets through the bits of the predecessors and successors,
+//!   found once at construction, and is skipped when there is no precedence. The order does not
+//!   change which edges are removed: an edge goes if any rule says so.
 //! - **Time bounds are a single number per node**, not one per job. This is the recurrence of
 //!   Hoda et al. and of Cire and van Hoeve without setup times, where the extra condition on the
 //!   previous job (the arc rule $val(a) \neq val(a')$) is already implied by the permutation
@@ -183,6 +189,11 @@ struct Jobs {
     predecessors: Vec<Vec<usize>>,
     /// For each job, the jobs that have to come after it.
     successors: Vec<Vec<usize>>,
+    /// `predecessors`, as the bits that stand for the jobs in the permutation state (see
+    /// `AllDifferent::bit_of`), so that the filtering reads a state without a hash lookup per job.
+    predecessor_bits: Vec<Vec<Option<usize>>>,
+    /// `successors`, as bits.
+    successor_bits: Vec<Vec<Option<usize>>>,
 }
 
 /// Per-node state of [`Disjunctive`]: the permutation state of [`AllDifferent`] and the time
@@ -297,13 +308,17 @@ impl Disjunctive {
         }
         precedences.sort_unstable();
         precedences.dedup();
+        let all_different = AllDifferent::new(variables.clone(), problem);
         let mut predecessors = vec![vec![]; n];
         let mut successors = vec![vec![]; n];
+        let mut predecessor_bits = vec![vec![]; n];
+        let mut successor_bits = vec![vec![]; n];
         for &(before, after) in precedences.iter() {
             predecessors[after].push(before);
             successors[before].push(after);
+            predecessor_bits[after].push(all_different.bit_of(before as isize));
+            successor_bits[before].push(all_different.bit_of(after as isize));
         }
-        let all_different = AllDifferent::new(variables.clone(), problem);
         Self {
             variables,
             jobs: Arc::new(Jobs {
@@ -313,6 +328,8 @@ impl Disjunctive {
                 precedences,
                 predecessors,
                 successors,
+                predecessor_bits,
+                successor_bits,
             }),
             all_different,
             layer_in_scope: vec![],
@@ -419,19 +436,33 @@ impl Constraint for Disjunctive {
     fn is_satisfied(&self, assignment: &[isize]) -> bool {
         // `assignment` is indexed by variable index and must cover the scope.
         let n = self.len();
-        let mut placed = vec![false; n];
-        // The position of each job, to check the precedences once all the jobs are known.
-        let mut position = vec![0usize; n];
+        // The jobs placed so far, one bit each (on the stack up to 64 jobs). A job is placed
+        // once, after its predecessors: that is the permutation and the precedences, checked in
+        // one pass that stops at the first fault.
+        let mut inline = [0u64; 1];
+        let mut heap;
+        let placed: &mut [u64] = if n <= 64 {
+            &mut inline
+        } else {
+            heap = vec![0u64; n.div_ceil(64)];
+            &mut heap
+        };
+        let is_placed = |placed: &[u64], job: usize| placed[job / 64] & (1 << (job % 64)) != 0;
+        let has_precedences = !self.jobs.precedences.is_empty();
         let mut time = isize::MIN;
         for &variable in self.variables.iter() {
-            let job = match usize::try_from(assignment[*variable]) {
-                Ok(job) if job < n => job,
-                _ => return false,
+            let Some(job) = job_of(assignment[*variable], n) else {
+                return false;
             };
-            if std::mem::replace(&mut placed[job], true) {
+            if is_placed(placed, job)
+                || (has_precedences
+                    && self.jobs.predecessors[job]
+                        .iter()
+                        .any(|&before| !is_placed(placed, before)))
+            {
                 return false;
             }
-            position[job] = placed.iter().filter(|&&p| p).count();
+            placed[job / 64] |= 1 << (job % 64);
             let end = time
                 .max(self.jobs.release[job])
                 .saturating_add(self.jobs.duration[job]);
@@ -440,10 +471,7 @@ impl Constraint for Disjunctive {
             }
             time = end;
         }
-        self.jobs
-            .precedences
-            .iter()
-            .all(|&(before, after)| position[before] < position[after])
+        true
     }
 
     fn name(&self) -> &'static str {
@@ -468,41 +496,41 @@ impl Constraint for Disjunctive {
             return true;
         };
 
-        // Rule 1: the job is already placed, or the Hall sets are full.
-        if self.all_different.is_assignment_invalid(
-            &parent.permutation,
-            &child.permutation,
-            layer,
-            assignment,
-        ) {
-            return true;
-        }
-        // Rule 2: some job would be on no path through the edge, and every job has to be placed.
-        if parent
-            .permutation
-            .count_some_with(&child.permutation, assignment)
-            < self.len()
-        {
-            return true;
-        }
-        // Rule 4: a predecessor of the job is on no path above, or a successor is on no path
-        // below.
-        if self.jobs.predecessors[job]
-            .iter()
-            .any(|&before| !parent.permutation.is_some(before as isize))
-            || self.jobs.successors[job]
-                .iter()
-                .any(|&after| !child.permutation.is_some(after as isize))
-        {
-            return true;
-        }
+        // The rules are tried from the cheapest to the most expensive, which does not change the
+        // answer: the edge is invalid if any of them says so.
+        //
         // Rule 3: the job cannot end in time. A node with no path (the sentinels) fails here
         // too: its best end saturates to the largest value, or its latest start is the smallest.
         let end = parent
             .ect_best
             .max(self.jobs.release[job])
             .saturating_add(self.jobs.duration[job]);
-        end > child.lst_best.min(self.jobs.deadline[job])
+        if end > child.lst_best.min(self.jobs.deadline[job]) {
+            return true;
+        }
+        // Rule 1: the job is already placed, or the Hall sets are full.
+        // Rule 2: some job would be on no path through the edge, and every job has to be placed.
+        // Both read the same bit and the same union of the sets, so they are tested together.
+        if self.all_different.is_assignment_invalid_covering(
+            &parent.permutation,
+            &child.permutation,
+            layer,
+            assignment,
+            self.len(),
+        ) {
+            return true;
+        }
+        // Rule 4: a predecessor of the job is on no path above, or a successor is on no path
+        // below.
+        if self.jobs.precedences.is_empty() {
+            return false;
+        }
+        self.jobs.predecessor_bits[job]
+            .iter()
+            .any(|&before| !parent.permutation.is_some_bit(before))
+            || self.jobs.successor_bits[job]
+                .iter()
+                .any(|&after| !child.permutation.is_some_bit(after))
     }
 
     fn identity_property(&self) -> Box<dyn ConstraintProperty> {
@@ -600,14 +628,16 @@ impl ConstraintProperty for DisjunctiveProperty {
     }
 
     fn order_key(&self) -> Vec<f64> {
-        let mut key = self.permutation.order_key();
-        key.extend([
+        // One allocation of the right size: this runs for every node when merging.
+        let [all, some] = self.permutation.order_key_parts();
+        vec![
+            all,
+            some,
             self.ect_best as f64,
             self.ect_worst as f64,
             self.lst_best as f64,
             self.lst_worst as f64,
-        ]);
-        key
+        ]
     }
 
     fn hash(&self, hasher: &mut dyn Hasher) {
@@ -1538,6 +1568,34 @@ mod test_disjunctive {
             }
         }
         pairs
+    }
+
+    #[test]
+    fn is_satisfied_works_beyond_one_word_of_jobs() {
+        // 70 jobs: the set of placed jobs does not fit in one word.
+        let n = 70;
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(n, (0..n as isize).collect());
+        let c = Disjunctive::new(
+            vars,
+            vec![0; n],
+            vec![1000; n],
+            vec![1; n],
+            Some(vec![(0, n - 1)]),
+            &problem,
+        );
+        let forward: Vec<isize> = (0..n as isize).collect();
+        assert!(c.is_satisfied(&forward));
+        // Job 69 before job 0.
+        let backward: Vec<isize> = (0..n as isize).rev().collect();
+        assert!(!c.is_satisfied(&backward));
+        // A repeated job, and a value that is not a job.
+        let mut repeated = forward.clone();
+        repeated[65] = 64;
+        assert!(!c.is_satisfied(&repeated));
+        let mut unknown = forward.clone();
+        unknown[3] = n as isize;
+        assert!(!c.is_satisfied(&unknown));
     }
 
     #[test]
