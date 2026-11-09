@@ -68,6 +68,16 @@ def test_constraint_validation():
     with pytest.raises(ModelError):
         ac.disjunctive(x, [0] * 3, [5] * 3, [1] * 3, setup_relaxation="everything")  # unknown
     with pytest.raises(ModelError):
+        ac.disjunctive(x, [0] * 3, [5] * 2, [1] * 3, padding=True)  # lists of different lengths
+    with pytest.raises(ModelError):
+        ac.disjunctive(x[:2], [0] * 3, [5] * 3, [1] * 3)  # a scope shorter than the jobs
+    with pytest.raises(ModelError):
+        ac.disjunctive(x[:2], [0] * 3, [5] * 3, [1] * 3, padding=True, precedences=[(0, 3)])
+    with pytest.raises(ModelError):
+        ac.disjunctive(
+            x[:2], [0] * 3, [5] * 3, [1] * 3, padding=True, setup_times=[[0] * 2] * 2
+        )  # the matrix is by jobs and not by slots
+    with pytest.raises(ModelError):
         m.add(ac.not_equal(x[0], other))  # variable from another model
     with pytest.raises(ModelError):
         m.add(ac.equal(x[0], 9))  # not in the domain

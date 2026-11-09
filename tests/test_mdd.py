@@ -134,6 +134,48 @@ def test_the_relaxations_of_the_setup_times_agree_on_the_solutions():
     assert len(counts) == 1
 
 
+@pytest.mark.parametrize("relaxation", SETUP_RELAXATIONS)
+def test_padded_disjunctive_count_matches_enumeration(relaxation):
+    # Three jobs on two slots and on a fourth one: the dummy is 3, the jobs do not all appear.
+    setup = [[0, 2, 1], [1, 0, 3], [0, 1, 0]]
+    for slots in (2, 4):
+        m = ac.Model()
+        x = m.int_vars(slots, domain=range(4))
+        m.add(
+            ac.disjunctive(
+                x,
+                [0, 1, 0],
+                [8, 7, 9],
+                [3, 2, 4],
+                precedences=[(2, 1)],
+                setup_times=setup,
+                setup_relaxation=relaxation,
+                padding=True,
+            )
+        )
+        expected = solutions(m)
+        assert 0 < len(expected) < 4**slots
+        assert ac.Compiler(m).compile().count() == len(expected)
+        for width in (1, 2):
+            assert ac.Compiler(m).compile(width=width).count() >= len(expected)
+
+
+def test_jobs_split_between_two_padded_resources():
+    # Every job runs on exactly one of the two machines, which are two padded sequences.
+    m = ac.Model()
+    machines = [m.int_vars(3, domain=range(4)) for _ in range(2)]
+    release, deadline, duration = [0, 0, 1], [4, 5, 7], [2, 2, 3]
+    for machine in machines:
+        m.add(ac.disjunctive(machine, release, deadline, duration, padding=True))
+    m.add(ac.gcc(machines[0] + machines[1], {0: (1, 1), 1: (1, 1), 2: (1, 1)}))
+    expected = solutions(m)
+    assert expected
+    assert ac.Compiler(m).compile().count() == len(expected)
+    # No machine has a job twice, and a job is on one machine only.
+    for a in expected:
+        assert sorted(v for v in a if v != 3) == [0, 1, 2]
+
+
 def test_a_matrix_of_zeros_is_no_setup():
     m = ac.Model()
     x = m.int_vars(3, domain=range(3))

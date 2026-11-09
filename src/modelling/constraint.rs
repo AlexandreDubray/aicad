@@ -183,7 +183,7 @@ pub enum ConstraintShapeKey {
     },
     /// [`Disjunctive`](crate::constraints::Disjunctive).
     Disjunctive {
-        /// Number of variables in the scope, which is the number of jobs.
+        /// Number of variables in the scope, which is the number of jobs unless there is padding.
         arity: usize,
         /// Release date of each job.
         release: Vec<isize>,
@@ -199,6 +199,9 @@ pub enum ConstraintShapeKey {
         /// How the setup times are relaxed; the default when there are no setup times, which
         /// makes it irrelevant.
         setup_relaxation: SetupRelaxation,
+        /// Whether the value `n` is a dummy job that pads the end of the sequence. Then the
+        /// scope (`arity`) may be shorter or longer than the lists.
+        padding: bool,
     },
     /// [`Sum`](crate::constraints::Sum).
     Sum {

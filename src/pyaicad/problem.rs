@@ -128,6 +128,7 @@ impl PyProblem {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn add_disjunctive(
         &mut self,
         scope: Vec<usize>,
@@ -136,29 +137,36 @@ impl PyProblem {
         duration: Vec<isize>,
         precedences: Vec<(usize, usize)>,
         setup_times: Option<(Vec<Vec<isize>>, String)>,
+        padding: bool,
     ) -> PyResult<()> {
+        // The number of jobs: the scope, in a permutation, and the lists, with padding.
+        let jobs = if padding { release.len() } else { scope.len() };
         for (name, list) in [
             ("release", &release),
             ("deadline", &deadline),
             ("duration", &duration),
         ] {
-            if list.len() != scope.len() {
+            if list.len() != jobs {
                 return Err(PyValueError::new_err(format!(
-                    "{name}: {} values for a scope of {} variables",
+                    "{name}: {} values for {jobs} {}",
                     list.len(),
-                    scope.len()
+                    if padding {
+                        "jobs (the length of release)"
+                    } else {
+                        "variables in the scope"
+                    }
                 )));
             }
         }
         if duration.iter().any(|&p| p < 0) {
             return Err(PyValueError::new_err("duration: a duration is negative"));
         }
-        Disjunctive::check_precedences(scope.len(), &precedences)
+        Disjunctive::check_precedences(jobs, &precedences)
             .map_err(|reason| PyValueError::new_err(format!("precedences: {reason}")))?;
         let setup_times = match setup_times {
             None => None,
             Some((rows, relaxation)) => {
-                Disjunctive::check_setup_times(scope.len(), &rows)
+                Disjunctive::check_setup_times(jobs, &rows)
                     .map_err(|reason| PyValueError::new_err(format!("setup_times: {reason}")))?;
                 let relaxation = SetupRelaxation::from_name(&relaxation).ok_or_else(|| {
                     PyValueError::new_err(format!(
@@ -180,6 +188,7 @@ impl PyProblem {
             duration,
             Some(precedences),
             setup_times,
+            padding,
         );
         Ok(())
     }

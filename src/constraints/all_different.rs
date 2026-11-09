@@ -135,6 +135,18 @@ impl AllDifferentProperty {
         bit.is_some_and(|bit| self.value_some_path.contains(bit))
     }
 
+    /// True if the value with this bit is on every path, that is in $A$. A value that has no bit
+    /// is on no path.
+    pub(super) fn is_all_bit(&self, bit: Option<usize>) -> bool {
+        bit.is_some_and(|bit| self.value_all_path.contains(bit))
+    }
+
+    /// True if some value other than the one with this bit (if any) is on every path, that is if
+    /// $A \setminus \{v\}$ is not empty.
+    pub(super) fn has_all_besides(&self, bit: Option<usize>) -> bool {
+        self.value_all_path.size() > usize::from(self.is_all_bit(bit))
+    }
+
     /// The two numbers that order properties: $|A|$ and $|S|$.
     pub(super) fn order_key_parts(&self) -> [f64; 2] {
         [
@@ -162,6 +174,9 @@ pub struct AllDifferent {
     layer_in_scope: Vec<u64>,
     /// True if a variable appears more than once in the scope: no assignment is accepted.
     has_duplicate: bool,
+    /// False when the constraint is embedded in one that lets some value repeat, which makes the
+    /// Hall sets meaningless: then the bounds of the Hall rule are never met.
+    hall_sets: bool,
 }
 
 impl AllDifferent {
@@ -197,7 +212,16 @@ impl AllDifferent {
             hall_set_bounds: vec![],
             layer_in_scope: vec![],
             has_duplicate,
+            hall_sets: true,
         }
+    }
+
+    /// The same constraint with the Hall-set rule turned off. For constraints that embed an
+    /// `AllDifferent` where one value may be taken any number of times (a dummy value), so that
+    /// the variables of the scope do not need to take as many different values as they are.
+    pub(super) fn without_hall_sets(mut self) -> Self {
+        self.hall_sets = false;
+        self
     }
 }
 
@@ -281,7 +305,12 @@ impl Constraint for AllDifferent {
         self.hall_set_bounds = vec![(0, 0); order.len()];
         let n = scope_layers.len();
         for (pos, layer) in scope_layers.into_iter().enumerate() {
-            self.hall_set_bounds[layer] = (pos, n - 1 - pos);
+            self.hall_set_bounds[layer] = if self.hall_sets {
+                (pos, n - 1 - pos)
+            } else {
+                // Out of reach of any union of sets, so that the rule never applies.
+                (usize::MAX / 2, usize::MAX / 2)
+            };
         }
     }
 

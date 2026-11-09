@@ -464,6 +464,7 @@ mod test_contract {
                         vec![3, 2, 4, 2],
                         None,
                         None,
+                        false,
                         p,
                     )
                 },
@@ -481,6 +482,43 @@ mod test_contract {
                         vec![3, 2, 4, 2],
                         Some(vec![(2, 0), (1, 3)]),
                         None,
+                        false,
+                        p,
+                    )
+                },
+                true,
+            ),
+            Instance::new(
+                "Disjunctive, padded",
+                doms(4, 4),
+                &[0, 1, 2, 3],
+                |v, p| {
+                    Disjunctive::new(
+                        v,
+                        vec![0, 1, 0],
+                        vec![9, 6, 12],
+                        vec![3, 2, 4],
+                        None,
+                        None,
+                        true,
+                        p,
+                    )
+                },
+                true,
+            ),
+            Instance::new(
+                "Disjunctive, padded, with precedences, partial scope",
+                doms(5, 4),
+                &[0, 2, 3, 4],
+                |v, p| {
+                    Disjunctive::new(
+                        v,
+                        vec![0, 0, 0],
+                        vec![9, 7, 9],
+                        vec![2, 2, 2],
+                        Some(vec![(0, 2)]),
+                        None,
+                        true,
                         p,
                     )
                 },
@@ -498,6 +536,7 @@ mod test_contract {
                         vec![3, 2, 2],
                         None,
                         None,
+                        false,
                         p,
                     )
                 },
@@ -519,18 +558,21 @@ mod test_contract {
 
     /// The instances of `Disjunctive` with setup times, for one relaxation.
     fn disjunctive_setup_instances(relaxation: SetupRelaxation) -> Vec<Instance> {
-        let (full, partial) = match relaxation {
+        let (full, partial, padded) = match relaxation {
             SetupRelaxation::LastJob => (
                 "Disjunctive, with setup times, last job",
                 "Disjunctive, with setup times and precedences, partial scope, last job",
+                "Disjunctive, padded, with setup times, last job",
             ),
             SetupRelaxation::LastSet => (
                 "Disjunctive, with setup times, last set",
                 "Disjunctive, with setup times and precedences, partial scope, last set",
+                "Disjunctive, padded, with setup times, last set",
             ),
             SetupRelaxation::ArcTimes => (
                 "Disjunctive, with setup times, arc times",
                 "Disjunctive, with setup times and precedences, partial scope, arc times",
+                "Disjunctive, padded, with setup times, arc times",
             ),
         };
         vec![
@@ -554,6 +596,7 @@ mod test_contract {
                             ])
                             .with_relaxation(relaxation),
                         ),
+                        false,
                         p,
                     )
                 },
@@ -574,6 +617,28 @@ mod test_contract {
                             SetupTimes::new(vec![vec![0, 1, 2], vec![2, 0, 1], vec![1, 3, 0]])
                                 .with_relaxation(relaxation),
                         ),
+                        false,
+                        p,
+                    )
+                },
+                true,
+            ),
+            Instance::new(
+                padded,
+                doms(4, 4),
+                &[0, 1, 2],
+                |v, p| {
+                    Disjunctive::new(
+                        v,
+                        vec![0, 0, 1],
+                        vec![9, 8, 12],
+                        vec![2, 2, 3],
+                        Some(vec![(1, 2)]),
+                        Some(
+                            SetupTimes::new(vec![vec![0, 2, 1], vec![1, 0, 3], vec![2, 1, 0]])
+                                .with_relaxation(relaxation),
+                        ),
+                        true,
                         p,
                     )
                 },
@@ -1326,6 +1391,7 @@ mod test_contract {
                     precedences: vec![(0, 2)],
                     setup_times: None,
                     setup_relaxation: SetupRelaxation::LastJob,
+                    padding: false,
                 },
                 3,
             ),

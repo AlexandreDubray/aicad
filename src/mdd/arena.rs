@@ -188,6 +188,7 @@ fn instantiate_constraint(
             precedences,
             setup_times,
             setup_relaxation,
+            padding,
         } => Box::new(Disjunctive::new(
             synthetic_variables,
             release.clone(),
@@ -202,6 +203,7 @@ fn instantiate_constraint(
                 )
                 .with_relaxation(*setup_relaxation)
             }),
+            *padding,
             synthetic_problem,
         )),
         ConstraintShapeKey::Sum { arity: _, target } => {
@@ -564,6 +566,7 @@ mod tests {
                     vec![1, 0, 0],
                     vec![0, 2, 0],
                 ])),
+                false,
             ),
             // Two consecutive equal values are forbidden.
             regular(
@@ -691,6 +694,34 @@ mod tests {
         assert_eq!(arena.len(), 3);
         assert!(!arena.is_empty());
         assert!(MddArena::new().is_empty());
+    }
+
+    #[test]
+    fn a_padded_disjunctive_is_rebuilt_from_its_key() {
+        // Three jobs of 2 in [0, 9], two slots, and the dummy 3: 6 pairs of different jobs, 3 with
+        // a dummy after a job, and 1 with two dummies.
+        let mut problem = Problem::default();
+        let v = problem.add_variables(2, (0..4isize).collect());
+        let c = disjunctive(
+            &mut problem,
+            v,
+            vec![0; 3],
+            vec![9; 3],
+            vec![2; 3],
+            None,
+            None,
+            true,
+        );
+        let compiled = compile_constraint(
+            &MddArena::new(),
+            &problem,
+            c,
+            &OrderingHeuristic::MinDomMaxLinked,
+            &nominal_domain(4),
+            usize::MAX,
+            usize::MAX,
+        );
+        assert_eq!(compiled.structure.count_solutions(), 10u32.into());
     }
 
     #[test]

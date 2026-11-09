@@ -137,7 +137,9 @@ pub fn table(
 /// `deadline[j]` and duration `duration[j]`. `precedences` lists pairs `(i, j)` of jobs, `i`
 /// having to come before `j`. `setup_times` holds the matrix of the setup times (`matrix[i][j]` is
 /// the time that has to pass between the end of job `i` and the start of job `j` when `j` follows
-/// `i`) and the [`SetupRelaxation`](crate::modelling::SetupRelaxation) of the states.
+/// `i`) and the [`SetupRelaxation`](crate::modelling::SetupRelaxation) of the states. With
+/// `padding`, the value `n` is a dummy job that fills the end of the sequence, and `variables`
+/// may be shorter or longer than the lists (see [`Disjunctive::new`]).
 ///
 /// # Panics
 ///
@@ -145,6 +147,7 @@ pub fn table(
 /// not have one entry per variable, if a duration is negative, or if the precedences are not
 /// valid (a job that does not exist, a job before itself, a cycle), or if the setup times are not
 /// an `n` by `n` matrix without negative entry.
+#[allow(clippy::too_many_arguments)]
 pub fn disjunctive(
     problem: &mut Problem,
     variables: Vec<VariableIndex>,
@@ -153,6 +156,7 @@ pub fn disjunctive(
     duration: Vec<isize>,
     precedences: Option<Vec<(usize, usize)>>,
     setup_times: Option<SetupTimes>,
+    padding: bool,
 ) -> ConstraintIndex {
     let constraint = Disjunctive::new(
         variables,
@@ -161,6 +165,7 @@ pub fn disjunctive(
         duration,
         precedences,
         setup_times,
+        padding,
         problem,
     );
     problem.add_constraint(constraint)

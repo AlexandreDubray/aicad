@@ -243,6 +243,7 @@ class _Disjunctive(Constraint):
     precedences: Tuple[Tuple[int, int], ...]
     setup_times: Optional[Tuple[Tuple[int, ...], ...]]
     setup_relaxation: str = "last_job"
+    padding: bool = False
 
     def _apply(self, native: Any) -> None:
         native.add_disjunctive(
@@ -254,6 +255,7 @@ class _Disjunctive(Constraint):
             None
             if self.setup_times is None
             else ([list(row) for row in self.setup_times], self.setup_relaxation),
+            self.padding,
         )
 
 
@@ -388,6 +390,7 @@ def disjunctive(
     precedences: Optional[Iterable[Tuple[int, int]]] = None,
     setup_times: Optional[Iterable[Iterable[int]]] = None,
     setup_relaxation: str = "last_job",
+    padding: bool = False,
 ) -> Constraint:
     """The variables are a sequence of all the jobs, processed one at a time (a unary resource).
 
@@ -395,7 +398,7 @@ def disjunctive(
     where ``n`` is the number of variables, so the values are a permutation of the jobs. Job ``j``
     has release date ``release[j]``, deadline ``deadline[j]`` (the latest time at which it may be
     completed) and duration ``duration[j]``. Each job starts as soon as the machine is free and the
-    job is released, and runs without interruption. Setup times are not supported.
+    job is released, and runs without interruption.
 
     ``precedences`` is an optional list of pairs ``(i, j)`` of job numbers: job ``i`` is processed
     before job ``j`` (not necessarily right before). The precedences must not form a cycle.
@@ -411,6 +414,13 @@ def disjunctive(
     these jobs, which gives tighter bounds when nodes are merged. ``"arc_times"`` keeps one time
     per job, the tightest and the most expensive (``O(n)`` numbers per node and per edge).
 
+    With ``padding=True`` the value ``n`` (one more than the last job number) is a dummy job that
+    fills the end of the sequence, and the number of variables is free: the sequence has the
+    jobs that the machine processes, each at most once and in order, followed by dummies. Dummies
+    take no time and no setup, and cannot be followed by a job. The domains must contain ``n``.
+    Not every job has to appear (another constraint decides on which machine each one runs), a
+    precedence only binds the jobs that appear, and the lists still have one entry per job.
+
     >>> import pyaicad as ac
     >>> m = ac.Model()
     >>> x = m.int_vars(3, domain=range(3))
@@ -424,6 +434,13 @@ def disjunctive(
     >>> m.add(ac.disjunctive(x, [0, 0, 0], [10, 4, 10], [3, 2, 2], precedences=[(2, 1)]))
     >>> m.check([2, 1, 0]), m.check([1, 0, 2])
     (True, False)
+
+    >>> # Two slots for three jobs: the machine runs two of them, or only one and a dummy (3).
+    >>> m = ac.Model()
+    >>> x = m.int_vars(2, domain=range(4))
+    >>> m.add(ac.disjunctive(x, [0, 0, 0], [5, 5, 5], [2, 2, 2], padding=True))
+    >>> m.check([0, 2]), m.check([1, 3]), m.check([3, 3]), m.check([3, 1]), m.check([0, 0])
+    (True, True, True, False, False)
     """
     scope = _variables(variables, "disjunctive", distinct=True)
     lists = {
@@ -431,10 +448,17 @@ def disjunctive(
         "deadline": _ints(deadline, "disjunctive"),
         "duration": _ints(duration, "disjunctive"),
     }
+    # The number of jobs: the scope, in a permutation, and the lists, with padding.
+    jobs = len(lists["release"]) if padding else len(scope)
     for name, values in lists.items():
-        if len(values) != len(scope):
+        if len(values) != jobs:
             raise ModelError(
-                f"disjunctive: {name} has {len(values)} values for a scope of {len(scope)} variables"
+                f"disjunctive: {name} has {len(values)} values for "
+                + (
+                    f"{jobs} jobs (the length of release)"
+                    if padding
+                    else f"a scope of {len(scope)} variables"
+                )
             )
     if any(p < 0 for p in lists["duration"]):
         raise ModelError("disjunctive: a duration is negative")
@@ -444,15 +468,15 @@ def disjunctive(
         if len(values) != 2:
             raise ModelError("disjunctive: a precedence is a pair of job numbers")
         before, after = values
-        if not (0 <= before < len(scope) and 0 <= after < len(scope)):
+        if not (0 <= before < jobs and 0 <= after < jobs):
             raise ModelError(
                 f"disjunctive: the precedence ({before}, {after}) names a job that is not in "
-                f"0..{len(scope)}"
+                f"0..{jobs}"
             )
         if before == after:
             raise ModelError(f"disjunctive: job {before} cannot precede itself")
         pairs.append((before, after))
-    if _has_cycle(len(scope), pairs):
+    if _has_cycle(jobs, pairs):
         raise ModelError("disjunctive: the precedences contain a cycle")
     if setup_relaxation not in ("last_job", "last_set", "arc_times"):
         raise ModelError(
@@ -462,10 +486,8 @@ def disjunctive(
     matrix = None
     if setup_times is not None:
         matrix = tuple(_ints(row, "disjunctive") for row in setup_times)
-        if len(matrix) != len(scope) or any(len(row) != len(scope) for row in matrix):
-            raise ModelError(
-                f"disjunctive: setup_times must be a {len(scope)} by {len(scope)} matrix"
-            )
+        if len(matrix) != jobs or any(len(row) != jobs for row in matrix):
+            raise ModelError(f"disjunctive: setup_times must be a {jobs} by {jobs} matrix")
         if any(t < 0 for i, row in enumerate(matrix) for j, t in enumerate(row) if i != j):
             raise ModelError("disjunctive: a setup time is negative")
     return _Disjunctive(
@@ -476,6 +498,7 @@ def disjunctive(
         tuple(sorted(set(pairs))),
         matrix,
         setup_relaxation,
+        padding,
     )
 
 

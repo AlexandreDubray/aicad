@@ -34,9 +34,18 @@ def holds(c, a):
 
 
 def holds_disjunctive(c, jobs):
-    """The jobs are a permutation, and the schedule that starts every job as soon as it can meets
-    the deadlines."""
-    if sorted(jobs) != list(range(len(jobs))):
+    """The jobs are a permutation (or, with padding, some jobs followed by dummies), and the
+    schedule that starts every job as soon as it can meets the deadlines."""
+    n = len(c.release)
+    if c.padding:
+        real = [j for j in jobs if j != n]
+        # Dummies only at the end, jobs at most once, and nothing else.
+        if jobs[: len(real)] != real or len(set(real)) != len(real):
+            return False
+        if any(not 0 <= j < n for j in real):
+            return False
+        jobs = real
+    elif sorted(jobs) != list(range(len(jobs))):
         return False
     setup = c.setup_times
     free_at = None
@@ -51,7 +60,8 @@ def holds_disjunctive(c, jobs):
         free_at = start + c.duration[j]
         if free_at > c.deadline[j]:
             return False
-    return all(jobs.index(a) < jobs.index(b) for a, b in c.precedences)
+    # A precedence binds the jobs that are there.
+    return all(jobs.index(a) < jobs.index(b) for a, b in c.precedences if a in jobs and b in jobs)
 
 
 def holds_regular(c, a, symbols):

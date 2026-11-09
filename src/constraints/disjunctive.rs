@@ -20,8 +20,8 @@
 //! job $j$ (not necessarily right before). The constraint then also requires that $i$ comes
 //! earlier than $j$ in the sequence.
 //!
-//! The scope must have exactly one variable per job, and the values of the domains are job
-//! numbers. A value that is not a job number $0..n$ is never allowed. A variable may appear only
+//! Unless there is padding (below), the scope must have exactly one variable per job, and the
+//! values of the domains are job numbers. A value that is not a job number $0..n$ is never allowed. A variable may appear only
 //! once in the scope, and the three lists must have one entry per variable: [`Disjunctive::new`]
 //! panics otherwise, as for a negative duration, and as for a precedence that is not between two
 //! different jobs, or that is part of a cycle (a cycle is a mistake of the model, not a
@@ -32,6 +32,25 @@
 //! cannot start before $t_{i,j}$ time units after the end of $i$, so
 //! $s_j = \max(r_j, c_i + t_{i,j})$. The first job has no setup. The matrix is given as `n` rows of
 //! `n` entries, the diagonal is ignored, and a matrix with no positive entry is the same as none.
+//!
+//! Optionally, *padding*: the value $n$ is a *dummy job* that fills the end of the sequence, and
+//! the scope has any number of variables $k$ (the three lists still have one entry per job). The
+//! constraint then holds when:
+//!
+//! - the sequence is some real jobs, each at most once, followed by dummies (so a dummy is never
+//!   followed by a job);
+//! - the real jobs, in this order, meet their release dates and deadlines (and setup times), the
+//!   dummies taking no time and no setup, so the setup between two real jobs is the one between
+//!   them even if they are far apart in the scope; and
+//! - each precedence $i \ll j$ holds *if both jobs are in the sequence*.
+//!
+//! The jobs do not all have to be there: this is a resource that processes some of them, and the
+//! other jobs are somewhere else. Which ones are where is up to the other constraints of the
+//! model (for instance a [`Gcc`] over the scopes of several resources). A scope longer than the
+//! number of jobs is fine and ends with dummies, and one that is shorter is a resource that
+//! processes fewer jobs than there are. Without padding, the constraint is the permutation of
+//! all the jobs described above, which is stronger and is kept for sequences that contain every
+//! job, as in a single resource that must process all of them.
 //!
 //! # How it compiles
 //!
@@ -51,6 +70,8 @@
 //!   below. Nothing is kept when there is no setup time.
 //!
 //! ## Property update
+//!
+//! (Padding is described in its own section below.)
 //!
 //! Top-down, a node folds its parents: an edge with the job $j$ from a parent whose earliest
 //! completion is $e$ gives
@@ -109,6 +130,26 @@
 //! lost; `LastSet` or `ArcTimes` pay off when the width is limited and the setups differ a lot
 //! between the jobs that a node merges. Nothing is kept, and no instruction of the setup times is
 //! executed, when there are no setup times.
+//!
+//! ## Padding
+//!
+//! The dummy job is a value of the permutation state like any other, but it may be taken several
+//! times: it enters $(A, S)$ as a bit, which then says whether the dummy is on all or on some of
+//! the paths, and nothing else of the state changes. Folding an edge with the dummy copies the
+//! time bounds and the job at the open end of the parent (the dummy is as if the layer were out of
+//! scope) and adds the bit. The filtering of an edge becomes:
+//!
+//! - **a real job $j$** is removed if it is in $A$ above or below (as before), if the dummy is in
+//!   $A$ above (every path above is already padded, and a job cannot follow a dummy), or if
+//!   a precedence $i \ll j$ has $i$ in $A$ below (it would come after $j$) or $j \ll k$ has $k$
+//!   in $A$ above. The time rule is unchanged;
+//! - **the dummy** is removed if some real job is in $A$ below, which would then follow it.
+//!
+//! The rule on the number of jobs ($|S_{parent} \cup S_{child} \cup \{j\}| < n$) and the Hall sets
+//! are turned off, since neither the jobs nor the values of the scope are all different any more.
+//! Both are for permutations, and the model has to supply the equivalent: a resource does not
+//! know which jobs are on it. A node is a single state when $A = S$, which includes the dummy
+//! bit, so two paths that differ by a dummy do not make one state.
 //!
 //! ## Node merging
 //!
@@ -190,6 +231,19 @@
 //!   and $O(n)$ to filter, the third $O(n)$ for both. The enum of the state is matched once per
 //!   operation, on a variant that is the same for the whole constraint, and the choice is part of
 //!   the structural key so that the arena does not share a structure between two relaxations.
+//! - **Padding is a flag, so that the permutation model stays what it is.** A sequence that has to
+//!   contain every job (a single resource) is a permutation, and its covering rule and Hall sets
+//!   are what keep the diagram small. With padding, those rules are not valid, so the flag turns
+//!   them off, at construction: the embedded [`AllDifferent`] is built without Hall sets, and the
+//!   number of jobs that must be covered is 0, so the same call of the filter serves both models
+//!   with no extra branch. The dummy edge is handled in the branch that rejects every value that is
+//!   not a job, so it costs nothing to a constraint without padding, and the rules that only padding
+//!   and precedences have share the one test that the plain constraint already did for
+//!   precedences. The symmetry of dummies is broken by requiring them at the end: free dummies
+//!   would make a diagram as many times larger as there are ways to place them.
+//! - **The value of the dummy is $n$, not a parameter**, which keeps it out of the key and out of
+//!   the domains of the real jobs. The domains of the scope must contain it, and the arena's
+//!   nominal domain must have $n + 1$ values.
 //! - **Time is an `isize`** and sentinels saturate, so a huge release date or deadline does not
 //!   overflow.
 //! - **Domains are read once**, by the embedded [`AllDifferent`], so the remarks of that module
@@ -210,7 +264,7 @@
 //!     vec![10, 4, 10],
 //!     vec![3, 2, 2],
 //!     None,
-//!     None,
+//!     None, false,
 //!     &problem,
 //! );
 //!
@@ -224,7 +278,7 @@
 //!     vec![10, 4, 10],
 //!     vec![3, 2, 2],
 //!     Some(vec![(2, 1)]),
-//!     None,
+//!     None, false,
 //!     &problem,
 //! );
 //! assert!(!ordered.is_satisfied(&[1, 0, 2]));
@@ -726,6 +780,16 @@ struct Jobs {
     successor_bits: Vec<Vec<Option<usize>>>,
     /// The setup times, if some is positive.
     setup: Option<Setup>,
+    /// Whether the value `n` is a dummy job that pads the end of the sequence.
+    padding: bool,
+    /// The bit of the dummy value in the permutation state, if the dummy is in a domain.
+    dummy_bit: Option<usize>,
+    /// How many different jobs the filtering may ask for: `n`, or 0 with padding, where the jobs
+    /// of the scope are not all placed.
+    cover: usize,
+    /// Whether the filtering has rules beyond the time windows and the permutation: precedences
+    /// or padding. Tested once, at the end, so that the plain constraint stops there.
+    extra_rules: bool,
 }
 
 /// Per-node state of [`Disjunctive`]: the permutation state of [`AllDifferent`] and the time
@@ -807,14 +871,19 @@ impl Disjunctive {
     /// [`SetupRelaxation`] that tells how the states keep track of the job that the setup depends
     /// on; `None` is no setup time. The diagonal is ignored.
     ///
+    /// With `padding`, the value `n` (the number of jobs) is a dummy job that fills the end of the
+    /// sequence, and the scope may have any number of variables; without it, the scope has one
+    /// variable per job and the sequence is a permutation.
+    ///
     /// `problem` is read for the domains of the variables, as in [`AllDifferent::new`].
     ///
     /// # Panics
     ///
-    /// If a variable is repeated, if the three lists do not have one entry per variable, if a
-    /// duration is negative, if the precedences are not valid (see
+    /// If a variable is repeated, if the three lists do not have one entry per job (and, without
+    /// padding, per variable), if a duration is negative, if the precedences are not valid (see
     /// [`check_precedences`](Self::check_precedences)), or if the setup times are not valid (see
     /// [`check_setup_times`](Self::check_setup_times)).
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         variables: Vec<VariableIndex>,
         release: Vec<isize>,
@@ -822,19 +891,31 @@ impl Disjunctive {
         duration: Vec<isize>,
         precedences: Option<Vec<(usize, usize)>>,
         setup_times: Option<SetupTimes>,
+        padding: bool,
         problem: &Problem,
     ) -> Self {
         let distinct: FxHashSet<VariableIndex> = variables.iter().copied().collect();
         if distinct.len() != variables.len() {
             panic!("Disjunctive does not support a variable repeated in its scope");
         }
-        let n = variables.len();
+        // The number of jobs: the scope, in a permutation, and the lists, with padding.
+        let n = if padding {
+            release.len()
+        } else {
+            variables.len()
+        };
         for (name, list) in [
             ("release", &release),
             ("deadline", &deadline),
             ("duration", &duration),
         ] {
             if list.len() != n {
+                if padding {
+                    panic!(
+                        "Disjunctive: {name} has {} entries for {n} jobs (the length of release)",
+                        list.len()
+                    );
+                }
                 panic!(
                     "Disjunctive: {name} has {} entries for a scope of {n} variables",
                     list.len()
@@ -875,7 +956,17 @@ impl Disjunctive {
                     .then(|| Setup::new(n, times, relaxation))
             },
         );
-        let all_different = AllDifferent::new(variables.clone(), problem);
+        let mut all_different = AllDifferent::new(variables.clone(), problem);
+        if padding {
+            // A value that repeats breaks the Hall sets.
+            all_different = all_different.without_hall_sets();
+        }
+        let dummy_bit = if padding {
+            all_different.bit_of(n as isize)
+        } else {
+            None
+        };
+        let extra_rules = padding || !precedences.is_empty();
         let mut predecessors = vec![vec![]; n];
         let mut successors = vec![vec![]; n];
         let mut predecessor_bits = vec![vec![]; n];
@@ -898,6 +989,10 @@ impl Disjunctive {
                 predecessor_bits,
                 successor_bits,
                 setup,
+                padding,
+                dummy_bit,
+                cover: if padding { 0 } else { n },
+                extra_rules,
             }),
             all_different,
             layer_in_scope: vec![],
@@ -968,9 +1063,39 @@ impl Disjunctive {
         Ok(())
     }
 
-    /// Number of jobs, which is the size of the scope.
+    /// Number of variables of the scope, which is the number of jobs unless there is padding.
     fn len(&self) -> usize {
         self.variables.len()
+    }
+
+    /// Number of jobs.
+    fn jobs_count(&self) -> usize {
+        self.jobs.release.len()
+    }
+
+    /// With padding, the edge of the dummy job: invalid if every path below places a real job,
+    /// which would then come after a dummy.
+    fn is_dummy_invalid(&self, child: &DisjunctiveProperty) -> bool {
+        child.permutation.has_all_besides(self.jobs.dummy_bit)
+    }
+
+    /// With padding, the rules of an edge of a real job `job` after the time and the "already
+    /// placed" rules: it cannot come after a dummy, and a precedence only binds the jobs that are
+    /// placed, so `job` is invalid if a predecessor is placed on every path below it (it would
+    /// come after it) or a successor on every path above it.
+    fn is_padded_job_invalid(
+        &self,
+        job: usize,
+        parent: &DisjunctiveProperty,
+        child: &DisjunctiveProperty,
+    ) -> bool {
+        parent.permutation.is_all_bit(self.jobs.dummy_bit)
+            || self.jobs.predecessor_bits[job]
+                .iter()
+                .any(|&before| child.permutation.is_all_bit(before))
+            || self.jobs.successor_bits[job]
+                .iter()
+                .any(|&after| parent.permutation.is_all_bit(after))
     }
 
     /// With setup times, the earliest time at which `job` can start after the paths above (setup
@@ -1021,6 +1146,7 @@ impl Constraint for Disjunctive {
                 .as_ref()
                 .map(|setup| setup.relaxation)
                 .unwrap_or_default(),
+            padding: self.jobs.padding,
         }
     }
 
@@ -1068,7 +1194,7 @@ impl Constraint for Disjunctive {
 
     fn is_satisfied(&self, assignment: &[isize]) -> bool {
         // `assignment` is indexed by variable index and must cover the scope.
-        let n = self.len();
+        let n = self.jobs_count();
         // The jobs placed so far, one bit each (on the stack up to 64 jobs). A job is placed
         // once, after its predecessors: that is the permutation and the precedences, checked in
         // one pass that stops at the first fault.
@@ -1081,15 +1207,26 @@ impl Constraint for Disjunctive {
             &mut heap
         };
         let is_placed = |placed: &[u64], job: usize| placed[job / 64] & (1 << (job % 64)) != 0;
-        let has_precedences = !self.jobs.precedences.is_empty();
+        let padding = self.jobs.padding;
+        // With padding, a precedence only binds the jobs that are placed, so it is checked on
+        // the positions once the sequence is read.
+        let has_precedences = !padding && !self.jobs.precedences.is_empty();
         let setup = self.jobs.setup.as_ref();
         let mut previous = None;
         let mut time = isize::MIN;
+        let mut padded = false;
         for &variable in self.variables.iter() {
-            let Some(job) = job_of(assignment[*variable], n) else {
+            let value = assignment[*variable];
+            let Some(job) = job_of(value, n) else {
+                // The dummy job pads the end of the sequence, and nothing else is a job.
+                if padding && value == n as isize {
+                    padded = true;
+                    continue;
+                }
                 return false;
             };
-            if is_placed(placed, job)
+            if padded
+                || is_placed(placed, job)
                 || (has_precedences
                     && self.jobs.predecessors[job]
                         .iter()
@@ -1113,6 +1250,20 @@ impl Constraint for Disjunctive {
             }
             time = end;
         }
+        if padding && !self.jobs.precedences.is_empty() {
+            return self.jobs.precedences.iter().all(|&(before, after)| {
+                // If both are placed, `before` comes first; the sequence has no repeated job.
+                let position = |job: usize| {
+                    self.variables
+                        .iter()
+                        .position(|&variable| assignment[*variable] == job as isize)
+                };
+                match (position(before), position(after)) {
+                    (Some(first), Some(second)) => first < second,
+                    _ => true,
+                }
+            });
+        }
         true
     }
 
@@ -1133,9 +1284,9 @@ impl Constraint for Disjunctive {
     ) -> bool {
         let parent = DisjunctiveProperty::downcast(parent, "is_assignment_invalid (parent)");
         let child = DisjunctiveProperty::downcast(child, "is_assignment_invalid (child)");
-        // A value that is not a job is never allowed.
-        let Some(job) = job_of(assignment, self.len()) else {
-            return true;
+        // A value that is not a job is never allowed, except the dummy job of a padded sequence.
+        let Some(job) = job_of(assignment, self.jobs_count()) else {
+            return !self.jobs.padding || self.is_dummy_invalid(child);
         };
 
         // The rules are tried from the cheapest to the most expensive, which does not change the
@@ -1162,15 +1313,19 @@ impl Constraint for Disjunctive {
             &child.permutation,
             layer,
             assignment,
-            self.len(),
+            self.jobs.cover,
         ) {
             return true;
         }
-        // Rule 4: a predecessor of the job is on no path above, or a successor is on no path
-        // below.
-        if self.jobs.precedences.is_empty() {
+        // The rules that only some constraints have: padding and precedences.
+        if !self.jobs.extra_rules {
             return false;
         }
+        if self.jobs.padding {
+            return self.is_padded_job_invalid(job, parent, child);
+        }
+        // Rule 4: a predecessor of the job is on no path above, or a successor is on no path
+        // below.
         self.jobs.predecessor_bits[job]
             .iter()
             .any(|&before| !parent.permutation.is_some_bit(before))
@@ -1218,8 +1373,16 @@ impl ConstraintProperty for DisjunctiveProperty {
             self.open.merge(&parent.open);
             return;
         }
-        // An edge that is not a job is removed by the filtering; it contributes nothing.
+        // An edge that is not a job is removed by the filtering; it contributes nothing, unless
+        // it is the dummy job, which takes no time: the bounds and the open job are the parent's.
         let Some(job) = job_of(assignment, self.jobs.release.len()) else {
+            if self.jobs.padding && assignment == self.jobs.release.len() as isize {
+                self.permutation
+                    .update(&parent.permutation, assignment, true);
+                self.ect_best = self.ect_best.min(parent.ect_best);
+                self.ect_worst = self.ect_worst.max(parent.ect_worst);
+                self.open.merge(&parent.open);
+            }
             return;
         };
         self.permutation
@@ -1284,6 +1447,13 @@ impl ConstraintProperty for DisjunctiveProperty {
             return;
         }
         let Some(job) = job_of(assignment, self.jobs.release.len()) else {
+            if self.jobs.padding && assignment == self.jobs.release.len() as isize {
+                self.permutation
+                    .update_backward(&child.permutation, assignment, true);
+                self.lst_best = self.lst_best.max(child.lst_best);
+                self.lst_worst = self.lst_worst.min(child.lst_worst);
+                self.open.merge(&child.open);
+            }
             return;
         };
         self.permutation
@@ -1431,7 +1601,7 @@ mod test_disjunctive {
         let mut problem = Problem::default();
         let vars = problem.add_variables(spec.len(), (0..n).collect());
         let (r, d, p) = lists(spec);
-        let mut c = Disjunctive::new(vars.clone(), r, d, p, None, None, &problem);
+        let mut c = Disjunctive::new(vars.clone(), r, d, p, None, None, false, &problem);
         c.update_variable_ordering(&vars);
         c
     }
@@ -1442,7 +1612,7 @@ mod test_disjunctive {
         let mut problem = Problem::default();
         let vars = problem.add_variables(spec.len(), (0..n).collect());
         let (r, d, p) = lists(spec);
-        disjunctive(&mut problem, vars, r, d, p, None, None);
+        disjunctive(&mut problem, vars, r, d, p, None, None, false);
         problem
     }
 
@@ -1625,6 +1795,7 @@ mod test_disjunctive {
             vec![1; 3],
             None,
             None,
+            false,
             &problem,
         );
     }
@@ -1634,7 +1805,16 @@ mod test_disjunctive {
     fn a_list_of_the_wrong_length_is_refused() {
         let mut problem = Problem::default();
         let vars = problem.add_variables(2, vec![0, 1]);
-        Disjunctive::new(vars, vec![0, 0], vec![9], vec![1, 1], None, None, &problem);
+        Disjunctive::new(
+            vars,
+            vec![0, 0],
+            vec![9],
+            vec![1, 1],
+            None,
+            None,
+            false,
+            &problem,
+        );
     }
 
     #[test]
@@ -1649,6 +1829,7 @@ mod test_disjunctive {
             vec![1, -1],
             None,
             None,
+            false,
             &problem,
         );
     }
@@ -1666,6 +1847,7 @@ mod test_disjunctive {
             p.clone(),
             None,
             None,
+            false,
             &problem,
         );
         assert_eq!(c.iter_scope().collect::<Vec<_>>(), vars);
@@ -1680,6 +1862,7 @@ mod test_disjunctive {
                 precedences: vec![],
                 setup_times: None,
                 setup_relaxation: SetupRelaxation::LastJob,
+                padding: false,
             }
         );
     }
@@ -1695,6 +1878,7 @@ mod test_disjunctive {
             vec![1; 3],
             None,
             None,
+            false,
             &problem,
         );
         assert_eq!(
@@ -1714,6 +1898,7 @@ mod test_disjunctive {
             vec![1; 2],
             None,
             None,
+            false,
             &problem,
         );
         c.update_variable_ordering(&[vars[0], vars[1], vars[2], vars[3]]);
@@ -1735,6 +1920,7 @@ mod test_disjunctive {
             vec![1; 2],
             None,
             None,
+            false,
             &problem,
         );
         c.update_variable_ordering(&[vars[1], vars[0]]);
@@ -1753,6 +1939,7 @@ mod test_disjunctive {
             vec![1; 2],
             None,
             None,
+            false,
             &problem,
         )
         .is_layer_in_scope(0);
@@ -1818,7 +2005,7 @@ mod test_disjunctive {
     #[test]
     fn empty_and_single_scopes() {
         let problem = Problem::default();
-        let empty = Disjunctive::new(vec![], vec![], vec![], vec![], None, None, &problem);
+        let empty = Disjunctive::new(vec![], vec![], vec![], vec![], None, None, false, &problem);
         assert!(empty.is_satisfied(&[]));
         let c = disj(&vec![(2, 5, 3)]);
         assert!(c.is_satisfied(&[0]));
@@ -2222,6 +2409,7 @@ mod test_disjunctive {
             p,
             None,
             None,
+            false,
         );
         // A constraint that holds always, so that the variables 1 and 3 are in the diagram.
         among(&mut problem, vars.clone(), vec![0, 1, 2], 0, 5);
@@ -2242,9 +2430,9 @@ mod test_disjunctive {
         let mut problem = Problem::default();
         let vars = problem.add_variables(3, vec![0, 1, 2]);
         let (r, d, p) = lists(&a);
-        disjunctive(&mut problem, vars.clone(), r, d, p, None, None);
+        disjunctive(&mut problem, vars.clone(), r, d, p, None, None, false);
         let (r, d, p) = lists(&b);
-        disjunctive(&mut problem, vars, r, d, p, None, None);
+        disjunctive(&mut problem, vars, r, d, p, None, None, false);
         let mdd = compile(problem, vec![0, 1, 2], usize::MAX);
         let want: Vec<Vec<isize>> = expected(&a)
             .into_iter()
@@ -2260,7 +2448,7 @@ mod test_disjunctive {
         let mut problem = Problem::default();
         let vars = problem.add_variables(3, (0..6).collect());
         let (r, d, p) = lists(&spec);
-        disjunctive(&mut problem, vars, r, d, p, None, None);
+        disjunctive(&mut problem, vars, r, d, p, None, None, false);
         let mdd = compile(problem, vec![0, 1, 2], usize::MAX);
         assert_eq!(accepted(&mdd), expected(&spec));
     }
@@ -2284,6 +2472,7 @@ mod test_disjunctive {
             p,
             Some(precedences.clone()),
             None,
+            false,
             &problem,
         );
         c.update_variable_ordering(&vars);
@@ -2296,7 +2485,16 @@ mod test_disjunctive {
         let mut problem = Problem::default();
         let vars = problem.add_variables(spec.len(), (0..n).collect());
         let (r, d, p) = lists(spec);
-        disjunctive(&mut problem, vars, r, d, p, Some(precedences.clone()), None);
+        disjunctive(
+            &mut problem,
+            vars,
+            r,
+            d,
+            p,
+            Some(precedences.clone()),
+            None,
+            false,
+        );
         problem
     }
 
@@ -2342,6 +2540,7 @@ mod test_disjunctive {
             vec![1; n],
             Some(vec![(0, n - 1)]),
             None,
+            false,
             &problem,
         );
         let forward: Vec<isize> = (0..n as isize).collect();
@@ -2371,9 +2570,10 @@ mod test_disjunctive {
             p.clone(),
             None,
             None,
+            false,
             &problem,
         );
-        let empty = Disjunctive::new(vars, r, d, p, Some(vec![]), None, &problem);
+        let empty = Disjunctive::new(vars, r, d, p, Some(vec![]), None, false, &problem);
         assert_eq!(
             none.structural_key(&problem),
             empty.structural_key(&problem)
@@ -2393,9 +2593,19 @@ mod test_disjunctive {
             p.clone(),
             Some(vec![(2, 1), (0, 2), (2, 1)]),
             None,
+            false,
             &problem,
         );
-        let b = Disjunctive::new(vars, r, d, p, Some(vec![(0, 2), (2, 1)]), None, &problem);
+        let b = Disjunctive::new(
+            vars,
+            r,
+            d,
+            p,
+            Some(vec![(0, 2), (2, 1)]),
+            None,
+            false,
+            &problem,
+        );
         assert_eq!(a.structural_key(&problem), b.structural_key(&problem));
         let ConstraintShapeKey::Disjunctive { precedences, .. } = a.structural_key(&problem) else {
             panic!("not a disjunctive key");
@@ -2631,7 +2841,16 @@ mod test_disjunctive {
         let (r, d, p) = lists(spec);
         let precedences = Some(precedences.clone()).filter(|p| !p.is_empty());
         let setup = SetupTimes::new(setup.clone()).with_relaxation(mode);
-        let mut c = Disjunctive::new(vars.clone(), r, d, p, precedences, Some(setup), &problem);
+        let mut c = Disjunctive::new(
+            vars.clone(),
+            r,
+            d,
+            p,
+            precedences,
+            Some(setup),
+            false,
+            &problem,
+        );
         c.update_variable_ordering(&vars);
         c
     }
@@ -2654,6 +2873,7 @@ mod test_disjunctive {
             p,
             Some(precedences.clone()),
             Some(SetupTimes::new(setup.clone()).with_relaxation(mode)),
+            false,
         );
         problem
     }
@@ -2778,6 +2998,7 @@ mod test_disjunctive {
             vec![1; 2],
             None,
             Some(SetupTimes::new(vec![vec![0, 1], vec![1]])),
+            false,
             &problem,
         );
     }
@@ -2794,6 +3015,7 @@ mod test_disjunctive {
                 vec![1; 2],
                 None,
                 setup.map(SetupTimes::new),
+                false,
                 &problem,
             )
             .structural_key(&problem)
@@ -3171,6 +3393,7 @@ mod test_disjunctive {
             vec![1; n],
             None,
             Some(SetupTimes::new(setup)),
+            false,
             &problem,
         );
         let forward: Vec<isize> = (0..n as isize).collect();
@@ -3224,6 +3447,7 @@ mod test_disjunctive {
                 vec![1; 2],
                 None,
                 setup,
+                false,
                 &problem,
             )
             .structural_key(&problem)
@@ -3422,5 +3646,453 @@ mod test_disjunctive {
             assert!(last_set <= last_job, "{spec:?} {setup:?}");
             assert!(arc_times <= last_set, "{spec:?} {setup:?}");
         }
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // Padding with a dummy job
+    // ----------------------------------------------------------------------------------------
+
+    /// `slots` variables over the jobs and the dummy (`0..=n`), and the padded constraint over
+    /// them with the identity ordering already set.
+    fn padded(
+        mode: SetupRelaxation,
+        spec: &Spec,
+        precedences: &Pairs,
+        setup: &Option<Matrix>,
+        slots: usize,
+    ) -> Disjunctive {
+        let n = spec.len() as isize;
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(slots, (0..=n).collect());
+        let (r, d, p) = lists(spec);
+        let precedences = Some(precedences.clone()).filter(|p| !p.is_empty());
+        let setup = setup
+            .clone()
+            .map(|matrix| SetupTimes::new(matrix).with_relaxation(mode));
+        let mut c = Disjunctive::new(vars.clone(), r, d, p, precedences, setup, true, &problem);
+        c.update_variable_ordering(&vars);
+        c
+    }
+
+    /// The problem with only the padded constraint.
+    fn padded_problem(
+        mode: SetupRelaxation,
+        spec: &Spec,
+        precedences: &Pairs,
+        setup: &Option<Matrix>,
+        slots: usize,
+    ) -> Problem {
+        let n = spec.len() as isize;
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(slots, (0..=n).collect());
+        let (r, d, p) = lists(spec);
+        let setup = setup
+            .clone()
+            .map(|matrix| SetupTimes::new(matrix).with_relaxation(mode));
+        disjunctive(
+            &mut problem,
+            vars,
+            r,
+            d,
+            p,
+            Some(precedences.clone()),
+            setup,
+            true,
+        );
+        problem
+    }
+
+    /// Whether `sequence` is a valid padded sequence, by a definition that does not use the
+    /// constraint: real jobs once each and in time, then dummies; a precedence binds the jobs
+    /// that are in the sequence.
+    fn reference_padded(
+        spec: &Spec,
+        precedences: &Pairs,
+        setup: &Option<Matrix>,
+        sequence: &[isize],
+    ) -> bool {
+        let n = spec.len();
+        let mut padded = false;
+        let mut position: Vec<Option<usize>> = vec![None; n];
+        let mut previous: Option<usize> = None;
+        let mut free_at: Option<isize> = None;
+        for (index, &value) in sequence.iter().enumerate() {
+            if value == n as isize {
+                padded = true;
+                continue;
+            }
+            if value < 0 || value > n as isize || padded {
+                return false;
+            }
+            let job = value as usize;
+            if position[job].is_some() {
+                return false;
+            }
+            position[job] = Some(index);
+            let (release, deadline, duration) = spec[job];
+            let ready = match (free_at, previous) {
+                (Some(free), Some(last)) => free + setup.as_ref().map_or(0, |m| m[last][job]),
+                (Some(free), None) => free,
+                (None, _) => release,
+            };
+            let start = ready.max(release);
+            if start + duration > deadline {
+                return false;
+            }
+            free_at = Some(start + duration);
+            previous = Some(job);
+        }
+        precedences.iter().all(
+            |&(before, after)| match (position[before], position[after]) {
+                (Some(first), Some(second)) => first < second,
+                _ => true,
+            },
+        )
+    }
+
+    /// The valid padded sequences of `slots` positions.
+    fn expected_padded(
+        spec: &Spec,
+        precedences: &Pairs,
+        setup: &Option<Matrix>,
+        slots: usize,
+    ) -> Vec<Vec<isize>> {
+        all_tuples(slots, spec.len() as isize + 1)
+            .into_iter()
+            .filter(|sequence| reference_padded(spec, precedences, setup, sequence))
+            .collect()
+    }
+
+    /// A random instance of padded jobs: jobs, precedences, maybe setup times, and a scope that
+    /// is shorter than, as long as, or longer than the number of jobs.
+    fn random_padded(rng: &mut Lcg) -> (Spec, Pairs, Option<Matrix>, usize) {
+        let n = 1 + rng.below(3) as usize;
+        let spec = random_spec(rng, n);
+        let precedences = random_precedences(rng, n);
+        let setup = (rng.below(2) == 0).then(|| random_setup(rng, n));
+        let slots = 1 + rng.below(4) as usize;
+        (spec, precedences, setup, slots)
+    }
+
+    #[test]
+    fn a_padded_sequence_ends_with_dummies_and_a_job_is_at_most_once() {
+        // Three jobs of 2 in [0, 9]; the dummy is 3.
+        let spec = vec![(0, 9, 2); 3];
+        let c = padded(SetupRelaxation::LastJob, &spec, &vec![], &None, 4);
+        assert!(c.is_satisfied(&[0, 1, 2, 3]));
+        assert!(c.is_satisfied(&[2, 3, 3, 3]));
+        assert!(c.is_satisfied(&[3, 3, 3, 3]));
+        // A dummy cannot be followed by a job, a job cannot be repeated, 4 is nothing.
+        assert!(!c.is_satisfied(&[0, 3, 1, 3]));
+        assert!(!c.is_satisfied(&[3, 0, 3, 3]));
+        assert!(!c.is_satisfied(&[0, 0, 3, 3]));
+        assert!(!c.is_satisfied(&[0, 4, 3, 3]));
+        // The jobs do not all have to be there.
+        assert!(c.is_satisfied(&[1, 3, 3, 3]));
+    }
+
+    #[test]
+    fn a_dummy_takes_no_time_and_no_setup() {
+        // Job 1 ends by 7: after job 0 (2) and a setup of 3 it starts at 5 and ends at 7, in
+        // time, whether a dummy follows or not. Dummies do not delay anything.
+        let spec = vec![(0, 20, 2), (0, 7, 2)];
+        let setup = Some(vec![vec![0, 3], vec![0, 0]]);
+        let c = padded(SetupRelaxation::LastJob, &spec, &vec![], &setup, 4);
+        assert!(c.is_satisfied(&[0, 1, 2, 2]));
+        assert!(c.is_satisfied(&[1, 0, 2, 2]));
+        let tighter = Some(vec![vec![0, 4], vec![0, 0]]);
+        let c = padded(SetupRelaxation::LastJob, &spec, &vec![], &tighter, 4);
+        assert!(!c.is_satisfied(&[0, 1, 2, 2]));
+    }
+
+    #[test]
+    fn a_precedence_only_binds_the_jobs_that_are_in_the_sequence() {
+        let spec = vec![(0, 99, 1); 3];
+        let c = padded(SetupRelaxation::LastJob, &spec, &vec![(0, 2)], &None, 3);
+        assert!(c.is_satisfied(&[0, 1, 2]));
+        assert!(!c.is_satisfied(&[2, 1, 0]));
+        // Job 0 is not on this machine: no constraint on job 2 from it.
+        assert!(c.is_satisfied(&[2, 1, 3]));
+        assert!(c.is_satisfied(&[1, 2, 3]));
+        // Job 2 is not here either.
+        assert!(c.is_satisfied(&[1, 0, 3]));
+    }
+
+    fn is_satisfied_with_padding_agrees_with_the_reference(mode: SetupRelaxation) {
+        let mut rng = Lcg(5150);
+        for _ in 0..60 {
+            let (spec, precedences, setup, slots) = random_padded(&mut rng);
+            let c = padded(mode, &spec, &precedences, &setup, slots);
+            for sequence in all_tuples(slots, spec.len() as isize + 2) {
+                // Values go one past the dummy, to check that they are refused.
+                assert_eq!(
+                    c.is_satisfied(&sequence),
+                    reference_padded(&spec, &precedences, &setup, &sequence),
+                    "{spec:?} {precedences:?} {setup:?} on {sequence:?}"
+                );
+            }
+        }
+    }
+
+    each_relaxation!(is_satisfied_with_padding_modes => is_satisfied_with_padding_agrees_with_the_reference);
+
+    fn the_exact_mdd_with_padding_agrees_with_the_reference(mode: SetupRelaxation) {
+        let mut rng = Lcg(77);
+        for _ in 0..100 {
+            let (spec, precedences, setup, slots) = random_padded(&mut rng);
+            let mdd = compile(
+                padded_problem(mode, &spec, &precedences, &setup, slots),
+                (0..slots).collect(),
+                usize::MAX,
+            );
+            assert_eq!(
+                accepted(&mdd),
+                expected_padded(&spec, &precedences, &setup, slots),
+                "{spec:?} {precedences:?} {setup:?} on {slots} slots"
+            );
+        }
+    }
+
+    each_relaxation!(exact_padding_modes => the_exact_mdd_with_padding_agrees_with_the_reference);
+
+    fn relaxed_mdds_with_padding_never_lose_a_solution(mode: SetupRelaxation) {
+        let mut rng = Lcg(404);
+        for _ in 0..60 {
+            let (spec, precedences, setup, slots) = random_padded(&mut rng);
+            let want = expected_padded(&spec, &precedences, &setup, slots);
+            for width in [1usize, 2, 3, usize::MAX] {
+                let mdd = compile(
+                    padded_problem(mode, &spec, &precedences, &setup, slots),
+                    (0..slots).collect(),
+                    width,
+                );
+                let got = accepted(&mdd);
+                for solution in &want {
+                    assert!(
+                        got.contains(solution),
+                        "lost {solution:?}: {spec:?} {precedences:?} {setup:?} width {width}"
+                    );
+                }
+            }
+        }
+    }
+
+    each_relaxation!(relaxed_padding_modes => relaxed_mdds_with_padding_never_lose_a_solution);
+
+    fn a_single_path_is_removed_exactly_when_it_violates_the_padded_constraint(
+        mode: SetupRelaxation,
+    ) {
+        let mut rng = Lcg(31337);
+        for _ in 0..40 {
+            let (spec, precedences, setup, slots) = random_padded(&mut rng);
+            let c = padded(mode, &spec, &precedences, &setup, slots);
+            for sequence in all_tuples(slots, spec.len() as isize + 1) {
+                let some_edge_removed = (0..slots).any(|k| {
+                    c.is_assignment_invalid(
+                        &*top_down(&c, &sequence[..k]),
+                        &*bottom_up(&c, &sequence[k + 1..]),
+                        k,
+                        sequence[k],
+                    )
+                });
+                assert_eq!(
+                    some_edge_removed,
+                    !c.is_satisfied(&sequence),
+                    "{spec:?} {precedences:?} {setup:?} on {sequence:?}"
+                );
+            }
+        }
+    }
+
+    each_relaxation!(single_path_padding_modes => a_single_path_is_removed_exactly_when_it_violates_the_padded_constraint);
+
+    #[test]
+    fn the_dummy_job_leaves_the_bounds_and_the_open_job_alone() {
+        let spec = vec![(0, 99, 2); 3];
+        let setup = Some(vec![vec![0, 1, 1], vec![1, 0, 5], vec![1, 1, 0]]);
+        for mode in SetupRelaxation::ALL {
+            let c = padded(mode, &spec, &vec![], &setup, 4);
+            assert_eq!(
+                times(&*top_down(&c, &[0, 3, 3])),
+                times(&*top_down(&c, &[0])),
+                "{mode:?}"
+            );
+            assert_eq!(
+                times(&*bottom_up(&c, &[3, 3, 1])),
+                times(&*bottom_up(&c, &[1])),
+                "{mode:?}"
+            );
+            // A machine with only dummies has placed nothing: no time yet.
+            assert_eq!(
+                times(&*top_down(&c, &[3, 3]))[..2],
+                times(&*top_down(&c, &[]))[..2],
+                "{mode:?}"
+            );
+            // The dummy is part of the state: the same jobs with and without a dummy differ.
+            assert!(
+                !ConstraintProperty::eq(&*top_down(&c, &[0, 3]), &*top_down(&c, &[0])),
+                "{mode:?}"
+            );
+            // One path with a dummy is a single state, and merging it with a path that has none
+            // is not.
+            assert!(top_down(&c, &[0, 3]).is_single_state(), "{mode:?}");
+            assert!(
+                !merged(&[top_down(&c, &[0, 3]), top_down(&c, &[0, 1])]).is_single_state(),
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_job_cannot_follow_a_dummy_and_a_dummy_cannot_precede_a_job() {
+        let spec = vec![(0, 99, 1); 3];
+        let c = padded(SetupRelaxation::LastJob, &spec, &vec![], &None, 4);
+        // After a dummy: only dummies.
+        assert!(removed(&c, &[3], 0, &[3, 3]));
+        assert!(!removed(&c, &[3], 3, &[3, 3]));
+        // Before a job: no dummy.
+        assert!(removed(&c, &[0], 3, &[1, 3]));
+        assert!(!removed(&c, &[0], 3, &[3, 3]));
+        // A job that is on every path above or below is not repeated.
+        assert!(removed(&c, &[0], 0, &[1, 3]));
+        assert!(removed(&c, &[1], 0, &[0, 3]));
+        // The dummy value can be repeated.
+        assert!(!removed(&c, &[0, 3], 3, &[3]));
+    }
+
+    #[test]
+    fn padding_does_not_ask_for_all_the_jobs_to_be_placed() {
+        // The rule of the covering and the Hall sets are for permutations. With two slots and
+        // three jobs they would remove every edge; with padding, none of these sequences is
+        // refused for being incomplete.
+        let spec = vec![(0, 99, 1); 3];
+        let c = padded(SetupRelaxation::LastJob, &spec, &vec![], &None, 2);
+        for sequence in [[0, 1], [2, 3], [3, 3], [1, 0]] {
+            assert!(c.is_satisfied(&sequence));
+            for k in 0..2 {
+                assert!(
+                    !removed(&c, &sequence[..k], sequence[k], &sequence[k + 1..]),
+                    "{sequence:?} at {k}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_precedence_with_padding_is_filtered_on_both_sides_of_the_edge() {
+        let spec = vec![(0, 99, 1); 3];
+        let c = padded(SetupRelaxation::LastJob, &spec, &vec![(0, 2)], &None, 3);
+        // Job 2 before job 0: seen at the edge of 2 (job 0 is on every path below) ...
+        assert!(removed(&c, &[], 2, &[0, 1]));
+        // ... and at the edge of 0 (job 2 is on every path above).
+        assert!(removed(&c, &[2], 0, &[1]));
+        // Job 0 absent: fine.
+        assert!(!removed(&c, &[], 2, &[1, 3]));
+        assert!(!removed(&c, &[1], 2, &[3]));
+        // In order: fine.
+        assert!(!removed(&c, &[0, 1], 2, &[]));
+    }
+
+    #[test]
+    fn the_scope_and_the_lists_may_differ_in_length_only_with_padding() {
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(2, vec![0, 1, 2]);
+        let make = |padding: bool, vars: Vec<VariableIndex>| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                Disjunctive::new(
+                    vars,
+                    vec![0; 3],
+                    vec![9; 3],
+                    vec![1; 3],
+                    None,
+                    None,
+                    padding,
+                    &problem,
+                )
+            }))
+        };
+        assert!(make(true, vars.clone()).is_ok());
+        assert!(make(false, vars.clone()).is_err());
+        // Longer than the number of jobs is fine as well: the extra slots are dummies.
+        let mut problem = Problem::default();
+        let long = problem.add_variables(5, vec![0, 1, 2, 3]);
+        let c = Disjunctive::new(
+            long,
+            vec![0; 3],
+            vec![9; 3],
+            vec![1; 3],
+            None,
+            None,
+            true,
+            &problem,
+        );
+        assert!(c.is_satisfied(&[0, 1, 2, 3, 3]));
+        assert!(!c.is_satisfied(&[0, 1, 2, 3, 0]));
+    }
+
+    #[test]
+    #[should_panic(expected = "Disjunctive: deadline has 2 entries for 3 jobs")]
+    fn the_lists_of_a_padded_constraint_have_the_length_of_release() {
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(2, vec![0, 1, 2]);
+        Disjunctive::new(
+            vars,
+            vec![0; 3],
+            vec![9; 2],
+            vec![1; 3],
+            None,
+            None,
+            true,
+            &problem,
+        );
+    }
+
+    #[test]
+    fn padding_is_in_the_key_and_the_arity_is_the_scope() {
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(2, vec![0, 1, 2]);
+        let key = |padding: bool| {
+            Disjunctive::new(
+                vars.clone(),
+                vec![0; 2],
+                vec![9; 2],
+                vec![1; 2],
+                None,
+                None,
+                padding,
+                &problem,
+            )
+            .structural_key(&problem)
+        };
+        assert_ne!(key(true), key(false));
+        let ConstraintShapeKey::Disjunctive { arity, padding, .. } = key(true) else {
+            panic!("not a disjunctive key");
+        };
+        assert!(padding);
+        assert_eq!(arity, 2);
+        // The key rebuilds an equivalent constraint through the arena.
+        let c = Disjunctive::new(
+            problem.add_variables(4, vec![0, 1, 2]),
+            vec![0; 2],
+            vec![9; 2],
+            vec![1; 2],
+            None,
+            None,
+            true,
+            &problem,
+        );
+        let ConstraintShapeKey::Disjunctive { arity, padding, .. } = c.structural_key(&problem)
+        else {
+            panic!("not a disjunctive key");
+        };
+        assert_eq!((arity, padding), (4, true));
+    }
+
+    #[test]
+    fn without_padding_the_dummy_value_is_refused() {
+        let spec = vec![(0, 99, 1); 2];
+        let c = disj(&spec);
+        assert!(!c.is_satisfied(&[0, 2]));
+        assert!(removed(&c, &[0], 2, &[]));
     }
 }
