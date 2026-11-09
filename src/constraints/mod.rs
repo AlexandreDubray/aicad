@@ -234,7 +234,7 @@ use crate::modelling::*;
 pub use all_different::AllDifferent;
 pub use among::Among;
 pub use at_least::AtLeast;
-pub use disjunctive::Disjunctive;
+pub use disjunctive::{Disjunctive, SetupTimes};
 pub use gcc::Gcc;
 pub use not_equals::NotEquals;
 pub use regular::Regular;
@@ -242,7 +242,7 @@ pub use sum::Sum;
 pub use table::Table;
 
 #[doc(inline)]
-pub use crate::modelling::{Constraint, ConstraintProperty, ConstraintShapeKey};
+pub use crate::modelling::{Constraint, ConstraintProperty, ConstraintShapeKey, SetupRelaxation};
 pub use builders::*;
 
 #[cfg(test)]
@@ -339,7 +339,7 @@ mod test_contract {
 
     /// One or two instances of each constraint, some with layers out of their scope.
     fn instances() -> Vec<Instance> {
-        vec![
+        let mut instances = vec![
             Instance::new(
                 "AllDifferent",
                 doms(4, 4),
@@ -463,6 +463,7 @@ mod test_contract {
                         vec![9, 6, 12, 14],
                         vec![3, 2, 4, 2],
                         None,
+                        None,
                         p,
                     )
                 },
@@ -479,6 +480,7 @@ mod test_contract {
                         vec![12, 12, 12, 14],
                         vec![3, 2, 4, 2],
                         Some(vec![(2, 0), (1, 3)]),
+                        None,
                         p,
                     )
                 },
@@ -488,7 +490,17 @@ mod test_contract {
                 "Disjunctive, partial scope",
                 doms(5, 3),
                 &[0, 2, 3],
-                |v, p| Disjunctive::new(v, vec![2, 0, 1], vec![9, 5, 6], vec![3, 2, 2], None, p),
+                |v, p| {
+                    Disjunctive::new(
+                        v,
+                        vec![2, 0, 1],
+                        vec![9, 5, 6],
+                        vec![3, 2, 2],
+                        None,
+                        None,
+                        p,
+                    )
+                },
                 true,
             ),
             Instance::new(
@@ -496,6 +508,75 @@ mod test_contract {
                 doms(5, 3),
                 &[0, 2, 3],
                 |v, p| Regular::new(v, no_one_then_zero(), 0, FxHashSet::from_iter([1, 2, 3]), p),
+                true,
+            ),
+        ];
+        for relaxation in SetupRelaxation::ALL {
+            instances.extend(disjunctive_setup_instances(relaxation));
+        }
+        instances
+    }
+
+    /// The instances of `Disjunctive` with setup times, for one relaxation.
+    fn disjunctive_setup_instances(relaxation: SetupRelaxation) -> Vec<Instance> {
+        let (full, partial) = match relaxation {
+            SetupRelaxation::LastJob => (
+                "Disjunctive, with setup times, last job",
+                "Disjunctive, with setup times and precedences, partial scope, last job",
+            ),
+            SetupRelaxation::LastSet => (
+                "Disjunctive, with setup times, last set",
+                "Disjunctive, with setup times and precedences, partial scope, last set",
+            ),
+            SetupRelaxation::ArcTimes => (
+                "Disjunctive, with setup times, arc times",
+                "Disjunctive, with setup times and precedences, partial scope, arc times",
+            ),
+        };
+        vec![
+            Instance::new(
+                full,
+                doms(4, 4),
+                &[0, 1, 2, 3],
+                |v, p| {
+                    Disjunctive::new(
+                        v,
+                        vec![0, 0, 1, 2],
+                        vec![14, 12, 16, 18],
+                        vec![3, 2, 4, 2],
+                        None,
+                        Some(
+                            SetupTimes::new(vec![
+                                vec![0, 2, 1, 3],
+                                vec![1, 0, 3, 0],
+                                vec![2, 1, 0, 2],
+                                vec![0, 2, 1, 0],
+                            ])
+                            .with_relaxation(relaxation),
+                        ),
+                        p,
+                    )
+                },
+                true,
+            ),
+            Instance::new(
+                partial,
+                doms(5, 3),
+                &[0, 2, 3],
+                |v, p| {
+                    Disjunctive::new(
+                        v,
+                        vec![0, 0, 0],
+                        vec![9, 7, 9],
+                        vec![2, 2, 2],
+                        Some(vec![(0, 2)]),
+                        Some(
+                            SetupTimes::new(vec![vec![0, 1, 2], vec![2, 0, 1], vec![1, 3, 0]])
+                                .with_relaxation(relaxation),
+                        ),
+                        p,
+                    )
+                },
                 true,
             ),
         ]
@@ -1243,6 +1324,8 @@ mod test_contract {
                     deadline: vec![5, 5, 5],
                     duration: vec![1, 1, 1],
                     precedences: vec![(0, 2)],
+                    setup_times: None,
+                    setup_relaxation: SetupRelaxation::LastJob,
                 },
                 3,
             ),

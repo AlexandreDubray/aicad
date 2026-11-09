@@ -135,6 +135,7 @@ impl PyProblem {
         deadline: Vec<isize>,
         duration: Vec<isize>,
         precedences: Vec<(usize, usize)>,
+        setup_times: Option<(Vec<Vec<isize>>, String)>,
     ) -> PyResult<()> {
         for (name, list) in [
             ("release", &release),
@@ -154,6 +155,22 @@ impl PyProblem {
         }
         Disjunctive::check_precedences(scope.len(), &precedences)
             .map_err(|reason| PyValueError::new_err(format!("precedences: {reason}")))?;
+        let setup_times = match setup_times {
+            None => None,
+            Some((rows, relaxation)) => {
+                Disjunctive::check_setup_times(scope.len(), &rows)
+                    .map_err(|reason| PyValueError::new_err(format!("setup_times: {reason}")))?;
+                let relaxation = SetupRelaxation::from_name(&relaxation).ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "setup_relaxation: unknown relaxation {relaxation:?}, expected one of {}",
+                        SetupRelaxation::ALL
+                            .map(|variant| variant.name())
+                            .join(", ")
+                    ))
+                })?;
+                Some(SetupTimes::new(rows).with_relaxation(relaxation))
+            }
+        };
         let vars = scope.into_iter().map(VariableIndex).collect();
         disjunctive(
             self.mutate()?,
@@ -162,6 +179,7 @@ impl PyProblem {
             deadline,
             duration,
             Some(precedences),
+            setup_times,
         );
         Ok(())
     }

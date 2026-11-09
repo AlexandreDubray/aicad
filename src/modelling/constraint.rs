@@ -80,6 +80,44 @@ dyn_clone::clone_trait_object!(Constraint);
 /// Exact, hashable description of a constraint's compiled structure: the key of the arena that
 /// shares structures between constraints of the same shape.
 ///
+/// What the state of [`Disjunctive`](crate::constraints::Disjunctive) remembers about the job at the
+/// open end of the paths of a node, to know the setup time that comes next. It only matters when
+/// the constraint has setup times, and it trades the cost of a state against the strength of the
+/// relaxed diagrams, which an exact diagram does not need. See the
+/// [module of the constraint](mod@crate::constraints::disjunctive) for the details of each one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, deepsize::DeepSizeOf)]
+pub enum SetupRelaxation {
+    /// One job number per state, or a marker when the paths disagree, in which case the smallest
+    /// setup over all the jobs is assumed. The cheapest one, and the default.
+    #[default]
+    LastJob,
+    /// The set of the jobs at the open end, one bit each. When the paths disagree, the smallest
+    /// setup over the jobs of the set is assumed.
+    LastSet,
+    /// One time bound per job at the open end (the arc states of Cire and van Hoeve). The
+    /// strongest one, with $O(n)$ numbers per state and $O(n)$ per edge.
+    ArcTimes,
+}
+
+impl SetupRelaxation {
+    /// All the variants.
+    pub const ALL: [SetupRelaxation; 3] = [Self::LastJob, Self::LastSet, Self::ArcTimes];
+
+    /// The name that the Python layer uses: `"last_job"`, `"last_set"` or `"arc_times"`.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::LastJob => "last_job",
+            Self::LastSet => "last_set",
+            Self::ArcTimes => "arc_times",
+        }
+    }
+
+    /// The variant of a name given by [`name`](Self::name), if there is one.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|variant| variant.name() == name)
+    }
+}
+
 /// A key holds what the structure depends on, apart from the domain (the arena supplies one
 /// nominal domain) and the width limit (the arena adds it). Sets are sorted so that constraints
 /// declared in a different order share a key. Every variant is rebuilt into a constraint by the
@@ -155,6 +193,12 @@ pub enum ConstraintShapeKey {
         duration: Vec<isize>,
         /// The pairs `(i, j)` of jobs, `i` before `j`, sorted and without duplicates.
         precedences: Vec<(usize, usize)>,
+        /// The setup times, `n` rows of `n` entries flattened row by row with a zero diagonal,
+        /// or `None` if there is none (a matrix with no positive entry is none).
+        setup_times: Option<Vec<isize>>,
+        /// How the setup times are relaxed; the default when there are no setup times, which
+        /// makes it irrelevant.
+        setup_relaxation: SetupRelaxation,
     },
     /// [`Sum`](crate::constraints::Sum).
     Sum {

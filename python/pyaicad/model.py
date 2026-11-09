@@ -241,6 +241,8 @@ class _Disjunctive(Constraint):
     deadline: Tuple[int, ...]
     duration: Tuple[int, ...]
     precedences: Tuple[Tuple[int, int], ...]
+    setup_times: Optional[Tuple[Tuple[int, ...], ...]]
+    setup_relaxation: str = "last_job"
 
     def _apply(self, native: Any) -> None:
         native.add_disjunctive(
@@ -249,6 +251,9 @@ class _Disjunctive(Constraint):
             list(self.deadline),
             list(self.duration),
             list(self.precedences),
+            None
+            if self.setup_times is None
+            else ([list(row) for row in self.setup_times], self.setup_relaxation),
         )
 
 
@@ -381,6 +386,8 @@ def disjunctive(
     deadline: Iterable[int],
     duration: Iterable[int],
     precedences: Optional[Iterable[Tuple[int, int]]] = None,
+    setup_times: Optional[Iterable[Iterable[int]]] = None,
+    setup_relaxation: str = "last_job",
 ) -> Constraint:
     """The variables are a sequence of all the jobs, processed one at a time (a unary resource).
 
@@ -392,6 +399,17 @@ def disjunctive(
 
     ``precedences`` is an optional list of pairs ``(i, j)`` of job numbers: job ``i`` is processed
     before job ``j`` (not necessarily right before). The precedences must not form a cycle.
+
+    ``setup_times`` is an optional ``n`` by ``n`` matrix: ``setup_times[i][j]`` is the time that has
+    to pass between the end of job ``i`` and the start of job ``j`` when ``j`` follows ``i``. The
+    first job needs no setup, the diagonal is ignored, and no entry may be negative.
+
+    ``setup_relaxation`` says what a node of a relaxed diagram remembers about the job that the next
+    setup depends on, and only matters with ``setup_times``. It does not change the solutions, only
+    how many nodes the compilation needs and how well a relaxed diagram prunes. ``"last_job"``
+    (the default) keeps one job number per node, the cheapest. ``"last_set"`` keeps the set of
+    these jobs, which gives tighter bounds when nodes are merged. ``"arc_times"`` keeps one time
+    per job, the tightest and the most expensive (``O(n)`` numbers per node and per edge).
 
     >>> import pyaicad as ac
     >>> m = ac.Model()
@@ -436,12 +454,28 @@ def disjunctive(
         pairs.append((before, after))
     if _has_cycle(len(scope), pairs):
         raise ModelError("disjunctive: the precedences contain a cycle")
+    if setup_relaxation not in ("last_job", "last_set", "arc_times"):
+        raise ModelError(
+            f"disjunctive: unknown setup_relaxation {setup_relaxation!r}, expected 'last_job', "
+            "'last_set' or 'arc_times'"
+        )
+    matrix = None
+    if setup_times is not None:
+        matrix = tuple(_ints(row, "disjunctive") for row in setup_times)
+        if len(matrix) != len(scope) or any(len(row) != len(scope) for row in matrix):
+            raise ModelError(
+                f"disjunctive: setup_times must be a {len(scope)} by {len(scope)} matrix"
+            )
+        if any(t < 0 for i, row in enumerate(matrix) for j, t in enumerate(row) if i != j):
+            raise ModelError("disjunctive: a setup time is negative")
     return _Disjunctive(
         scope,
         lists["release"],
         lists["deadline"],
         lists["duration"],
         tuple(sorted(set(pairs))),
+        matrix,
+        setup_relaxation,
     )
 
 

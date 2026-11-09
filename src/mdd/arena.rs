@@ -61,7 +61,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::constraints::{
     AllDifferent, Among, AtLeast, Constraint, ConstraintShapeKey, Disjunctive, Gcc, NotEquals,
-    Regular, Sum, Table,
+    Regular, SetupTimes, Sum, Table,
 };
 use crate::mdd::compiler::enforce_precedence_order;
 use crate::mdd::heuristics::{
@@ -186,12 +186,22 @@ fn instantiate_constraint(
             deadline,
             duration,
             precedences,
+            setup_times,
+            setup_relaxation,
         } => Box::new(Disjunctive::new(
             synthetic_variables,
             release.clone(),
             deadline.clone(),
             duration.clone(),
             Some(precedences.clone()),
+            setup_times.as_ref().map(|flat| {
+                SetupTimes::new(
+                    flat.chunks(release.len().max(1))
+                        .map(|row| row.to_vec())
+                        .collect(),
+                )
+                .with_relaxation(*setup_relaxation)
+            }),
             synthetic_problem,
         )),
         ConstraintShapeKey::Sum { arity: _, target } => {
@@ -546,9 +556,14 @@ mod tests {
                 &mut problem,
                 vec![v[0], v[1], v[2]],
                 vec![0, 0, 1],
-                vec![9, 4, 7],
+                vec![9, 4, 9],
                 vec![3, 2, 2],
                 Some(vec![(0, 2)]),
+                Some(SetupTimes::new(vec![
+                    vec![0, 1, 1],
+                    vec![1, 0, 0],
+                    vec![0, 2, 0],
+                ])),
             ),
             // Two consecutive equal values are forbidden.
             regular(

@@ -38,9 +38,16 @@ def holds_disjunctive(c, jobs):
     the deadlines."""
     if sorted(jobs) != list(range(len(jobs))):
         return False
+    setup = c.setup_times
     free_at = None
+    previous = None
     for j in jobs:
-        start = c.release[j] if free_at is None else max(free_at, c.release[j])
+        if free_at is None:
+            start = c.release[j]
+        else:
+            ready = free_at + (setup[previous][j] if setup else 0)
+            start = max(ready, c.release[j])
+        previous = j
         free_at = start + c.duration[j]
         if free_at > c.deadline[j]:
             return False

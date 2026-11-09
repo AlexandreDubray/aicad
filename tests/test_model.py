@@ -60,6 +60,14 @@ def test_constraint_validation():
     with pytest.raises(ModelError):
         ac.disjunctive(x, [0] * 3, [5] * 3, [1] * 3, precedences=[(0, 1), (1, 2), (2, 0)])  # cycle
     with pytest.raises(ModelError):
+        ac.disjunctive(x, [0] * 3, [5] * 3, [1] * 3, setup_times=[[0] * 3] * 2)  # too few rows
+    with pytest.raises(ModelError):
+        ac.disjunctive(x, [0] * 3, [5] * 3, [1] * 3, setup_times=[[0] * 3, [0] * 3, [0] * 2])  # ragged
+    with pytest.raises(ModelError):
+        ac.disjunctive(x, [0] * 3, [5] * 3, [1] * 3, setup_times=[[0, 1, 0], [0, 0, -1], [0] * 3])  # negative
+    with pytest.raises(ModelError):
+        ac.disjunctive(x, [0] * 3, [5] * 3, [1] * 3, setup_relaxation="everything")  # unknown
+    with pytest.raises(ModelError):
         m.add(ac.not_equal(x[0], other))  # variable from another model
     with pytest.raises(ModelError):
         m.add(ac.equal(x[0], 9))  # not in the domain

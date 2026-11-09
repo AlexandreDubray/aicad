@@ -1,6 +1,8 @@
 //! Functions that build a constraint and add it to a [`Problem`], one per kind of constraint.
 
-use super::{AllDifferent, Among, AtLeast, Disjunctive, Gcc, NotEquals, Regular, Sum, Table};
+use super::{
+    AllDifferent, Among, AtLeast, Disjunctive, Gcc, NotEquals, Regular, SetupTimes, Sum, Table,
+};
 use crate::modelling::{ConstraintIndex, Problem, VariableIndex};
 use rustc_hash::FxHashSet;
 
@@ -133,13 +135,16 @@ pub fn table(
 /// Adds [`Disjunctive`] to `problem` and returns its index: `variables` is a sequence of all the
 /// jobs, processed one at a time, where job `j` has release date `release[j]`, deadline
 /// `deadline[j]` and duration `duration[j]`. `precedences` lists pairs `(i, j)` of jobs, `i`
-/// having to come before `j`.
+/// having to come before `j`. `setup_times` holds the matrix of the setup times (`matrix[i][j]` is
+/// the time that has to pass between the end of job `i` and the start of job `j` when `j` follows
+/// `i`) and the [`SetupRelaxation`](crate::modelling::SetupRelaxation) of the states.
 ///
 /// # Panics
 ///
 /// As [`Disjunctive::new`]: if a variable appears more than once in `variables`, if the lists do
 /// not have one entry per variable, if a duration is negative, or if the precedences are not
-/// valid (a job that does not exist, a job before itself, a cycle).
+/// valid (a job that does not exist, a job before itself, a cycle), or if the setup times are not
+/// an `n` by `n` matrix without negative entry.
 pub fn disjunctive(
     problem: &mut Problem,
     variables: Vec<VariableIndex>,
@@ -147,7 +152,16 @@ pub fn disjunctive(
     deadline: Vec<isize>,
     duration: Vec<isize>,
     precedences: Option<Vec<(usize, usize)>>,
+    setup_times: Option<SetupTimes>,
 ) -> ConstraintIndex {
-    let constraint = Disjunctive::new(variables, release, deadline, duration, precedences, problem);
+    let constraint = Disjunctive::new(
+        variables,
+        release,
+        deadline,
+        duration,
+        precedences,
+        setup_times,
+        problem,
+    );
     problem.add_constraint(constraint)
 }

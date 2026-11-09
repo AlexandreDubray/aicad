@@ -57,7 +57,7 @@ pub(crate) mod solution;
 pub(crate) mod variable;
 
 #[doc(no_inline)]
-pub use constraint::{Constraint, ConstraintProperty, ConstraintShapeKey};
+pub use constraint::{Constraint, ConstraintProperty, ConstraintShapeKey, SetupRelaxation};
 pub use problem::Problem;
 pub use solution::{Solution, Status};
 pub use variable::Variable;

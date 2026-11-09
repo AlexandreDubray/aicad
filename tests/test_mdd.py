@@ -85,6 +85,62 @@ MODELS = [
 ]
 
 
+SETUP_RELAXATIONS = ("last_job", "last_set", "arc_times")
+
+
+@pytest.mark.parametrize("relaxation", SETUP_RELAXATIONS)
+def test_disjunctive_with_setup_times_count_matches_enumeration(relaxation):
+    setup = [[0, 2, 1, 0], [1, 0, 3, 2], [0, 1, 0, 2], [2, 0, 1, 0]]
+    m = ac.Model()
+    x = m.int_vars(4, domain=range(4))
+    m.add(
+        ac.disjunctive(
+            x,
+            [0, 1, 0, 3],
+            [14, 14, 14, 16],
+            [3, 2, 4, 2],
+            precedences=[(2, 0)],
+            setup_times=setup,
+            setup_relaxation=relaxation,
+        )
+    )
+    with_setup = solutions(m)
+    plain = ac.Model()
+    y = plain.int_vars(4, domain=range(4))
+    plain.add(ac.disjunctive(y, [0, 1, 0, 3], [14, 14, 14, 16], [3, 2, 4, 2], precedences=[(2, 0)]))
+    assert 0 < len(with_setup) < len(solutions(plain))
+    assert ac.Compiler(m).compile().count() == len(with_setup)
+    for width in (1, 2):
+        assert ac.Compiler(m).compile(width=width).count() >= len(with_setup)
+
+
+def test_the_relaxations_of_the_setup_times_agree_on_the_solutions():
+    setup = [[0, 2, 1, 0], [1, 0, 3, 2], [0, 1, 0, 2], [2, 0, 1, 0]]
+    counts = set()
+    for relaxation in SETUP_RELAXATIONS:
+        m = ac.Model()
+        x = m.int_vars(4, domain=range(4))
+        m.add(
+            ac.disjunctive(
+                x,
+                [0, 1, 0, 3],
+                [14, 14, 14, 16],
+                [3, 2, 4, 2],
+                setup_times=setup,
+                setup_relaxation=relaxation,
+            )
+        )
+        counts.add(ac.Compiler(m).compile().count())
+    assert len(counts) == 1
+
+
+def test_a_matrix_of_zeros_is_no_setup():
+    m = ac.Model()
+    x = m.int_vars(3, domain=range(3))
+    m.add(ac.disjunctive(x, [0] * 3, [6] * 3, [2] * 3, setup_times=[[0] * 3] * 3))
+    assert ac.Compiler(m).compile().count() == 6
+
+
 @pytest.mark.parametrize("build", MODELS)
 def test_exact_count_matches_enumeration(build):
     m = build()

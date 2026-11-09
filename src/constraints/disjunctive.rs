@@ -28,7 +28,10 @@
 //! constraint to detect). Duplicate precedences are stored once. An empty scope is always
 //! satisfied.
 //!
-//! Setup times are not part of this constraint (yet).
+//! Optionally, *setup times* $t_{i,j} \ge 0$: when job $j$ is processed right after job $i$, it
+//! cannot start before $t_{i,j}$ time units after the end of $i$, so
+//! $s_j = \max(r_j, c_i + t_{i,j})$. The first job has no setup. The matrix is given as `n` rows of
+//! `n` entries, the diagonal is ignored, and a matrix with no positive entry is the same as none.
 //!
 //! # How it compiles
 //!
@@ -42,6 +45,10 @@
 //!   *latest start time* $l$ of the jobs that remain, over the paths that leave the node. Both are
 //!   kept as a pair, the best case (smallest $e$, largest $l$) used to filter, and the worst case
 //!   (largest $e$, smallest $l$), which is what tells that all the paths agree.
+//! - **With setup times, what is known of the job at the open end of the paths**: the last job
+//!   placed (top-down) or the first job still to place (bottom-up). The setup that comes next
+//!   depends on it. How much of it a property keeps is the choice of a [`SetupRelaxation`], see
+//!   below. Nothing is kept when there is no setup time.
 //!
 //! ## Property update
 //!
@@ -61,12 +68,56 @@
 //! place, $l = +\infty$. Out of scope layers copy the property. The sets $(A, S)$ are updated as
 //! in [`AllDifferent`].
 //!
+//! With setup times, the job $i$ at the open end is read to add the setup between it and $j$:
+//! $e \otimes j = \max(e + t_{i,j}, r_j) + p_j$ top-down, and
+//! $l \otimes j = \min(l - t_{j,k}, d_j) - p_j$ bottom-up, where $k$ is the job at the open end of
+//! the child. The root and the sink have no job, so no setup. The job of the child is $j$ itself:
+//! the paths that leave an edge with the job $j$ all end with $j$. What happens when the paths of a
+//! node do not agree on $i$ or $k$ is the subject of the next section.
+//!
+//! ## Setup times: the three relaxations
+//!
+//! When a node merges paths that end with different jobs, its state cannot give *the* setup that
+//! comes next. A [`SetupRelaxation`] says what the state keeps instead, from the cheapest and the
+//! weakest to the most expensive and the strongest. All of them are exact on a single path, they
+//! all keep every solution, and a node is a single state in all of them only if its paths agree
+//! on the job at the open end (and on the time), so the true setup of every edge is used in a
+//! fully refined diagram: the choice only matters for the nodes of a relaxed diagram, and for the
+//! work that the compilation spends on a node.
+//!
+//! - [`SetupRelaxation::LastJob`] (the default). One integer: the job, or a marker if the paths
+//!   disagree. When they disagree, the best case uses the smallest setup that could come after
+//!   (or before) $j$ and the worst case the largest, over all the other jobs; they are computed
+//!   once, at construction. Merging, hashing and comparing a state is one integer, and the filter
+//!   reads one setup in a table. A node that merges two last jobs forgets which ones.
+//! - [`SetupRelaxation::LastSet`]. The set of the jobs, one bit each (plus one for the empty
+//!   path). When the paths disagree the best case uses the smallest setup over *the jobs of the
+//!   set*, and the worst case the largest. Merging is an `or` of $\lceil (n+1)/64 \rceil$ words,
+//!   like the permutation state, and the filter walks the set bits, $O(n)$ in the worst case. It
+//!   is never weaker than `LastJob`.
+//! - [`SetupRelaxation::ArcTimes`]. One time bound per job at the open end (the arc states
+//!   $ect_a$ and $lst_a$ of Cire and van Hoeve, sections 4 and 6.3): the best and the worst
+//!   completion time of the paths top-down (the best and the worst latest start bottom-up) that
+//!   end with each job. The edge test is
+//!   $\max(r_j, \min_{i \neq j} (e_i + t_{i,j})) + p_j > \min(d_j, \max_{k \neq j} (l_k - t_{j,k}))$,
+//!   which pairs every last job with its own time and not with the best time of the node. It is
+//!   never weaker than `LastSet`. A state holds $4(n+1)$ integers, and an update or a test is
+//!   $O(n)$. The scalar bounds are kept as well, as the best and the worst of the slots.
+//!
+//! A node is a single state, in all the relaxations, only when the paths agree on the job. The
+//! recommendation is `LastJob` while the diagrams are exact, since nothing weaker or cheaper is
+//! lost; `LastSet` or `ArcTimes` pay off when the width is limited and the setups differ a lot
+//! between the jobs that a node merges. Nothing is kept, and no instruction of the setup times is
+//! executed, when there are no setup times.
+//!
 //! ## Node merging
 //!
 //! Merging two nodes merges the sets as in [`AllDifferent`] (intersection of $A$, union of $S$) and
 //! takes, for each time bound, the smallest best case and the largest worst case in the top-down
-//! direction (resp. the largest and the smallest in the bottom-up one). The merged node can only
-//! be more permissive than each of them, so this is a relaxation.
+//! direction (resp. the largest and the smallest in the bottom-up one). The part that stands for
+//! the job at the open end is merged as its relaxation says (the marker of disagreement, the union
+//! of the sets, the slot-wise bounds). The merged node can only be more permissive than each of
+//! them, so this is a relaxation.
 //!
 //! ## Edge filtering
 //!
@@ -81,12 +132,18 @@
 //!
 //!    $$\max(e, r_j) + p_j > \min(l, d_j)$$
 //!
+//!    With setup times, $e$ is replaced by $e + t_{i,j}$ and $l$ by $l - t_{j,k}$, where $i$ and
+//!    $k$ are the jobs at the open end of the parent and of the child (the smallest setup that
+//!    the relaxation allows if they are not known; with `ArcTimes`, the best pairing of a last
+//!    job with its own time).
+//!
 //! 4. a precedence is broken: some job $i \ll j$ is in no set $S$ of the parent, so no path above
 //!    has placed it, or some job $j \ll k$ is in no set $S$ of the child, so no path below will.
 //!
 //! Rule 3 is exact on a single path, and on an exact node: it is the schedule that is built, and
 //! the deadlines of the jobs after the edge are taken into account through $l$. With merged
-//! nodes it is a necessary condition only. Rule 4 is exact as well: on a single path, a job placed
+//! nodes it is a necessary condition only (with setup times, the more so when the jobs at the
+//! open ends are not known). Rule 4 is exact as well: on a single path, a job placed
 //! before one of its predecessors is caught at the edge that places it. It needs no state of its
 //! own, the sets $S$ that the permutation already carries are enough.
 //!
@@ -95,7 +152,9 @@
 //! A node is a single state when $A = S$ (all the paths place the same jobs) and each time bound
 //! has its best and worst case equal (all the paths give the same time, so the future of the
 //! node does not depend on the path). Two paths that place the same jobs in different orders
-//! usually end at different times, so this is stricter than for [`AllDifferent`].
+//! usually end at different times, so this is stricter than for [`AllDifferent`]. With setup
+//! times the paths must also agree on the job at the open end: two paths that end at the same
+//! time with different last jobs have different futures.
 //!
 //! # Design notes
 //!
@@ -118,7 +177,19 @@
 //! - **Time bounds are a single number per node**, not one per job. This is the recurrence of
 //!   Hoda et al. and of Cire and van Hoeve without setup times, where the extra condition on the
 //!   previous job (the arc rule $val(a) \neq val(a')$) is already implied by the permutation
-//!   state. Setup times would need a number per last job.
+//!   state.
+//! - **Setup times are optional, and so is what they cost.** Everything that they add is behind
+//!   one test of an `Option` in the constraint, as for the precedences, so the plain constraint
+//!   executes the same instructions as before. The state of a property then holds the part that
+//!   its [`SetupRelaxation`] asks for, as an enum whose cheapest case is nothing.
+//! - **The relaxation is a parameter, not a decision.** An exact diagram needs none of it: a node
+//!   is a single state only if its paths agree on the job at the open end, so the true setup of
+//!   every edge is used. What the relaxations differ in is what a node that *merges* last jobs
+//!   knows: the cheapest forgets which jobs were merged, the set remembers which, the arcs
+//!   remember the time of each. The first costs an integer, the second $O(n/64)$ words to merge
+//!   and $O(n)$ to filter, the third $O(n)$ for both. The enum of the state is matched once per
+//!   operation, on a variant that is the same for the whole constraint, and the choice is part of
+//!   the structural key so that the arena does not share a structure between two relaxations.
 //! - **Time is an `isize`** and sentinels saturate, so a huge release date or deadline does not
 //!   overflow.
 //! - **Domains are read once**, by the embedded [`AllDifferent`], so the remarks of that module
@@ -139,6 +210,7 @@
 //!     vec![10, 4, 10],
 //!     vec![3, 2, 2],
 //!     None,
+//!     None,
 //!     &problem,
 //! );
 //!
@@ -152,6 +224,7 @@
 //!     vec![10, 4, 10],
 //!     vec![3, 2, 2],
 //!     Some(vec![(2, 1)]),
+//!     None,
 //!     &problem,
 //! );
 //! assert!(!ordered.is_satisfied(&[1, 0, 2]));
@@ -174,6 +247,463 @@ use rustc_hash::FxHashSet;
 use std::hash::Hasher;
 use std::sync::Arc;
 
+/// No path has reached the property yet, the neutral element of [`join_job`].
+const NO_JOB: u32 = u32::MAX;
+/// The empty path: the root (top-down) and the sink (bottom-up). No job, so no setup.
+const START: u32 = u32::MAX - 1;
+/// The paths of the property do not agree on the job at the open end.
+const MANY: u32 = u32::MAX - 2;
+
+/// The job at the open end of the paths of a node that two sets of paths agree on: the common job
+/// if they have the same one, and `MANY` if not. `NO_JOB` is neutral. A join, so that merging
+/// stays one.
+fn join_job(a: u32, b: u32) -> u32 {
+    if a == b || b == NO_JOB {
+        a
+    } else if a == NO_JOB {
+        b
+    } else {
+        MANY
+    }
+}
+
+/// The setup times of a [`Disjunctive`] and how their relaxation is represented, to give to
+/// [`Disjunctive::new`].
+///
+/// ```
+/// use aicad::constraints::{SetupRelaxation, SetupTimes};
+///
+/// let times = SetupTimes::new(vec![vec![0, 2], vec![1, 0]]);
+/// assert_eq!(times.relaxation, SetupRelaxation::LastJob);
+/// let times = times.with_relaxation(SetupRelaxation::ArcTimes);
+/// assert_eq!(times.relaxation, SetupRelaxation::ArcTimes);
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SetupTimes {
+    /// `matrix[i][j]` is the time that has to pass between the end of job `i` and the start of job
+    /// `j` when `j` follows `i`. The diagonal is ignored.
+    pub matrix: Vec<Vec<isize>>,
+    /// What the states remember about the job at the open end; see [`SetupRelaxation`].
+    pub relaxation: SetupRelaxation,
+}
+
+impl SetupTimes {
+    /// The setup times `matrix`, with the default relaxation ([`SetupRelaxation::LastJob`]).
+    pub fn new(matrix: Vec<Vec<isize>>) -> Self {
+        Self {
+            matrix,
+            relaxation: SetupRelaxation::default(),
+        }
+    }
+
+    /// The same setup times with another relaxation.
+    pub fn with_relaxation(mut self, relaxation: SetupRelaxation) -> Self {
+        self.relaxation = relaxation;
+        self
+    }
+}
+
+/// The jobs at the open end of the paths of a property, as a bitset over `n + 1` bits: bit `j` for
+/// the job `j`, and bit `n` for the empty path. A node with no path has the empty set.
+type JobSet = Vec<u64>;
+
+/// Number of words of a [`JobSet`] for `n` jobs.
+fn job_set_len(n: usize) -> usize {
+    (n + 1).div_ceil(64)
+}
+
+/// The slots of the time bounds of [`SetupRelaxation::ArcTimes`], one per job at the open end and
+/// one (the last, `n`) for the empty path. A slot that no path reaches holds the neutral element
+/// of its merge: best case `isize::MAX` and worst case `isize::MIN` top-down, the reverse
+/// bottom-up. A slot is therefore *populated* when its best and worst case are in the order of a
+/// real value (`best <= worst` top-down, `best >= worst` bottom-up).
+#[derive(Clone, deepsize::DeepSizeOf)]
+struct Arcs {
+    /// Top-down, for each last job: the smallest earliest completion time over the paths.
+    ect_best: Vec<isize>,
+    /// Top-down, for each last job: the largest earliest completion time over the paths.
+    ect_worst: Vec<isize>,
+    /// Bottom-up, for each first job: the largest latest start time over the paths.
+    lst_best: Vec<isize>,
+    /// Bottom-up, for each first job: the smallest latest start time over the paths.
+    lst_worst: Vec<isize>,
+}
+
+impl Arcs {
+    /// No path anywhere.
+    fn identity(n: usize) -> Self {
+        Self {
+            ect_best: vec![isize::MAX; n + 1],
+            ect_worst: vec![isize::MIN; n + 1],
+            lst_best: vec![isize::MIN; n + 1],
+            lst_worst: vec![isize::MAX; n + 1],
+        }
+    }
+
+    /// The empty path, from the root ($-\infty$) and from the sink ($+\infty$).
+    fn empty(n: usize) -> Self {
+        let mut arcs = Self::identity(n);
+        arcs.ect_best[n] = isize::MIN;
+        arcs.ect_worst[n] = isize::MIN;
+        arcs.lst_best[n] = isize::MAX;
+        arcs.lst_worst[n] = isize::MAX;
+        arcs
+    }
+
+    /// Slot-wise merge, which is a join like the scalar bounds.
+    fn merge(&mut self, other: &Self) {
+        for (mine, theirs) in self.ect_best.iter_mut().zip(&other.ect_best) {
+            *mine = (*mine).min(*theirs);
+        }
+        for (mine, theirs) in self.ect_worst.iter_mut().zip(&other.ect_worst) {
+            *mine = (*mine).max(*theirs);
+        }
+        for (mine, theirs) in self.lst_best.iter_mut().zip(&other.lst_best) {
+            *mine = (*mine).max(*theirs);
+        }
+        for (mine, theirs) in self.lst_worst.iter_mut().zip(&other.lst_worst) {
+            *mine = (*mine).min(*theirs);
+        }
+    }
+
+    /// Number of slots reached by some path, top-down.
+    fn populated_ect(&self) -> usize {
+        self.ect_best
+            .iter()
+            .zip(&self.ect_worst)
+            .filter(|(best, worst)| best <= worst)
+            .count()
+    }
+
+    /// Number of slots reached by some path, bottom-up.
+    fn populated_lst(&self) -> usize {
+        self.lst_best
+            .iter()
+            .zip(&self.lst_worst)
+            .filter(|(best, worst)| best >= worst)
+            .count()
+    }
+
+    /// The smallest and the largest time at which `job` can start after the paths of this
+    /// top-down state (the completion time of a path plus the setup after its last job), or
+    /// `None` if no path can be followed by `job`.
+    fn ready(&self, setup: &Setup, job: usize) -> Option<(isize, isize)> {
+        let n = setup.n;
+        let mut found: Option<(isize, isize)> = None;
+        for last in 0..=n {
+            let (best, worst) = (self.ect_best[last], self.ect_worst[last]);
+            if best > worst || last == job {
+                continue;
+            }
+            let time = if last == n {
+                0
+            } else {
+                setup.times[last * n + job]
+            };
+            let (best, worst) = (best.saturating_add(time), worst.saturating_add(time));
+            found = Some(match found {
+                None => (best, worst),
+                Some((min, max)) => (min.min(best), max.max(worst)),
+            });
+        }
+        found
+    }
+
+    /// The largest and the smallest time at which `job` can end for the paths of this bottom-up
+    /// state (the latest start of a path minus the setup before its first job), or `None` if
+    /// `job` cannot be followed by any path.
+    fn due(&self, setup: &Setup, job: usize) -> Option<(isize, isize)> {
+        let n = setup.n;
+        let mut found: Option<(isize, isize)> = None;
+        for first in 0..=n {
+            let (best, worst) = (self.lst_best[first], self.lst_worst[first]);
+            if best < worst || first == job {
+                continue;
+            }
+            let time = if first == n {
+                0
+            } else {
+                setup.times[job * n + first]
+            };
+            let (best, worst) = (best.saturating_sub(time), worst.saturating_sub(time));
+            found = Some(match found {
+                None => (best, worst),
+                Some((max, min)) => (max.max(best), min.min(worst)),
+            });
+        }
+        found
+    }
+}
+
+/// What a property remembers about the job at the open end of its paths, for the setup time that
+/// comes next: nothing without setup times, and otherwise what the [`SetupRelaxation`] says. The
+/// variant is the same for all the properties of a constraint.
+#[derive(Clone, deepsize::DeepSizeOf)]
+enum Open {
+    /// No setup times.
+    Nothing,
+    /// [`SetupRelaxation::LastJob`]: a job, or one of `NO_JOB`, `START` and `MANY`.
+    Job(u32),
+    /// [`SetupRelaxation::LastSet`]: the jobs, as bits.
+    Set(JobSet),
+    /// [`SetupRelaxation::ArcTimes`]: the times of each job.
+    Arcs(Box<Arcs>),
+}
+
+impl Open {
+    /// The state of a property that no path has reached.
+    fn identity(setup: &Option<Setup>) -> Self {
+        match setup {
+            None => Self::Nothing,
+            Some(setup) => match setup.relaxation {
+                SetupRelaxation::LastJob => Self::Job(NO_JOB),
+                SetupRelaxation::LastSet => Self::Set(vec![0; job_set_len(setup.n)]),
+                SetupRelaxation::ArcTimes => Self::Arcs(Box::new(Arcs::identity(setup.n))),
+            },
+        }
+    }
+
+    /// The state of the empty path: no job, so no setup.
+    fn empty(setup: &Option<Setup>) -> Self {
+        match setup {
+            None => Self::Nothing,
+            Some(setup) => match setup.relaxation {
+                SetupRelaxation::LastJob => Self::Job(START),
+                SetupRelaxation::LastSet => {
+                    let mut set = vec![0; job_set_len(setup.n)];
+                    set[setup.n / 64] |= 1 << (setup.n % 64);
+                    Self::Set(set)
+                }
+                SetupRelaxation::ArcTimes => Self::Arcs(Box::new(Arcs::empty(setup.n))),
+            },
+        }
+    }
+
+    /// The two variants are not the same: a bug, since a constraint has a single relaxation.
+    fn mismatch() -> ! {
+        panic!("Disjunctive: properties with different setup relaxations")
+    }
+
+    /// Joins `other` into `self`, which is what merging does.
+    fn merge(&mut self, other: &Self) {
+        match (self, other) {
+            (Self::Nothing, Self::Nothing) => {}
+            (Self::Job(mine), Self::Job(theirs)) => *mine = join_job(*mine, *theirs),
+            (Self::Set(mine), Self::Set(theirs)) => {
+                for (mine, theirs) in mine.iter_mut().zip(theirs) {
+                    *mine |= *theirs;
+                }
+            }
+            (Self::Arcs(mine), Self::Arcs(theirs)) => mine.merge(theirs),
+            _ => Self::mismatch(),
+        }
+    }
+
+    /// Whether the paths agree on the job at the open end (and, for the arcs, on the time).
+    fn is_single_state(&self) -> bool {
+        match self {
+            Self::Nothing => true,
+            Self::Job(job) => *job != MANY,
+            Self::Set(set) => set.iter().map(|word| word.count_ones()).sum::<u32>() <= 1,
+            Self::Arcs(arcs) => arcs.populated_ect() <= 1 && arcs.populated_lst() <= 1,
+        }
+    }
+
+    /// Feeds the state to `hasher`.
+    fn hash(&self, hasher: &mut dyn Hasher) {
+        match self {
+            Self::Nothing => {}
+            Self::Job(job) => hasher.write_u32(*job),
+            Self::Set(set) => set.iter().for_each(|word| hasher.write_u64(*word)),
+            Self::Arcs(arcs) => {
+                for slots in [
+                    &arcs.ect_best,
+                    &arcs.ect_worst,
+                    &arcs.lst_best,
+                    &arcs.lst_worst,
+                ] {
+                    slots.iter().for_each(|time| hasher.write_isize(*time));
+                }
+            }
+        }
+    }
+
+    /// Whether the two states are the same.
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Nothing, Self::Nothing) => true,
+            (Self::Job(mine), Self::Job(theirs)) => mine == theirs,
+            (Self::Set(mine), Self::Set(theirs)) => mine == theirs,
+            (Self::Arcs(mine), Self::Arcs(theirs)) => {
+                mine.ect_best == theirs.ect_best
+                    && mine.ect_worst == theirs.ect_worst
+                    && mine.lst_best == theirs.lst_best
+                    && mine.lst_worst == theirs.lst_worst
+            }
+            _ => Self::mismatch(),
+        }
+    }
+
+    /// Adds to `key` the numbers that describe this state, a fixed count for a constraint.
+    fn push_order_key(&self, n: usize, key: &mut Vec<f64>) {
+        match self {
+            Self::Nothing => {}
+            // The jobs are numbered below `n`, and every marker is put after them.
+            Self::Job(job) => key.push((*job).min(n as u32) as f64),
+            Self::Set(set) => {
+                key.push(set.iter().map(|word| word.count_ones()).sum::<u32>() as f64)
+            }
+            Self::Arcs(arcs) => {
+                key.push(arcs.populated_ect() as f64);
+                key.push(arcs.populated_lst() as f64);
+            }
+        }
+    }
+}
+
+/// Sets the bit `bit` of `set`.
+fn set_bit(set: &mut [u64], bit: usize) {
+    set[bit / 64] |= 1 << (bit % 64);
+}
+
+/// The setup times, and the numbers that the filtering needs when the job at the open end is not
+/// known. Built once, shared through [`Jobs`].
+#[derive(Clone, deepsize::DeepSizeOf)]
+struct Setup {
+    /// How the open end of the paths is represented in the properties.
+    relaxation: SetupRelaxation,
+    /// Number of jobs.
+    n: usize,
+    /// `times[i * n + j]` is the setup between `i` and `j` when `j` follows `i`. The diagonal is
+    /// 0 and never read in a way that matters (a job is never next to itself).
+    times: Vec<isize>,
+    /// For each job `j`, the smallest setup that can come right before it.
+    min_into: Vec<isize>,
+    /// For each job `j`, the largest setup that can come right before it.
+    max_into: Vec<isize>,
+    /// For each job `j`, the smallest setup that can come right after it.
+    min_from: Vec<isize>,
+    /// For each job `j`, the largest setup that can come right after it.
+    max_from: Vec<isize>,
+}
+
+impl Setup {
+    /// `times` is the matrix, `n` rows of `n` entries, flattened row by row, with a zero diagonal.
+    fn new(n: usize, times: Vec<isize>, relaxation: SetupRelaxation) -> Self {
+        let others = |job: usize, of_row: bool| -> Vec<isize> {
+            (0..n)
+                .filter(|&other| other != job)
+                .map(|other| {
+                    if of_row {
+                        times[job * n + other]
+                    } else {
+                        times[other * n + job]
+                    }
+                })
+                .collect()
+        };
+        let extreme = |values: Vec<isize>, largest: bool| -> isize {
+            let found = if largest {
+                values.into_iter().max()
+            } else {
+                values.into_iter().min()
+            };
+            found.unwrap_or(0)
+        };
+        let min_into = (0..n).map(|j| extreme(others(j, false), false)).collect();
+        let max_into = (0..n).map(|j| extreme(others(j, false), true)).collect();
+        let min_from = (0..n).map(|j| extreme(others(j, true), false)).collect();
+        let max_from = (0..n).map(|j| extreme(others(j, true), true)).collect();
+        Self {
+            relaxation,
+            n,
+            times,
+            min_into,
+            max_into,
+            min_from,
+            max_from,
+        }
+    }
+
+    /// The smallest setup before `job`, given the job at the open end of the paths above it.
+    fn before_min(&self, last: u32, job: usize) -> isize {
+        match last {
+            NO_JOB | START => 0,
+            MANY => self.min_into[job],
+            last => self.times[last as usize * self.n + job],
+        }
+    }
+
+    /// The largest setup before `job`, given the job at the open end of the paths above it.
+    fn before_max(&self, last: u32, job: usize) -> isize {
+        match last {
+            NO_JOB | START => 0,
+            MANY => self.max_into[job],
+            last => self.times[last as usize * self.n + job],
+        }
+    }
+
+    /// The smallest setup after `job`, given the job at the open end of the paths below it.
+    fn after_min(&self, job: usize, first: u32) -> isize {
+        match first {
+            NO_JOB | START => 0,
+            MANY => self.min_from[job],
+            first => self.times[job * self.n + first as usize],
+        }
+    }
+
+    /// The largest setup after `job`, given the job at the open end of the paths below it.
+    fn after_max(&self, job: usize, first: u32) -> isize {
+        match first {
+            NO_JOB | START => 0,
+            MANY => self.max_from[job],
+            first => self.times[job * self.n + first as usize],
+        }
+    }
+
+    /// The smallest (or the largest) of the values `time(i)` over the jobs `i` of `set` other
+    /// than `job`, where the bit `n` is the empty path, whose setup is 0. A set with no such job
+    /// gives 0: no setup is assumed, which keeps every bound safe.
+    fn over_set(
+        &self,
+        set: &[u64],
+        job: usize,
+        largest: bool,
+        time: impl Fn(usize) -> isize,
+    ) -> isize {
+        let mut found: Option<isize> = None;
+        for (index, &word) in set.iter().enumerate() {
+            let mut bits = word;
+            while bits != 0 {
+                let other = index * 64 + bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                if other == job {
+                    continue;
+                }
+                let value = if other == self.n { 0 } else { time(other) };
+                found = Some(match found {
+                    None => value,
+                    Some(best) if largest => best.max(value),
+                    Some(best) => best.min(value),
+                });
+            }
+        }
+        found.unwrap_or(0)
+    }
+
+    /// The smallest (or the largest) setup before `job`, given the set of the jobs at the open
+    /// end of the paths above it.
+    fn set_before(&self, set: &[u64], job: usize, largest: bool) -> isize {
+        self.over_set(set, job, largest, |last| self.times[last * self.n + job])
+    }
+
+    /// The smallest (or the largest) setup after `job`, given the set of the jobs at the open end
+    /// of the paths below it.
+    fn set_after(&self, set: &[u64], job: usize, largest: bool) -> isize {
+        self.over_set(set, job, largest, |first| self.times[job * self.n + first])
+    }
+}
+
 /// The data of the jobs, shared by the constraint and by all of its properties.
 #[derive(Clone, deepsize::DeepSizeOf)]
 struct Jobs {
@@ -194,6 +724,8 @@ struct Jobs {
     predecessor_bits: Vec<Vec<Option<usize>>>,
     /// `successors`, as bits.
     successor_bits: Vec<Vec<Option<usize>>>,
+    /// The setup times, if some is positive.
+    setup: Option<Setup>,
 }
 
 /// Per-node state of [`Disjunctive`]: the permutation state of [`AllDifferent`] and the time
@@ -216,6 +748,9 @@ struct DisjunctiveProperty {
     lst_best: isize,
     /// Bottom-up: the smallest latest start time over the paths (worst case).
     lst_worst: isize,
+    /// With setup times only: what is known of the job at the open end of the paths, which is the
+    /// last job placed (top-down) or the first job to place (bottom-up).
+    open: Open,
 }
 
 impl DisjunctiveProperty {
@@ -267,19 +802,26 @@ impl Disjunctive {
     /// `precedences` lists pairs `(i, j)` of jobs, `i` having to come before `j`; `None` is no
     /// precedence at all.
     ///
+    /// `setup_times` holds the matrix of the setup times, `matrix[i][j]` being the time that has
+    /// to pass between the end of `i` and the start of `j` when `j` follows `i`, and the
+    /// [`SetupRelaxation`] that tells how the states keep track of the job that the setup depends
+    /// on; `None` is no setup time. The diagonal is ignored.
+    ///
     /// `problem` is read for the domains of the variables, as in [`AllDifferent::new`].
     ///
     /// # Panics
     ///
     /// If a variable is repeated, if the three lists do not have one entry per variable, if a
-    /// duration is negative, or if the precedences are not valid (see
-    /// [`check_precedences`](Self::check_precedences)).
+    /// duration is negative, if the precedences are not valid (see
+    /// [`check_precedences`](Self::check_precedences)), or if the setup times are not valid (see
+    /// [`check_setup_times`](Self::check_setup_times)).
     pub fn new(
         variables: Vec<VariableIndex>,
         release: Vec<isize>,
         deadline: Vec<isize>,
         duration: Vec<isize>,
         precedences: Option<Vec<(usize, usize)>>,
+        setup_times: Option<SetupTimes>,
         problem: &Problem,
     ) -> Self {
         let distinct: FxHashSet<VariableIndex> = variables.iter().copied().collect();
@@ -308,6 +850,31 @@ impl Disjunctive {
         }
         precedences.sort_unstable();
         precedences.dedup();
+        let setup = setup_times.and_then(
+            |SetupTimes {
+                 matrix: rows,
+                 relaxation,
+             }| {
+                if let Err(message) = Self::check_setup_times(n, &rows) {
+                    panic!("Disjunctive: {message}");
+                }
+                // The matrix without its diagonal, flattened. A matrix with no positive entry is no
+                // setup time at all.
+                let times: Vec<isize> = (0..n * n)
+                    .map(|cell| {
+                        if cell / n == cell % n {
+                            0
+                        } else {
+                            rows[cell / n][cell % n]
+                        }
+                    })
+                    .collect();
+                times
+                    .iter()
+                    .any(|&t| t > 0)
+                    .then(|| Setup::new(n, times, relaxation))
+            },
+        );
         let all_different = AllDifferent::new(variables.clone(), problem);
         let mut predecessors = vec![vec![]; n];
         let mut successors = vec![vec![]; n];
@@ -330,6 +897,7 @@ impl Disjunctive {
                 successors,
                 predecessor_bits,
                 successor_bits,
+                setup,
             }),
             all_different,
             layer_in_scope: vec![],
@@ -374,9 +942,67 @@ impl Disjunctive {
         Ok(())
     }
 
+    /// Checks that `setup_times` is a valid matrix of setup times between `n` jobs: `n` rows of
+    /// `n` entries, none negative outside of the diagonal (which is ignored). Returns the reason
+    /// if not.
+    pub fn check_setup_times(n: usize, setup_times: &[Vec<isize>]) -> Result<(), String> {
+        if setup_times.len() != n {
+            return Err(format!(
+                "the setup times have {} rows for {n} jobs",
+                setup_times.len()
+            ));
+        }
+        for (i, row) in setup_times.iter().enumerate() {
+            if row.len() != n {
+                return Err(format!(
+                    "row {i} of the setup times has {} entries for {n} jobs",
+                    row.len()
+                ));
+            }
+            if let Some(j) = (0..n).find(|&j| j != i && row[j] < 0) {
+                return Err(format!(
+                    "the setup time from job {i} to job {j} is negative"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Number of jobs, which is the size of the scope.
     fn len(&self) -> usize {
         self.variables.len()
+    }
+
+    /// With setup times, the earliest time at which `job` can start after the paths above (setup
+    /// included, but not the release date) and the latest time at which it can end given the
+    /// paths below (setup included, but not the deadline). The best case of each relaxation.
+    fn setup_window(
+        setup: &Setup,
+        parent: &DisjunctiveProperty,
+        child: &DisjunctiveProperty,
+        job: usize,
+    ) -> (isize, isize) {
+        match (&parent.open, &child.open) {
+            (Open::Job(last), Open::Job(first)) => (
+                parent.ect_best.saturating_add(setup.before_min(*last, job)),
+                child.lst_best.saturating_sub(setup.after_min(job, *first)),
+            ),
+            (Open::Set(last), Open::Set(first)) => (
+                parent
+                    .ect_best
+                    .saturating_add(setup.set_before(last, job, false)),
+                child
+                    .lst_best
+                    .saturating_sub(setup.set_after(first, job, false)),
+            ),
+            // A node that no path can follow with this job gets the values that make the edge
+            // invalid, as the sentinels of an empty node do.
+            (Open::Arcs(last), Open::Arcs(first)) => (
+                last.ready(setup, job).map_or(isize::MAX, |(best, _)| best),
+                first.due(setup, job).map_or(isize::MIN, |(best, _)| best),
+            ),
+            _ => Open::mismatch(),
+        }
     }
 }
 
@@ -388,6 +1014,13 @@ impl Constraint for Disjunctive {
             deadline: self.jobs.deadline.clone(),
             duration: self.jobs.duration.clone(),
             precedences: self.jobs.precedences.clone(),
+            setup_times: self.jobs.setup.as_ref().map(|setup| setup.times.clone()),
+            setup_relaxation: self
+                .jobs
+                .setup
+                .as_ref()
+                .map(|setup| setup.relaxation)
+                .unwrap_or_default(),
         }
     }
 
@@ -449,6 +1082,8 @@ impl Constraint for Disjunctive {
         };
         let is_placed = |placed: &[u64], job: usize| placed[job / 64] & (1 << (job % 64)) != 0;
         let has_precedences = !self.jobs.precedences.is_empty();
+        let setup = self.jobs.setup.as_ref();
+        let mut previous = None;
         let mut time = isize::MIN;
         for &variable in self.variables.iter() {
             let Some(job) = job_of(assignment[*variable], n) else {
@@ -463,7 +1098,14 @@ impl Constraint for Disjunctive {
                 return false;
             }
             placed[job / 64] |= 1 << (job % 64);
-            let end = time
+            let mut ready = time;
+            if let Some(setup) = setup {
+                if let Some(previous) = previous {
+                    ready = time.saturating_add(setup.times[previous * n + job]);
+                }
+                previous = Some(job);
+            }
+            let end = ready
                 .max(self.jobs.release[job])
                 .saturating_add(self.jobs.duration[job]);
             if end > self.jobs.deadline[job] {
@@ -501,11 +1143,15 @@ impl Constraint for Disjunctive {
         //
         // Rule 3: the job cannot end in time. A node with no path (the sentinels) fails here
         // too: its best end saturates to the largest value, or its latest start is the smallest.
-        let end = parent
-            .ect_best
+        let mut from = parent.ect_best;
+        let mut until = child.lst_best;
+        if let Some(setup) = &self.jobs.setup {
+            (from, until) = Self::setup_window(setup, parent, child, job);
+        }
+        let end = from
             .max(self.jobs.release[job])
             .saturating_add(self.jobs.duration[job]);
-        if end > child.lst_best.min(self.jobs.deadline[job]) {
+        if end > until.min(self.jobs.deadline[job]) {
             return true;
         }
         // Rule 1: the job is already placed, or the Hall sets are full.
@@ -541,6 +1187,7 @@ impl Constraint for Disjunctive {
             ect_worst: isize::MIN,
             lst_best: isize::MIN,
             lst_worst: isize::MAX,
+            open: Open::identity(&self.jobs.setup),
         })
     }
 
@@ -555,6 +1202,7 @@ impl Constraint for Disjunctive {
             ect_worst: isize::MIN,
             lst_best: isize::MAX,
             lst_worst: isize::MAX,
+            open: Open::empty(&self.jobs.setup),
         })
     }
 }
@@ -567,6 +1215,7 @@ impl ConstraintProperty for DisjunctiveProperty {
                 .update(&parent.permutation, assignment, false);
             self.ect_best = self.ect_best.min(parent.ect_best);
             self.ect_worst = self.ect_worst.max(parent.ect_worst);
+            self.open.merge(&parent.open);
             return;
         }
         // An edge that is not a job is removed by the filtering; it contributes nothing.
@@ -575,15 +1224,47 @@ impl ConstraintProperty for DisjunctiveProperty {
         };
         self.permutation
             .update(&parent.permutation, assignment, true);
+        let mut best = parent.ect_best;
+        let mut worst = parent.ect_worst;
+        if let Some(setup) = &self.jobs.setup {
+            match (&mut self.open, &parent.open) {
+                (Open::Job(mine), Open::Job(last)) => {
+                    *mine = join_job(*mine, job as u32);
+                    best = best.saturating_add(setup.before_min(*last, job));
+                    worst = worst.saturating_add(setup.before_max(*last, job));
+                }
+                (Open::Set(mine), Open::Set(last)) => {
+                    set_bit(mine, job);
+                    best = best.saturating_add(setup.set_before(last, job, false));
+                    worst = worst.saturating_add(setup.set_before(last, job, true));
+                }
+                (Open::Arcs(mine), Open::Arcs(last)) => {
+                    // The paths that end with `job` are all in its slot, whose bounds are the
+                    // ones of the scalars, now computed from the slots of the parent.
+                    if let Some((best, worst)) = last.ready(setup, job) {
+                        let release = self.jobs.release[job];
+                        let duration = self.jobs.duration[job];
+                        let best = best.max(release).saturating_add(duration);
+                        let worst = worst.max(release).saturating_add(duration);
+                        mine.ect_best[job] = mine.ect_best[job].min(best);
+                        mine.ect_worst[job] = mine.ect_worst[job].max(worst);
+                        self.ect_best = self.ect_best.min(best);
+                        self.ect_worst = self.ect_worst.max(worst);
+                    }
+                    return;
+                }
+                _ => Open::mismatch(),
+            }
+        }
         if !parent.has_no_ect() {
             let release = self.jobs.release[job];
             let duration = self.jobs.duration[job];
             self.ect_best = self
                 .ect_best
-                .min(parent.ect_best.max(release).saturating_add(duration));
+                .min(best.max(release).saturating_add(duration));
             self.ect_worst = self
                 .ect_worst
-                .max(parent.ect_worst.max(release).saturating_add(duration));
+                .max(worst.max(release).saturating_add(duration));
         }
     }
 
@@ -599,6 +1280,7 @@ impl ConstraintProperty for DisjunctiveProperty {
                 .update_backward(&child.permutation, assignment, false);
             self.lst_best = self.lst_best.max(child.lst_best);
             self.lst_worst = self.lst_worst.min(child.lst_worst);
+            self.open.merge(&child.open);
             return;
         }
         let Some(job) = job_of(assignment, self.jobs.release.len()) else {
@@ -606,15 +1288,45 @@ impl ConstraintProperty for DisjunctiveProperty {
         };
         self.permutation
             .update_backward(&child.permutation, assignment, true);
+        let mut best = child.lst_best;
+        let mut worst = child.lst_worst;
+        if let Some(setup) = &self.jobs.setup {
+            match (&mut self.open, &child.open) {
+                (Open::Job(mine), Open::Job(first)) => {
+                    *mine = join_job(*mine, job as u32);
+                    best = best.saturating_sub(setup.after_min(job, *first));
+                    worst = worst.saturating_sub(setup.after_max(job, *first));
+                }
+                (Open::Set(mine), Open::Set(first)) => {
+                    set_bit(mine, job);
+                    best = best.saturating_sub(setup.set_after(first, job, false));
+                    worst = worst.saturating_sub(setup.set_after(first, job, true));
+                }
+                (Open::Arcs(mine), Open::Arcs(first)) => {
+                    if let Some((best, worst)) = first.due(setup, job) {
+                        let deadline = self.jobs.deadline[job];
+                        let duration = self.jobs.duration[job];
+                        let best = best.min(deadline).saturating_sub(duration);
+                        let worst = worst.min(deadline).saturating_sub(duration);
+                        mine.lst_best[job] = mine.lst_best[job].max(best);
+                        mine.lst_worst[job] = mine.lst_worst[job].min(worst);
+                        self.lst_best = self.lst_best.max(best);
+                        self.lst_worst = self.lst_worst.min(worst);
+                    }
+                    return;
+                }
+                _ => Open::mismatch(),
+            }
+        }
         if !child.has_no_lst() {
             let deadline = self.jobs.deadline[job];
             let duration = self.jobs.duration[job];
             self.lst_best = self
                 .lst_best
-                .max(child.lst_best.min(deadline).saturating_sub(duration));
+                .max(best.min(deadline).saturating_sub(duration));
             self.lst_worst = self
                 .lst_worst
-                .min(child.lst_worst.min(deadline).saturating_sub(duration));
+                .min(worst.min(deadline).saturating_sub(duration));
         }
     }
 
@@ -625,19 +1337,23 @@ impl ConstraintProperty for DisjunctiveProperty {
         self.ect_worst = self.ect_worst.max(other.ect_worst);
         self.lst_best = self.lst_best.max(other.lst_best);
         self.lst_worst = self.lst_worst.min(other.lst_worst);
+        self.open.merge(&other.open);
     }
 
     fn order_key(&self) -> Vec<f64> {
         // One allocation of the right size: this runs for every node when merging.
         let [all, some] = self.permutation.order_key_parts();
-        vec![
+        let mut key = Vec::with_capacity(8);
+        key.extend([
             all,
             some,
             self.ect_best as f64,
             self.ect_worst as f64,
             self.lst_best as f64,
             self.lst_worst as f64,
-        ]
+        ]);
+        self.open.push_order_key(self.jobs.release.len(), &mut key);
+        key
     }
 
     fn hash(&self, hasher: &mut dyn Hasher) {
@@ -646,6 +1362,7 @@ impl ConstraintProperty for DisjunctiveProperty {
         hasher.write_isize(self.ect_worst);
         hasher.write_isize(self.lst_best);
         hasher.write_isize(self.lst_worst);
+        self.open.hash(hasher);
     }
 
     fn eq(&self, other: &dyn ConstraintProperty) -> bool {
@@ -655,6 +1372,7 @@ impl ConstraintProperty for DisjunctiveProperty {
             && self.ect_worst == other.ect_worst
             && self.lst_best == other.lst_best
             && self.lst_worst == other.lst_worst
+            && self.open.eq(&other.open)
     }
 
     /// $A = S$ and each time bound that holds a value has its two cases equal (see the module
@@ -663,6 +1381,7 @@ impl ConstraintProperty for DisjunctiveProperty {
         self.permutation.is_single_state()
             && (self.has_no_ect() || self.ect_best == self.ect_worst)
             && (self.has_no_lst() || self.lst_best == self.lst_worst)
+            && self.open.is_single_state()
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -712,7 +1431,7 @@ mod test_disjunctive {
         let mut problem = Problem::default();
         let vars = problem.add_variables(spec.len(), (0..n).collect());
         let (r, d, p) = lists(spec);
-        let mut c = Disjunctive::new(vars.clone(), r, d, p, None, &problem);
+        let mut c = Disjunctive::new(vars.clone(), r, d, p, None, None, &problem);
         c.update_variable_ordering(&vars);
         c
     }
@@ -723,7 +1442,7 @@ mod test_disjunctive {
         let mut problem = Problem::default();
         let vars = problem.add_variables(spec.len(), (0..n).collect());
         let (r, d, p) = lists(spec);
-        disjunctive(&mut problem, vars, r, d, p, None);
+        disjunctive(&mut problem, vars, r, d, p, None, None);
         problem
     }
 
@@ -831,7 +1550,8 @@ mod test_disjunctive {
     /// `[ect_best, ect_worst, lst_best, lst_worst]`, the last four numbers of the order key.
     fn times(property: &dyn ConstraintProperty) -> [isize; 4] {
         let key = property.order_key();
-        let n = key.len();
+        // With setup times the key ends with the job at the open end.
+        let n = key.len().min(6);
         [
             key[n - 4] as isize,
             key[n - 3] as isize,
@@ -904,6 +1624,7 @@ mod test_disjunctive {
             vec![9; 3],
             vec![1; 3],
             None,
+            None,
             &problem,
         );
     }
@@ -913,7 +1634,7 @@ mod test_disjunctive {
     fn a_list_of_the_wrong_length_is_refused() {
         let mut problem = Problem::default();
         let vars = problem.add_variables(2, vec![0, 1]);
-        Disjunctive::new(vars, vec![0, 0], vec![9], vec![1, 1], None, &problem);
+        Disjunctive::new(vars, vec![0, 0], vec![9], vec![1, 1], None, None, &problem);
     }
 
     #[test]
@@ -921,7 +1642,15 @@ mod test_disjunctive {
     fn a_negative_duration_is_refused() {
         let mut problem = Problem::default();
         let vars = problem.add_variables(2, vec![0, 1]);
-        Disjunctive::new(vars, vec![0, 0], vec![9, 9], vec![1, -1], None, &problem);
+        Disjunctive::new(
+            vars,
+            vec![0, 0],
+            vec![9, 9],
+            vec![1, -1],
+            None,
+            None,
+            &problem,
+        );
     }
 
     #[test]
@@ -936,6 +1665,7 @@ mod test_disjunctive {
             d.clone(),
             p.clone(),
             None,
+            None,
             &problem,
         );
         assert_eq!(c.iter_scope().collect::<Vec<_>>(), vars);
@@ -948,6 +1678,8 @@ mod test_disjunctive {
                 deadline: d,
                 duration: p,
                 precedences: vec![],
+                setup_times: None,
+                setup_relaxation: SetupRelaxation::LastJob,
             }
         );
     }
@@ -961,6 +1693,7 @@ mod test_disjunctive {
             vec![0; 3],
             vec![9; 3],
             vec![1; 3],
+            None,
             None,
             &problem,
         );
@@ -979,6 +1712,7 @@ mod test_disjunctive {
             vec![0; 2],
             vec![9; 2],
             vec![1; 2],
+            None,
             None,
             &problem,
         );
@@ -1000,6 +1734,7 @@ mod test_disjunctive {
             vec![9; 2],
             vec![1; 2],
             None,
+            None,
             &problem,
         );
         c.update_variable_ordering(&[vars[1], vars[0]]);
@@ -1011,8 +1746,16 @@ mod test_disjunctive {
     fn is_layer_in_scope_panics_before_the_ordering_is_set() {
         let mut problem = Problem::default();
         let vars = problem.add_variables(2, vec![0, 1]);
-        Disjunctive::new(vars, vec![0; 2], vec![9; 2], vec![1; 2], None, &problem)
-            .is_layer_in_scope(0);
+        Disjunctive::new(
+            vars,
+            vec![0; 2],
+            vec![9; 2],
+            vec![1; 2],
+            None,
+            None,
+            &problem,
+        )
+        .is_layer_in_scope(0);
     }
 
     // ----------------------------------------------------------------------------------------
@@ -1075,7 +1818,7 @@ mod test_disjunctive {
     #[test]
     fn empty_and_single_scopes() {
         let problem = Problem::default();
-        let empty = Disjunctive::new(vec![], vec![], vec![], vec![], None, &problem);
+        let empty = Disjunctive::new(vec![], vec![], vec![], vec![], None, None, &problem);
         assert!(empty.is_satisfied(&[]));
         let c = disj(&vec![(2, 5, 3)]);
         assert!(c.is_satisfied(&[0]));
@@ -1471,7 +2214,15 @@ mod test_disjunctive {
         let mut problem = Problem::default();
         let vars = problem.add_variables(5, vec![0, 1, 2]);
         let (r, d, p) = lists(&spec);
-        disjunctive(&mut problem, vec![vars[0], vars[2], vars[4]], r, d, p, None);
+        disjunctive(
+            &mut problem,
+            vec![vars[0], vars[2], vars[4]],
+            r,
+            d,
+            p,
+            None,
+            None,
+        );
         // A constraint that holds always, so that the variables 1 and 3 are in the diagram.
         among(&mut problem, vars.clone(), vec![0, 1, 2], 0, 5);
         let mdd = compile(problem, vec![0, 1, 2, 3, 4], usize::MAX);
@@ -1491,9 +2242,9 @@ mod test_disjunctive {
         let mut problem = Problem::default();
         let vars = problem.add_variables(3, vec![0, 1, 2]);
         let (r, d, p) = lists(&a);
-        disjunctive(&mut problem, vars.clone(), r, d, p, None);
+        disjunctive(&mut problem, vars.clone(), r, d, p, None, None);
         let (r, d, p) = lists(&b);
-        disjunctive(&mut problem, vars, r, d, p, None);
+        disjunctive(&mut problem, vars, r, d, p, None, None);
         let mdd = compile(problem, vec![0, 1, 2], usize::MAX);
         let want: Vec<Vec<isize>> = expected(&a)
             .into_iter()
@@ -1509,7 +2260,7 @@ mod test_disjunctive {
         let mut problem = Problem::default();
         let vars = problem.add_variables(3, (0..6).collect());
         let (r, d, p) = lists(&spec);
-        disjunctive(&mut problem, vars, r, d, p, None);
+        disjunctive(&mut problem, vars, r, d, p, None, None);
         let mdd = compile(problem, vec![0, 1, 2], usize::MAX);
         assert_eq!(accepted(&mdd), expected(&spec));
     }
@@ -1526,7 +2277,15 @@ mod test_disjunctive {
         let mut problem = Problem::default();
         let vars = problem.add_variables(spec.len(), (0..n).collect());
         let (r, d, p) = lists(spec);
-        let mut c = Disjunctive::new(vars.clone(), r, d, p, Some(precedences.clone()), &problem);
+        let mut c = Disjunctive::new(
+            vars.clone(),
+            r,
+            d,
+            p,
+            Some(precedences.clone()),
+            None,
+            &problem,
+        );
         c.update_variable_ordering(&vars);
         c
     }
@@ -1537,7 +2296,7 @@ mod test_disjunctive {
         let mut problem = Problem::default();
         let vars = problem.add_variables(spec.len(), (0..n).collect());
         let (r, d, p) = lists(spec);
-        disjunctive(&mut problem, vars, r, d, p, Some(precedences.clone()));
+        disjunctive(&mut problem, vars, r, d, p, Some(precedences.clone()), None);
         problem
     }
 
@@ -1582,6 +2341,7 @@ mod test_disjunctive {
             vec![1000; n],
             vec![1; n],
             Some(vec![(0, n - 1)]),
+            None,
             &problem,
         );
         let forward: Vec<isize> = (0..n as isize).collect();
@@ -1610,9 +2370,10 @@ mod test_disjunctive {
             d.clone(),
             p.clone(),
             None,
+            None,
             &problem,
         );
-        let empty = Disjunctive::new(vars, r, d, p, Some(vec![]), &problem);
+        let empty = Disjunctive::new(vars, r, d, p, Some(vec![]), None, &problem);
         assert_eq!(
             none.structural_key(&problem),
             empty.structural_key(&problem)
@@ -1631,9 +2392,10 @@ mod test_disjunctive {
             d.clone(),
             p.clone(),
             Some(vec![(2, 1), (0, 2), (2, 1)]),
+            None,
             &problem,
         );
-        let b = Disjunctive::new(vars, r, d, p, Some(vec![(0, 2), (2, 1)]), &problem);
+        let b = Disjunctive::new(vars, r, d, p, Some(vec![(0, 2), (2, 1)]), None, &problem);
         assert_eq!(a.structural_key(&problem), b.structural_key(&problem));
         let ConstraintShapeKey::Disjunctive { precedences, .. } = a.structural_key(&problem) else {
             panic!("not a disjunctive key");
@@ -1848,5 +2610,817 @@ mod test_disjunctive {
         let spec = vec![(0, 9, 2), (0, 2, 2)];
         let mdd = compile(problem_prec(&spec, &vec![(0, 1)]), vec![0, 1], usize::MAX);
         assert!(mdd.is_unsat());
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // Setup times
+    // ----------------------------------------------------------------------------------------
+
+    type Matrix = Vec<Vec<isize>>;
+
+    /// The constraint with setup times, and precedences if any.
+    fn disj_setup(
+        mode: SetupRelaxation,
+        spec: &Spec,
+        precedences: &Pairs,
+        setup: &Matrix,
+    ) -> Disjunctive {
+        let n = spec.len() as isize;
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(spec.len(), (0..n).collect());
+        let (r, d, p) = lists(spec);
+        let precedences = Some(precedences.clone()).filter(|p| !p.is_empty());
+        let setup = SetupTimes::new(setup.clone()).with_relaxation(mode);
+        let mut c = Disjunctive::new(vars.clone(), r, d, p, precedences, Some(setup), &problem);
+        c.update_variable_ordering(&vars);
+        c
+    }
+
+    fn problem_setup(
+        mode: SetupRelaxation,
+        spec: &Spec,
+        precedences: &Pairs,
+        setup: &Matrix,
+    ) -> Problem {
+        let n = spec.len() as isize;
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(spec.len(), (0..n).collect());
+        let (r, d, p) = lists(spec);
+        disjunctive(
+            &mut problem,
+            vars,
+            r,
+            d,
+            p,
+            Some(precedences.clone()),
+            Some(SetupTimes::new(setup.clone()).with_relaxation(mode)),
+        );
+        problem
+    }
+
+    /// Declares, for a test function `$inner(mode)`, one test per relaxation.
+    macro_rules! each_relaxation {
+        ($name:ident => $inner:ident) => {
+            mod $name {
+                use super::*;
+
+                #[test]
+                fn last_job() {
+                    $inner(SetupRelaxation::LastJob)
+                }
+
+                #[test]
+                fn last_set() {
+                    $inner(SetupRelaxation::LastSet)
+                }
+
+                #[test]
+                fn arc_times() {
+                    $inner(SetupRelaxation::ArcTimes)
+                }
+            }
+        };
+    }
+
+    /// The feasible permutations with setup times and precedences, by a search that does not use
+    /// the constraint.
+    fn expected_setup(spec: &Spec, precedences: &Pairs, setup: &Matrix) -> Vec<Vec<isize>> {
+        fn extend(
+            spec: &Spec,
+            setup: &Matrix,
+            previous: Option<(usize, isize)>,
+            used: &mut Vec<bool>,
+            prefix: &mut Vec<isize>,
+            out: &mut Vec<Vec<isize>>,
+        ) {
+            if prefix.len() == spec.len() {
+                out.push(prefix.clone());
+                return;
+            }
+            for job in 0..spec.len() {
+                if used[job] {
+                    continue;
+                }
+                let (release, deadline, duration) = spec[job];
+                let ready = match previous {
+                    Some((last, end)) => end + setup[last][job],
+                    None => release,
+                };
+                let start = ready.max(release);
+                if start + duration > deadline {
+                    continue;
+                }
+                used[job] = true;
+                prefix.push(job as isize);
+                extend(
+                    spec,
+                    setup,
+                    Some((job, start + duration)),
+                    used,
+                    prefix,
+                    out,
+                );
+                prefix.pop();
+                used[job] = false;
+            }
+        }
+        let mut out = vec![];
+        extend(
+            spec,
+            setup,
+            None,
+            &mut vec![false; spec.len()],
+            &mut vec![],
+            &mut out,
+        );
+        out.retain(|order| {
+            precedences.iter().all(|&(before, after)| {
+                let at = |job: usize| order.iter().position(|&j| j as usize == job).unwrap();
+                at(before) < at(after)
+            })
+        });
+        out.sort();
+        out
+    }
+
+    fn random_setup(rng: &mut Lcg, n: usize) -> Matrix {
+        (0..n)
+            .map(|_| (0..n).map(|_| rng.below(4) as isize).collect())
+            .collect()
+    }
+
+    #[test]
+    fn a_matrix_of_the_wrong_shape_is_refused() {
+        assert!(Disjunctive::check_setup_times(2, &[vec![0, 1], vec![1, 0]]).is_ok());
+        assert!(Disjunctive::check_setup_times(0, &[]).is_ok());
+        let rows = Disjunctive::check_setup_times(3, &[vec![0; 3], vec![0; 3]]).unwrap_err();
+        assert!(rows.contains("2 rows for 3 jobs"), "{rows}");
+        let row = Disjunctive::check_setup_times(2, &[vec![0, 1], vec![1]]).unwrap_err();
+        assert!(row.contains("row 1"), "{row}");
+        let negative = Disjunctive::check_setup_times(2, &[vec![0, -1], vec![1, 0]]).unwrap_err();
+        assert!(
+            negative.contains("from job 0 to job 1 is negative"),
+            "{negative}"
+        );
+        // The diagonal is ignored, even when it is negative.
+        assert!(Disjunctive::check_setup_times(2, &[vec![-4, 1], vec![1, -4]]).is_ok());
+    }
+
+    #[test]
+    #[should_panic(expected = "Disjunctive: row 1 of the setup times has 1 entries for 2 jobs")]
+    fn the_constructor_refuses_a_ragged_matrix() {
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(2, vec![0, 1]);
+        Disjunctive::new(
+            vars,
+            vec![0; 2],
+            vec![9; 2],
+            vec![1; 2],
+            None,
+            Some(SetupTimes::new(vec![vec![0, 1], vec![1]])),
+            &problem,
+        );
+    }
+
+    #[test]
+    fn the_key_holds_the_matrix_without_its_diagonal_and_none_for_no_setup() {
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(2, vec![0, 1]);
+        let new = |setup: Option<Matrix>| {
+            Disjunctive::new(
+                vars.clone(),
+                vec![0; 2],
+                vec![9; 2],
+                vec![1; 2],
+                None,
+                setup.map(SetupTimes::new),
+                &problem,
+            )
+            .structural_key(&problem)
+        };
+        let none = new(None);
+        // A matrix with no positive entry is no setup time at all.
+        assert_eq!(new(Some(vec![vec![0, 0], vec![0, 0]])), none);
+        assert_eq!(new(Some(vec![vec![5, 0], vec![0, 7]])), none);
+        let with = new(Some(vec![vec![9, 2], vec![3, 9]]));
+        assert_ne!(with, none);
+        // The diagonal does not matter.
+        assert_eq!(with, new(Some(vec![vec![0, 2], vec![3, 1]])));
+        let ConstraintShapeKey::Disjunctive { setup_times, .. } = with else {
+            panic!("not a disjunctive key");
+        };
+        assert_eq!(setup_times, Some(vec![0, 2, 3, 0]));
+    }
+
+    fn a_setup_is_between_consecutive_jobs_and_not_before_the_first(mode: SetupRelaxation) {
+        // Both jobs last 2. Setup 3 from 0 to 1, none the other way.
+        let spec = vec![(0, 20, 2), (0, 7, 2)];
+        let setup = vec![vec![0, 3], vec![0, 0]];
+        let c = disj_setup(mode, &spec, &vec![], &setup);
+        // [0, 1]: job 0 is over at 2, job 1 starts at 5 and is over at 7: just in time.
+        assert!(c.is_satisfied(&[0, 1]));
+        // With one more unit of setup it would be late.
+        let c = disj_setup(mode, &spec, &vec![], &vec![vec![0, 4], vec![0, 0]]);
+        assert!(!c.is_satisfied(&[0, 1]));
+        // [1, 0]: no setup is paid before the first job and the setup from 1 to 0 is 0.
+        assert!(c.is_satisfied(&[1, 0]));
+    }
+
+    each_relaxation!(a_setup_is_between_consecutive_jobs_and_not_before_the_first_modes => a_setup_is_between_consecutive_jobs_and_not_before_the_first);
+
+    fn a_setup_does_not_add_to_a_wait_for_the_release_date(mode: SetupRelaxation) {
+        // Job 1 is released at 10: the setup of 3 after job 0 (over at 2) is absorbed in the wait.
+        let spec = vec![(0, 20, 2), (10, 12, 2)];
+        let c = disj_setup(mode, &spec, &vec![], &vec![vec![0, 3], vec![0, 0]]);
+        assert!(c.is_satisfied(&[0, 1]));
+    }
+
+    each_relaxation!(a_setup_does_not_add_to_a_wait_for_the_release_date_modes => a_setup_does_not_add_to_a_wait_for_the_release_date);
+
+    fn is_satisfied_agrees_with_the_search_and_the_setup_times(mode: SetupRelaxation) {
+        let mut rng = Lcg(31);
+        for _ in 0..60 {
+            let n = 1 + rng.below(4) as usize;
+            let spec = random_spec(&mut rng, n);
+            let precedences = random_precedences(&mut rng, n);
+            let setup = random_setup(&mut rng, n);
+            let c = disj_setup(mode, &spec, &precedences, &setup);
+            let feasible = expected_setup(&spec, &precedences, &setup);
+            for tuple in all_tuples(n, n as isize + 2) {
+                let tuple: Vec<isize> = tuple.iter().map(|v| v - 1).collect();
+                assert_eq!(
+                    c.is_satisfied(&tuple),
+                    feasible.contains(&tuple),
+                    "{spec:?} {precedences:?} {setup:?} on {tuple:?}"
+                );
+            }
+        }
+    }
+
+    each_relaxation!(is_satisfied_agrees_with_the_search_and_the_setup_times_modes => is_satisfied_agrees_with_the_search_and_the_setup_times);
+
+    fn the_completion_time_of_a_path_includes_the_setups(mode: SetupRelaxation) {
+        // Jobs of 2 time units. Setups: 0 to 1 is 3, 1 to 2 is 1.
+        let spec = vec![(0, 99, 2); 3];
+        let setup = vec![vec![0, 3, 0], vec![0, 0, 1], vec![0, 0, 0]];
+        let c = disj_setup(mode, &spec, &vec![], &setup);
+        assert_eq!(times(&*top_down(&c, &[0]))[..2], [2, 2]);
+        assert_eq!(times(&*top_down(&c, &[0, 1]))[..2], [7, 7]);
+        assert_eq!(times(&*top_down(&c, &[0, 1, 2]))[..2], [10, 10]);
+        // Read from the sink: job 2 starts by 97, job 1 by 97 - 1 - 2 = 94, job 0 by 94 - 3 - 2.
+        assert_eq!(times(&*bottom_up(&c, &[2]))[2..], [97, 97]);
+        assert_eq!(times(&*bottom_up(&c, &[1, 2]))[2..], [94, 94]);
+        assert_eq!(times(&*bottom_up(&c, &[0, 1, 2]))[2..], [89, 89]);
+    }
+
+    each_relaxation!(the_completion_time_of_a_path_includes_the_setups_modes => the_completion_time_of_a_path_includes_the_setups);
+
+    fn paths_that_end_at_the_same_time_with_different_last_jobs_are_not_one_state(
+        mode: SetupRelaxation,
+    ) {
+        // [0, 1] and [1, 0] both end at 3 (two jobs of 1, one setup of 1 whichever the order),
+        // but the setup that follows depends on the last job.
+        let spec = vec![(0, 99, 1); 3];
+        let setup = vec![vec![0, 1, 1], vec![1, 0, 5], vec![1, 1, 0]];
+        let c = disj_setup(mode, &spec, &vec![], &setup);
+        let a = top_down(&c, &[0, 1]);
+        let b = top_down(&c, &[1, 0]);
+        assert_eq!(times(&*a)[..2], times(&*b)[..2]);
+        let m = merged(&[a, b]);
+        assert_eq!(times(&*m)[..2], [3, 3]);
+        assert!(!m.is_single_state());
+        // Without setup times the same two paths are one state.
+        let c = disj(&spec);
+        let m = merged(&[top_down(&c, &[0, 1]), top_down(&c, &[1, 0])]);
+        assert!(m.is_single_state());
+    }
+
+    each_relaxation!(paths_that_end_at_the_same_time_with_different_last_jobs_are_not_one_state_modes => paths_that_end_at_the_same_time_with_different_last_jobs_are_not_one_state);
+
+    fn the_same_last_job_keeps_a_state_single(mode: SetupRelaxation) {
+        // [0, 2, 1] and [2, 0, 1] end with job 1 at the same time when the setups into 1 agree.
+        let spec = vec![(0, 99, 1); 3];
+        let setup = vec![vec![0, 1, 1], vec![1, 0, 1], vec![1, 1, 0]];
+        let c = disj_setup(mode, &spec, &vec![], &setup);
+        let m = merged(&[top_down(&c, &[0, 2, 1]), top_down(&c, &[2, 0, 1])]);
+        assert!(m.is_single_state());
+    }
+
+    each_relaxation!(the_same_last_job_keeps_a_state_single_modes => the_same_last_job_keeps_a_state_single);
+
+    fn a_setup_can_make_an_edge_late_on_either_side(mode: SetupRelaxation) {
+        // Job 1 has to end by 3, and takes 1. After job 0 there is a setup of 5.
+        let spec = vec![(0, 99, 1), (0, 3, 1)];
+        let setup = vec![vec![0, 5], vec![0, 0]];
+        let c = disj_setup(mode, &spec, &vec![], &setup);
+        // Seen from the job placed second: it would end at 1 + 5 + 1.
+        assert!(removed(&c, &[0], 1, &[]));
+        assert!(!removed(&c, &[], 1, &[0]));
+        // Seen from the job placed first: the job after it has to start by 2.
+        assert!(removed(&c, &[], 0, &[1]));
+        assert!(!removed(&c, &[1], 0, &[]));
+        // Without the setup the same edges are fine.
+        let c = disj(&spec);
+        assert!(!removed(&c, &[0], 1, &[]));
+        assert!(!removed(&c, &[], 0, &[1]));
+    }
+
+    each_relaxation!(a_setup_can_make_an_edge_late_on_either_side_modes => a_setup_can_make_an_edge_late_on_either_side);
+
+    fn a_node_that_mixes_last_jobs_uses_the_smallest_setup(mode: SetupRelaxation) {
+        // Above: job 0 or job 1 was placed last. The setup into job 2 is 6 after 0 and 2 after 1,
+        // so the filtering has to assume 2. Job 2 ends by 4: 1 + 2 + 1 = 4 is just in time.
+        let spec = vec![(0, 99, 1), (0, 99, 1), (0, 4, 1)];
+        let setup = vec![vec![0, 0, 6], vec![0, 0, 2], vec![0, 0, 0]];
+        let c = disj_setup(mode, &spec, &vec![], &setup);
+        let above = merged(&[top_down(&c, &[0]), top_down(&c, &[1])]);
+        let below = c.empty_property_backward();
+        assert!(!c.is_assignment_invalid(&*above, &*below, 1, 2));
+        // With the setup after 1 raised to 3, it would be late whatever came before.
+        let setup = vec![vec![0, 0, 6], vec![0, 0, 3], vec![0, 0, 0]];
+        let c = disj_setup(mode, &spec, &vec![], &setup);
+        let above = merged(&[top_down(&c, &[0]), top_down(&c, &[1])]);
+        assert!(c.is_assignment_invalid(&*above, &*c.empty_property_backward(), 1, 2));
+        // The exact nodes know the setup: after job 0 it is late, after job 1 it is not.
+        let c = disj_setup(
+            mode,
+            &spec,
+            &vec![],
+            &vec![vec![0, 0, 6], vec![0, 0, 2], vec![0, 0, 0]],
+        );
+        assert!(removed(&c, &[0], 2, &[1]));
+        assert!(!removed(&c, &[1], 2, &[0]));
+    }
+
+    each_relaxation!(a_node_that_mixes_last_jobs_uses_the_smallest_setup_modes => a_node_that_mixes_last_jobs_uses_the_smallest_setup);
+
+    fn a_single_path_is_removed_exactly_when_it_violates_the_setup_times_too(
+        mode: SetupRelaxation,
+    ) {
+        let mut rng = Lcg(606);
+        for _ in 0..40 {
+            let n = 2 + rng.below(3) as usize;
+            let spec = random_spec(&mut rng, n);
+            let precedences = random_precedences(&mut rng, n);
+            let setup = random_setup(&mut rng, n);
+            let c = disj_setup(mode, &spec, &precedences, &setup);
+            for tuple in all_tuples(n, n as isize) {
+                let some_edge_removed = (0..n).any(|k| {
+                    c.is_assignment_invalid(
+                        &*top_down(&c, &tuple[..k]),
+                        &*bottom_up(&c, &tuple[k + 1..]),
+                        k,
+                        tuple[k],
+                    )
+                });
+                assert_eq!(
+                    some_edge_removed,
+                    !c.is_satisfied(&tuple),
+                    "{spec:?} {precedences:?} {setup:?} on {tuple:?}"
+                );
+            }
+        }
+    }
+
+    each_relaxation!(a_single_path_is_removed_exactly_when_it_violates_the_setup_times_too_modes => a_single_path_is_removed_exactly_when_it_violates_the_setup_times_too);
+
+    fn the_exact_mdd_with_setup_times_agrees_with_the_search(mode: SetupRelaxation) {
+        let mut rng = Lcg(1234);
+        for _ in 0..120 {
+            let n = 1 + rng.below(5) as usize;
+            let spec = random_spec(&mut rng, n);
+            let precedences = random_precedences(&mut rng, n);
+            let setup = random_setup(&mut rng, n);
+            let mdd = compile(
+                problem_setup(mode, &spec, &precedences, &setup),
+                (0..n).collect(),
+                usize::MAX,
+            );
+            assert_eq!(
+                accepted(&mdd),
+                expected_setup(&spec, &precedences, &setup),
+                "{spec:?} {precedences:?} {setup:?}"
+            );
+        }
+    }
+
+    each_relaxation!(the_exact_mdd_with_setup_times_agrees_with_the_search_modes => the_exact_mdd_with_setup_times_agrees_with_the_search);
+
+    fn relaxed_mdds_with_setup_times_never_lose_a_solution(mode: SetupRelaxation) {
+        let mut rng = Lcg(8);
+        for _ in 0..60 {
+            let n = 2 + rng.below(4) as usize;
+            let spec = random_spec(&mut rng, n);
+            let precedences = random_precedences(&mut rng, n);
+            let setup = random_setup(&mut rng, n);
+            let want = expected_setup(&spec, &precedences, &setup);
+            for width in [1usize, 2, 3, usize::MAX] {
+                let mdd = compile(
+                    problem_setup(mode, &spec, &precedences, &setup),
+                    (0..n).collect(),
+                    width,
+                );
+                let got = accepted(&mdd);
+                for solution in &want {
+                    assert!(
+                        got.contains(solution),
+                        "lost {solution:?}: {spec:?} {precedences:?} {setup:?} width {width}"
+                    );
+                }
+            }
+        }
+    }
+
+    each_relaxation!(relaxed_mdds_with_setup_times_never_lose_a_solution_modes => relaxed_mdds_with_setup_times_never_lose_a_solution);
+
+    #[test]
+    fn setup_times_only_remove_solutions() {
+        // Adding setup times to a constraint can only make the schedules longer.
+        let mut rng = Lcg(77);
+        for _ in 0..40 {
+            let n = 2 + rng.below(3) as usize;
+            let spec = random_spec(&mut rng, n);
+            let setup = random_setup(&mut rng, n);
+            let plain = expected(&spec);
+            for solution in expected_setup(&spec, &vec![], &setup) {
+                assert!(plain.contains(&solution), "{spec:?} {setup:?}");
+            }
+        }
+    }
+
+    fn a_matrix_of_zeros_compiles_to_the_same_diagram_as_no_matrix(mode: SetupRelaxation) {
+        let spec = tight();
+        let zeros = vec![vec![0; 3]; 3];
+        let with = compile(
+            problem_setup(mode, &spec, &vec![], &zeros),
+            vec![0, 1, 2],
+            usize::MAX,
+        );
+        let without = compile(problem_of(&spec), vec![0, 1, 2], usize::MAX);
+        assert_eq!(accepted(&with), accepted(&without));
+    }
+
+    each_relaxation!(a_matrix_of_zeros_compiles_to_the_same_diagram_as_no_matrix_modes => a_matrix_of_zeros_compiles_to_the_same_diagram_as_no_matrix);
+
+    fn setup_times_make_a_tight_instance_unsat(mode: SetupRelaxation) {
+        // Two jobs of 2 in [0, 5]: fine in either order, until a setup of 2 is needed.
+        let spec = vec![(0, 5, 2), (0, 5, 2)];
+        let setup = vec![vec![0, 2], vec![2, 0]];
+        let mdd = compile(
+            problem_setup(mode, &spec, &vec![], &setup),
+            vec![0, 1],
+            usize::MAX,
+        );
+        assert!(mdd.is_unsat());
+    }
+
+    each_relaxation!(setup_times_make_a_tight_instance_unsat_modes => setup_times_make_a_tight_instance_unsat);
+
+    fn the_order_key_has_more_numbers_with_setup_times_and_stays_finite(mode: SetupRelaxation) {
+        let spec = vec![(0, 99, 1); 3];
+        let setup = vec![vec![0, 1, 1], vec![1, 0, 5], vec![1, 1, 0]];
+        let c = disj_setup(mode, &spec, &vec![], &setup);
+        let plain = disj(&spec);
+        // One number for the open job or the size of the set, two for the populated slots.
+        let extra = if mode == SetupRelaxation::ArcTimes {
+            2
+        } else {
+            1
+        };
+        assert_eq!(
+            c.empty_property().order_key().len(),
+            plain.empty_property().order_key().len() + extra
+        );
+        let length = c.empty_property().order_key().len();
+        for property in [
+            c.identity_property(),
+            c.empty_property(),
+            top_down(&c, &[1, 2]),
+            bottom_up(&c, &[1, 2]),
+            merged(&[top_down(&c, &[0, 1]), top_down(&c, &[1, 0])]),
+        ] {
+            let key = property.order_key();
+            assert_eq!(key.len(), length);
+            assert!(key.iter().all(|x| x.is_finite()));
+        }
+    }
+
+    each_relaxation!(the_order_key_has_more_numbers_with_setup_times_and_stays_finite_modes => the_order_key_has_more_numbers_with_setup_times_and_stays_finite);
+
+    fn eq_and_hash_see_the_job_at_the_open_end(mode: SetupRelaxation) {
+        let spec = vec![(0, 99, 1); 3];
+        let setup = vec![vec![0, 1, 1], vec![1, 0, 5], vec![1, 1, 0]];
+        let c = disj_setup(mode, &spec, &vec![], &setup);
+        // Same jobs, same time, different last job.
+        let a = top_down(&c, &[0, 1]);
+        let b = top_down(&c, &[1, 0]);
+        assert_eq!(times(&*a)[..2], times(&*b)[..2]);
+        assert!(!ConstraintProperty::eq(&*a, &*b));
+        assert_ne!(hash_of(&*a), hash_of(&*b));
+        assert!(ConstraintProperty::eq(&*a, &*top_down(&c, &[0, 1])));
+    }
+
+    each_relaxation!(eq_and_hash_see_the_job_at_the_open_end_modes => eq_and_hash_see_the_job_at_the_open_end);
+
+    fn out_of_scope_layers_copy_the_job_at_the_open_end(mode: SetupRelaxation) {
+        let spec = vec![(0, 99, 1); 2];
+        let c = disj_setup(mode, &spec, &vec![], &vec![vec![0, 2], vec![2, 0]]);
+        let parent = top_down(&c, &[1]);
+        let mut child = c.identity_property();
+        child.update(&*parent, 99, false);
+        assert!(ConstraintProperty::eq(&*child, &*parent));
+        let below = bottom_up(&c, &[0]);
+        let mut above = c.identity_property();
+        above.update_backward(&*below, 99, false);
+        assert!(ConstraintProperty::eq(&*above, &*below));
+    }
+
+    each_relaxation!(out_of_scope_layers_copy_the_job_at_the_open_end_modes => out_of_scope_layers_copy_the_job_at_the_open_end);
+
+    fn identity_is_neutral_for_merge_with_setup_times(mode: SetupRelaxation) {
+        let spec = vec![(0, 99, 1); 3];
+        let setup = vec![vec![0, 1, 1], vec![1, 0, 5], vec![1, 1, 0]];
+        let c = disj_setup(mode, &spec, &vec![], &setup);
+        for property in [
+            top_down(&c, &[1, 0]),
+            bottom_up(&c, &[1, 0]),
+            c.empty_property(),
+        ] {
+            let mut with_identity = dyn_clone::clone_box(&*property);
+            with_identity.merge(&*c.identity_property());
+            assert!(ConstraintProperty::eq(&*with_identity, &*property));
+        }
+    }
+
+    each_relaxation!(identity_is_neutral_for_merge_with_setup_times_modes => identity_is_neutral_for_merge_with_setup_times);
+
+    #[test]
+    fn a_setup_larger_than_one_word_of_jobs_works() {
+        // 70 jobs in a row, a setup of 1 from each job to the next one only.
+        let n = 70;
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(n, (0..n as isize).collect());
+        let mut setup = vec![vec![0; n]; n];
+        for (job, row) in setup.iter_mut().enumerate().take(n - 1) {
+            row[job + 1] = 1;
+        }
+        let c = Disjunctive::new(
+            vars,
+            vec![0; n],
+            vec![2 * n as isize - 2; n],
+            vec![1; n],
+            None,
+            Some(SetupTimes::new(setup)),
+            &problem,
+        );
+        let forward: Vec<isize> = (0..n as isize).collect();
+        // The last job ends at 70 + 69 setups = 139 = 2 * 70 - 1: one unit too late.
+        assert!(!c.is_satisfied(&forward));
+        let mut backward: Vec<isize> = forward.clone();
+        backward.reverse();
+        assert!(c.is_satisfied(&backward));
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // The relaxations of the setup times
+    // ----------------------------------------------------------------------------------------
+
+    /// The constraint of `spec` with the setup times `setup`, for `mode`, on a scope of its own.
+    fn setup_constraint(mode: SetupRelaxation, spec: &Spec, setup: &Matrix) -> Disjunctive {
+        disj_setup(mode, spec, &vec![], setup)
+    }
+
+    /// The edge of `job` between the merged states of `above` (a list of paths) and the path
+    /// `below`.
+    fn removed_above_merged(
+        c: &Disjunctive,
+        above: &[&[isize]],
+        job: isize,
+        below: &[isize],
+    ) -> bool {
+        let parents: Vec<_> = above.iter().map(|path| top_down(c, path)).collect();
+        let layer = above[0].len();
+        c.is_assignment_invalid(&*merged(&parents), &*bottom_up(c, below), layer, job)
+    }
+
+    #[test]
+    fn the_names_of_the_relaxations_round_trip() {
+        for mode in SetupRelaxation::ALL {
+            assert_eq!(SetupRelaxation::from_name(mode.name()), Some(mode));
+        }
+        assert_eq!(SetupRelaxation::from_name("everything"), None);
+        assert_eq!(SetupRelaxation::default(), SetupRelaxation::LastJob);
+    }
+
+    #[test]
+    fn the_relaxation_is_in_the_key_only_when_there_are_setup_times() {
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(2, vec![0, 1]);
+        let key = |setup: Option<SetupTimes>| {
+            Disjunctive::new(
+                vars.clone(),
+                vec![0; 2],
+                vec![9; 2],
+                vec![1; 2],
+                None,
+                setup,
+                &problem,
+            )
+            .structural_key(&problem)
+        };
+        let relaxation_of = |key: &ConstraintShapeKey| match key {
+            ConstraintShapeKey::Disjunctive {
+                setup_relaxation, ..
+            } => *setup_relaxation,
+            _ => panic!("not a disjunctive key"),
+        };
+        let matrix = vec![vec![0, 2], vec![3, 0]];
+        let zeros = vec![vec![0, 0], vec![0, 0]];
+        let none = key(None);
+        let mut keys = vec![];
+        for mode in SetupRelaxation::ALL {
+            let with = key(Some(SetupTimes::new(matrix.clone()).with_relaxation(mode)));
+            assert_eq!(relaxation_of(&with), mode);
+            // Without any positive setup, the choice is not a different constraint.
+            let without = key(Some(SetupTimes::new(zeros.clone()).with_relaxation(mode)));
+            assert_eq!(without, none);
+            assert_eq!(relaxation_of(&without), SetupRelaxation::LastJob);
+            keys.push(with);
+        }
+        assert_ne!(keys[0], keys[1]);
+        assert_ne!(keys[1], keys[2]);
+        assert_ne!(keys[0], keys[2]);
+    }
+
+    #[test]
+    fn the_properties_of_a_relaxation_hold_the_expected_state() {
+        let spec = vec![(0, 99, 1); 3];
+        let setup = vec![vec![0, 1, 1], vec![1, 0, 5], vec![1, 1, 0]];
+        for mode in SetupRelaxation::ALL {
+            let c = setup_constraint(mode, &spec, &setup);
+            // The root and the sink are the empty path, which is a single state.
+            assert!(c.empty_property().is_single_state(), "{mode:?}");
+            let one = top_down(&c, &[0]);
+            let two = top_down(&c, &[1]);
+            assert!(one.is_single_state(), "{mode:?}");
+            assert!(!merged(&[one, two]).is_single_state(), "{mode:?}");
+            let one = bottom_up(&c, &[0]);
+            let two = bottom_up(&c, &[1]);
+            assert!(one.is_single_state(), "{mode:?}");
+            assert!(!merged(&[one, two]).is_single_state(), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn a_set_of_last_jobs_is_tighter_than_the_smallest_setup_of_all_jobs() {
+        // Job 3 has to be over by 6. After job 0 the setup into job 3 is 5, after job 1 it is 6
+        // and after job 2 it is 0. Two paths end with job 0 or job 1, both at time 1.
+        let spec = vec![(0, 99, 1), (0, 99, 1), (0, 99, 1), (0, 6, 1)];
+        let setup = vec![
+            vec![0, 0, 0, 5],
+            vec![0, 0, 0, 6],
+            vec![0, 0, 0, 0],
+            vec![0, 0, 0, 0],
+        ];
+        let removed_with = |mode| {
+            let c = setup_constraint(mode, &spec, &setup);
+            removed_above_merged(&c, &[&[0], &[1]], 3, &[2, 0])
+        };
+        // The last job is not known: the smallest setup of any job is 0, the edge looks fine.
+        assert!(!removed_with(SetupRelaxation::LastJob));
+        // But the last job is one of the two first jobs, and 1 + 5 + 1 is late.
+        assert!(removed_with(SetupRelaxation::LastSet));
+        assert!(removed_with(SetupRelaxation::ArcTimes));
+        // The exact edges are removed by all of them.
+        for mode in SetupRelaxation::ALL {
+            let c = setup_constraint(mode, &spec, &setup);
+            assert!(removed(&c, &[0], 3, &[1, 2]), "{mode:?}");
+            assert!(removed(&c, &[1], 3, &[0, 2]), "{mode:?}");
+            assert!(!removed(&c, &[2], 3, &[0, 1]), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn the_same_for_the_jobs_after_the_edge() {
+        // The mirror image: job 0 is followed by job 1 (setup 5) or job 2 (setup 6), which both
+        // have to be over by 6, where job 3 would follow job 0 with a setup of 0.
+        let spec = vec![(0, 99, 1), (0, 6, 1), (0, 6, 1), (0, 99, 1)];
+        let setup = vec![
+            vec![0, 5, 6, 0],
+            vec![0, 0, 0, 0],
+            vec![0, 0, 0, 0],
+            vec![0, 0, 0, 0],
+        ];
+        let removed_with = |mode| {
+            let c = setup_constraint(mode, &spec, &setup);
+            let below: Vec<_> = [&[1, 3][..], &[2, 3][..]]
+                .iter()
+                .map(|path| bottom_up(&c, path))
+                .collect();
+            c.is_assignment_invalid(&*top_down(&c, &[]), &*merged(&below), 0, 0)
+        };
+        assert!(!removed_with(SetupRelaxation::LastJob));
+        assert!(removed_with(SetupRelaxation::LastSet));
+        assert!(removed_with(SetupRelaxation::ArcTimes));
+    }
+
+    #[test]
+    fn arc_times_keep_the_time_of_each_last_job() {
+        // One path ends with job 0 at time 10, the other with job 1 at time 2. The setup into job
+        // 2 is 0 after job 0 and 9 after job 1: the first path arrives at 10, the second at 11.
+        // Job 2 has to be over by 10 and lasts 1, so neither can place it, but a state that keeps
+        // the best time (2) and the best setup (0) does not see it.
+        let spec = vec![(0, 99, 10), (0, 99, 2), (0, 10, 1)];
+        let setup = vec![vec![0, 0, 0], vec![0, 0, 9], vec![0, 0, 0]];
+        let removed_with = |mode| {
+            let c = setup_constraint(mode, &spec, &setup);
+            removed_above_merged(&c, &[&[0], &[1]], 2, &[1])
+        };
+        assert!(!removed_with(SetupRelaxation::LastJob));
+        assert!(!removed_with(SetupRelaxation::LastSet));
+        assert!(removed_with(SetupRelaxation::ArcTimes));
+    }
+
+    #[test]
+    fn arc_times_do_not_remove_an_edge_that_one_path_can_take() {
+        // The same, but the setup after job 1 is 5 and the path of job 1 can place job 2.
+        let spec = vec![(0, 99, 10), (0, 99, 2), (0, 10, 1)];
+        let setup = vec![vec![0, 0, 0], vec![0, 0, 5], vec![0, 0, 0]];
+        let c = setup_constraint(SetupRelaxation::ArcTimes, &spec, &setup);
+        // 2 + 5 + 1 = 8 is in time, and 10 + 0 + 1 = 11 is not: the best of the two counts.
+        assert!(!removed_above_merged(&c, &[&[0], &[1]], 2, &[1]));
+    }
+
+    #[test]
+    fn the_bounds_in_the_scalars_of_arc_times_are_the_best_and_worst_of_the_slots() {
+        let spec = vec![(0, 99, 10), (0, 99, 2), (0, 99, 1)];
+        let setup = vec![vec![0, 0, 0], vec![0, 0, 9], vec![0, 0, 0]];
+        let c = setup_constraint(SetupRelaxation::ArcTimes, &spec, &setup);
+        let m = merged(&[top_down(&c, &[0]), top_down(&c, &[1])]);
+        assert_eq!(times(&*m)[..2], [2, 10]);
+        // After job 2, whose setup is 0 or 9: ends at 11 (from 0) or at 12 (from 1).
+        let mut child = c.identity_property();
+        child.update(&*m, 2, true);
+        assert_eq!(times(&*child)[..2], [11, 12]);
+        // With the last job known, the setup is the one of the path.
+        assert_eq!(times(&*top_down(&c, &[1, 2]))[..2], [12, 12]);
+        assert_eq!(times(&*top_down(&c, &[0, 2]))[..2], [11, 11]);
+    }
+
+    #[test]
+    fn the_sets_and_slots_work_across_words() {
+        // 70 jobs, so the set (with its bit for the empty path) has two words, and so do the
+        // slots. A setup of 1 from each job to the next one only.
+        let n = 70;
+        let spec = vec![(0, 999, 1); n];
+        let mut setup = vec![vec![0; n]; n];
+        for (job, row) in setup.iter_mut().enumerate().take(n - 1) {
+            row[job + 1] = 1;
+        }
+        for mode in SetupRelaxation::ALL {
+            let c = setup_constraint(mode, &spec, &setup);
+            // Job 66 ends at 1, then job 67 comes after a setup of 1: it ends at 3.
+            assert_eq!(times(&*top_down(&c, &[66, 67]))[..2], [3, 3], "{mode:?}");
+            // In the other order, job 66 comes after 67 without setup.
+            assert_eq!(times(&*top_down(&c, &[67, 66]))[..2], [2, 2], "{mode:?}");
+            assert_eq!(
+                times(&*bottom_up(&c, &[65, 66]))[2..],
+                [996, 996],
+                "{mode:?}"
+            );
+            let m = merged(&[top_down(&c, &[66]), top_down(&c, &[67])]);
+            assert!(!m.is_single_state(), "{mode:?}");
+            assert!(top_down(&c, &[69]).is_single_state(), "{mode:?}");
+            // The first job of the path is on the other side of the word boundary.
+            assert_eq!(times(&*top_down(&c, &[0, 1, 2]))[..2], [5, 5], "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn a_relaxed_diagram_with_a_stronger_relaxation_has_no_more_paths() {
+        // The three relaxations never lose a solution (tested above). A stronger one removes
+        // more edges on the nodes it merges, so for the same merging it keeps no more paths.
+        // Merging depends on the order of the states, so what is compared is the count of the
+        // paths that are not solutions, for the width where all of them merge the same way:
+        // width 1, one node per layer.
+        let mut rng = Lcg(2026);
+        for _ in 0..60 {
+            let n = 2 + rng.below(4) as usize;
+            let spec = random_spec(&mut rng, n);
+            let setup = random_setup(&mut rng, n);
+            let paths = |mode| {
+                let mdd = compile(
+                    problem_setup(mode, &spec, &vec![], &setup),
+                    (0..n).collect(),
+                    1,
+                );
+                accepted(&mdd).len()
+            };
+            let last_job = paths(SetupRelaxation::LastJob);
+            let last_set = paths(SetupRelaxation::LastSet);
+            let arc_times = paths(SetupRelaxation::ArcTimes);
+            assert!(last_set <= last_job, "{spec:?} {setup:?}");
+            assert!(arc_times <= last_set, "{spec:?} {setup:?}");
+        }
     }
 }
