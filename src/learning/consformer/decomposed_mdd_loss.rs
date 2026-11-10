@@ -575,12 +575,18 @@ impl DecomposedMddLoss {
         // The variables the network does not re-predict are evidence for belief propagation.
         let evidence: Vec<Evidence> = if self.bp_rounds > 0 {
             let values = to_rows(&batch.assignments, batch_size, number_vars);
+            // Through a float tensor: the storage of a bool tensor depends on the backend (a u8 on
+            // CUDA, a native bool on ndarray), and `to_vec::<bool>` only accepts the latter.
             let masks: Vec<bool> = batch
                 .var_masks
                 .clone()
+                .float()
                 .into_data()
-                .to_vec::<bool>()
-                .expect("variable masks should convert to bool");
+                .to_vec::<f32>()
+                .expect("variable masks should convert to f32")
+                .into_iter()
+                .map(|m| m > 0.5)
+                .collect();
             values
                 .iter()
                 .enumerate()
