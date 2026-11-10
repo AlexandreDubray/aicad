@@ -219,7 +219,9 @@ pub(crate) fn train_consformer(
 /// checkpointing. `pyordering`/`pymerge`/`pyselect` control how each constraint's MDD is compiled
 /// (`pymerge` is accepted for parity with `Compiler::compile` but has no effect here -- this
 /// recipe always refines to an exact, unbounded-width MDD, and `merge` only ever triggers once a
-/// width bound would be exceeded; see `MddCompilationConfig`'s doc).
+/// width bound would be exceeded; see `MddCompilationConfig`'s doc). `bp_rounds` is the number of
+/// rounds of belief propagation that label each constraint's MDD before the loss is computed
+/// (0: the probabilities of the network as they are).
 ///
 /// Releases the GIL for the whole training run -- see `train_consformer`'s doc for why.
 #[pyfunction]
@@ -227,7 +229,8 @@ pub(crate) fn train_consformer(
         pyordering=PyOrderingHeuristic::MinDomMaxLinked(),
         pymerge=PyMergeHeuristic::StateSimilarity,
         pyselect=PySelectHeuristic::Greedy,
-        validation=None))]
+        validation=None,
+        bp_rounds=1))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn train_consformer_mdd(
     py: Python<'_>,
@@ -239,6 +242,7 @@ pub(crate) fn train_consformer_mdd(
     pymerge: PyMergeHeuristic,
     pyselect: PySelectHeuristic,
     validation: Option<Vec<PyRef<PyProblem>>>,
+    bp_rounds: usize,
 ) -> PyResult<()> {
     let problems: Vec<Arc<Problem>> = problems.iter().map(|p| p.arc()).collect();
     let validation: Option<Vec<Arc<Problem>>> =
@@ -274,6 +278,7 @@ pub(crate) fn train_consformer_mdd(
             network_config,
             training_config,
             compilation,
+            bp_rounds,
             &checkpoint_dir,
         )
     })

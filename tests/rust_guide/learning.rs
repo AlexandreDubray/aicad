@@ -58,7 +58,8 @@ fn a_network_is_trained_then_used_as_the_prior_of_a_search() {
         .with_batch_size(32);
 
     // `consformer-mdd` scores the network with the exact probability that its predictions satisfy
-    // each constraint, computed on the constraint's diagram. The best network and its
+    // each constraint, computed on the constraint's diagram, labelled after a round of belief
+    // propagation (0 scores the probabilities as they are). The best network and its
     // configuration are written to the checkpoint directory.
     train_consformer_mdd(
         training,
@@ -66,6 +67,7 @@ fn a_network_is_trained_then_used_as_the_prior_of_a_search() {
         network,
         training_config,
         MddCompilationConfig::default(),
+        1, // rounds of belief propagation that label the diagrams before the loss
         &checkpoint,
     )
     .unwrap();

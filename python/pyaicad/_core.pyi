@@ -151,6 +151,7 @@ def train_consformer_mdd(
     pymerge: PyMergeHeuristic = ...,
     pyselect: PySelectHeuristic = ...,
     validation: Optional[List[PyProblem]] = ...,
+    bp_rounds: int = ...,
 ) -> None: ...
 def local_search(
     problems: Any, config: PySolveConfig, checkpoint_dir: Optional[str] = ...

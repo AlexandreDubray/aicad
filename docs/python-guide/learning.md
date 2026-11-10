@@ -78,7 +78,12 @@ print(sorted(learning.RECIPES))
 ```
 
 `consformer-mdd` scores the network with the exact probability that its predictions satisfy each
-constraint, computed on the diagram of the constraint.
+constraint, computed on the diagram of the constraint. Before the count, the diagrams are labelled
+by `bp_rounds` rounds of belief propagation (1 by default), the same ones
+`NeuralPriorBPSearch` runs: each constraint then scores the network's predictions tilted by what
+the *other* constraints say about each variable, so the loss is not blind to them. `bp_rounds=0`
+scores the predictions as they are. The rounds are not differentiated through: the gradient is
+taken with respect to the predictions, the messages being constants.
 
 ```{code-cell} python
 checkpoint_dir = tempfile.mkdtemp()

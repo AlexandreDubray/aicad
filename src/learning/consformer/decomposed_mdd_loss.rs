@@ -6,6 +6,17 @@
 //! weighted model count of the MDD of $c_j$ with the probabilities of the network on its edges.
 //! The loss of a batch is the mean over its samples.
 //!
+//! With `bp_rounds` above zero, the weights of each diagram are first refined by belief
+//! propagation (see [`crate::bp`]): the network's probabilities are the prior of every variable,
+//! and the diagram of $c_j$ is labelled with the prior tilted by what the *other* constraints say
+//! about the variable (the cavity message, which leaves out $c_j$ itself), renormalised to the
+//! prior's mass. $\mathrm{WMC}_{c_j}$ is then the probability that $c_j$ holds under what the rest
+//! of the problem believes, so the loss sees the other constraints, and the weights are those that
+//! the belief-propagation search labels its diagrams with. The messages are constants of the
+//! gradient: it is taken with respect to the prior, through the tilt and its renormalisation, and
+//! not through the rounds of belief propagation. With no round the labels are the probabilities
+//! themselves.
+//!
 //! The gradient is computed by hand, by a sink-to-root pass over each diagram
 //! ([`crate::mdd::wmc`]), and handed to Burn's autodiff with the stop-gradient identity described
 //! at [`DecomposedMddLoss::wmc_loss`]. The diagrams depend only on the problems, so they are
@@ -21,11 +32,13 @@ use burn::tensor::backend::Backend;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
+use crate::bp::cavity_factors;
 use crate::learning::Loss;
 use crate::mdd::arena::{MddCompilationConfig, compile_constraints};
 use crate::mdd::wmc::log_wmc_and_gradient;
 use crate::mdd::{CompiledConstraint, MddArena};
-use crate::modelling::Problem;
+use crate::modelling::{Problem, ValueIndex};
+use crate::utils::tensor::to_rows;
 
 use super::utils::{blend_with_current, gumbel_softmax};
 use crate::neural::consformer::ConsFormerBatch;
@@ -63,20 +76,135 @@ fn layer_weights_from_probs(
     weights
 }
 
+/// What the belief propagation of a sample needs to know about the variables the network does not
+/// re-predict: their value, and whether they are held to it.
+struct Evidence {
+    /// The current value of each variable.
+    assignment: Vec<ValueIndex>,
+    /// Whether each variable is pinned to its current value (not re-predicted).
+    decided: Vec<bool>,
+}
+
+impl Evidence {
+    /// No variable is pinned: all of them are re-predicted.
+    #[cfg(test)]
+    fn free(number_vars: usize) -> Self {
+        Self {
+            assignment: vec![ValueIndex(0); number_vars],
+            decided: vec![false; number_vars],
+        }
+    }
+}
+
+/// The cavity factors of every constraint of a sample after `rounds` rounds of belief
+/// propagation from the probabilities of the network, see [`cavity_factors`]. The probabilities
+/// are masked as the weights of the diagrams are (`layer_weights_from_probs`): a value outside the
+/// real domain of its variable is impossible.
+fn sample_cavity_factors(
+    constraints: &[CompiledConstraint],
+    real_problem: &Problem,
+    probs_for_sample: &[f32],
+    number_vars: usize,
+    domain_size: usize,
+    rounds: usize,
+    evidence: &Evidence,
+) -> Vec<Vec<Vec<f64>>> {
+    let priors: Vec<Vec<f64>> = (0..number_vars)
+        .map(|var| {
+            (0..domain_size)
+                .map(|raw_value| {
+                    if real_problem[crate::modelling::VariableIndex(var)]
+                        .in_domain(raw_value as isize)
+                    {
+                        probs_for_sample[var * domain_size + raw_value] as f64
+                    } else {
+                        0.0
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    cavity_factors(
+        constraints,
+        &priors,
+        &evidence.assignment,
+        &evidence.decided,
+        rounds,
+    )
+}
+
+/// Smallest cavity factor, relative to the largest of its layer. A value that the other
+/// constraints rule out has a factor of exactly zero (or a denormal one), which would let the
+/// weight of a whole diagram collapse and the gradient of its logarithm overflow; the floor keeps
+/// the labels, and so the loss, in the range of ordinary floating point numbers.
+const FACTOR_FLOOR: f64 = 1e-12;
+
+/// `factor` with no entry below [`FACTOR_FLOOR`] times the largest.
+fn floored(factor: &[f64]) -> Vec<f64> {
+    let largest = factor.iter().copied().fold(0.0, f64::max);
+    factor
+        .iter()
+        .map(|f| f.max(largest * FACTOR_FLOOR))
+        .collect()
+}
+
+/// The labels of a layer: the prior `weights` tilted by the cavity `factor`, renormalised to keep
+/// the mass of the prior, so that a layer of `weights` that sum to one still does. A tilt that
+/// kills every value leaves the prior as it is.
+fn tilt(weights: &[f64], factor: &[f64]) -> Vec<f64> {
+    let factor = floored(factor);
+    let mass: f64 = weights.iter().sum();
+    let tilted: Vec<f64> = weights.iter().zip(&factor).map(|(w, f)| w * f).collect();
+    let total: f64 = tilted.iter().sum();
+    if !(total > 0.0 && total.is_finite()) {
+        return weights.to_vec();
+    }
+    tilted.iter().map(|t| mass * t / total).collect()
+}
+
+/// The derivative of a loss with respect to the prior `weights` of a layer, given its derivative
+/// `grad` with respect to the labels `tilt(weights, factor)`. The factor is a constant (and is
+/// floored as in `tilt`).
+///
+/// With $a = q \odot f$, $A = \sum a$ and $S = \sum q$, the labels are $w = S a / A$, so
+/// $\partial L / \partial q_u = T + S f_u (g_u - T) / A$ with
+/// $T = \sum_v g_v a_v / A$.
+fn tilt_backward(weights: &[f64], factor: &[f64], grad: &[f64]) -> Vec<f64> {
+    let factor = floored(factor);
+    let mass: f64 = weights.iter().sum();
+    let tilted: Vec<f64> = weights.iter().zip(&factor).map(|(w, f)| w * f).collect();
+    let total: f64 = tilted.iter().sum();
+    if !(total > 0.0 && total.is_finite()) {
+        return grad.to_vec();
+    }
+    let mean: f64 = grad.iter().zip(&tilted).map(|(g, a)| g * a).sum::<f64>() / total;
+    grad.iter()
+        .zip(&factor)
+        .map(|(g, f)| mean + mass * f * (g - mean) / total)
+        .collect()
+}
+
 /// One constraint MDD's contribution to a sample's loss and to `∂loss/∂probs_for_sample`, computed
 /// by a plain sink-to-root chain-rule pass (`crate::mdd::wmc::wmc_and_gradient`) instead of
 /// automatic differentiation.
 /// `probs_for_sample` is that sample's flattened `(number_vars, domain_size)` probability slice,
 /// indexed by each variable's *raw domain value*, not by `ValueIndex` position.
 /// `grad` accumulates `∂(-log(wmc+eps))/∂probs_for_sample` into that same indexing.
+/// With `factors` (one cavity factor per layer, see [`cavity_factors`]) the diagram is labelled
+/// with the probabilities tilted by them, and the gradient goes back through the tilt.
 fn mdd_loss_and_gradient(
     constraint: &CompiledConstraint,
     real_problem: &Problem,
     probs_for_sample: &[f32],
     domain_size: usize,
+    factors: Option<&[Vec<f64>]>,
     grad: &mut [f32],
 ) -> f64 {
-    let weights = layer_weights_from_probs(constraint, real_problem, probs_for_sample, domain_size);
+    let prior = layer_weights_from_probs(constraint, real_problem, probs_for_sample, domain_size);
+    let weights: Vec<Vec<f64>> = match factors {
+        Some(factors) => prior.iter().zip(factors).map(|(w, f)| tilt(w, f)).collect(),
+        None => prior.clone(),
+    };
     let (log_wmc, gradient) = log_wmc_and_gradient(constraint, &weights);
     // `ln(wmc + eps)` and `d(-ln(wmc + eps))/d(weight) = -wmc / (wmc + eps) * d(ln wmc)/d(weight)`,
     // computed from `ln wmc` so that a count below the smallest `f64` does not flatten the loss.
@@ -85,6 +213,13 @@ fn mdd_loss_and_gradient(
 
     for (layer, layer_gradient) in gradient.iter().enumerate() {
         let variable = constraint.decision_at_layer(layer);
+        let layer_gradient: Vec<f64> = match factors {
+            Some(factors) => {
+                let scaled: Vec<f64> = layer_gradient.iter().map(|g| chain * g).collect();
+                tilt_backward(&prior[layer], &factors[layer], &scaled)
+            }
+            None => layer_gradient.iter().map(|g| chain * g).collect(),
+        };
         for (raw_value, &g) in layer_gradient.iter().enumerate() {
             // Masked the same way `layer_weights_from_probs` masked the forward weight: a raw
             // value outside `real_problem`'s actual domain has a *constant* (zero) weight,
@@ -92,7 +227,7 @@ fn mdd_loss_and_gradient(
             // genuinely zero, not whatever d(wmc)/d(weight) the shared, unhinted structure
             // reports for that (structurally still-present, but never actually selectable) edge.
             if real_problem[variable].in_domain(raw_value as isize) {
-                grad[variable.0 * domain_size + raw_value] += (chain * g) as f32;
+                grad[variable.0 * domain_size + raw_value] += g as f32;
             }
         }
     }
@@ -103,21 +238,38 @@ fn mdd_loss_and_gradient(
 /// A sample's plain average of `-log(wmc+eps)` over its constraint MDDs, plus
 /// `∂(that average)/∂probs` (`mdds` iterated sequentially -- parallelism is across samples, see
 /// `mdd_wmc_loss`).
+///
+/// With `bp_rounds` above zero the diagrams are labelled after that many rounds of belief
+/// propagation (see the module documentation); `evidence` says which variables are pinned.
 fn sample_loss_and_gradient(
     constraints: &[CompiledConstraint],
     real_problem: &Problem,
     probs_for_sample: &[f32],
     number_vars: usize,
     domain_size: usize,
+    bp_rounds: usize,
+    evidence: &Evidence,
 ) -> (f64, Vec<f32>) {
+    let factors = (bp_rounds > 0).then(|| {
+        sample_cavity_factors(
+            constraints,
+            real_problem,
+            probs_for_sample,
+            number_vars,
+            domain_size,
+            bp_rounds,
+            evidence,
+        )
+    });
     let mut grad = vec![0.0f32; number_vars * domain_size];
     let mut loss_sum = 0.0;
-    for constraint in constraints {
+    for (index, constraint) in constraints.iter().enumerate() {
         loss_sum += mdd_loss_and_gradient(
             constraint,
             real_problem,
             probs_for_sample,
             domain_size,
+            factors.as_ref().map(|f| f[index].as_slice()),
             &mut grad,
         );
     }
@@ -142,6 +294,9 @@ pub struct DecomposedMddLoss {
     compilation: MddCompilationConfig,
     /// Number of values the network predicts per variable; the MDDs are compiled against it.
     domain_size: usize,
+    /// Rounds of belief propagation that label the diagrams before the loss is computed; none
+    /// scores the probabilities of the network as they are.
+    bp_rounds: usize,
     /// Where the MDDs are compiled, so that constraints of the same shape share their structure.
     arena: MddArena,
     /// The problems compiled by the last `compile`; they keep alive the addresses `compiled` is
@@ -164,10 +319,19 @@ impl DecomposedMddLoss {
                 ..compilation
             },
             domain_size,
+            bp_rounds: 0,
             arena: MddArena::new(),
             problems: Vec::new(),
             compiled: HashMap::new(),
         }
+    }
+
+    /// Labels the diagram of each constraint with the probabilities of the network after
+    /// `rounds` rounds of belief propagation, instead of with the probabilities themselves. See the
+    /// module documentation. Zero, the default, is no belief propagation.
+    pub fn with_bp_rounds(mut self, rounds: usize) -> Self {
+        self.bp_rounds = rounds;
+        self
     }
 
     /// Compiles the constraints of `problems`, replacing those of the previous call. A problem
@@ -265,6 +429,30 @@ impl DecomposedMddLoss {
             .map(|problem| self.compiled_for(problem))
             .collect();
 
+        // The variables the network does not re-predict are evidence for belief propagation.
+        let evidence: Vec<Evidence> = if self.bp_rounds > 0 {
+            let values = to_rows(&batch.assignments, batch_size, number_vars);
+            let masks: Vec<bool> = batch
+                .var_masks
+                .clone()
+                .into_data()
+                .to_vec::<bool>()
+                .expect("variable masks should convert to bool");
+            values
+                .iter()
+                .enumerate()
+                .map(|(i, row)| Evidence {
+                    assignment: row.iter().map(|&v| ValueIndex(v.max(0) as usize)).collect(),
+                    decided: masks[i * number_vars..(i + 1) * number_vars]
+                        .iter()
+                        .map(|&re_predicted| !re_predicted)
+                        .collect(),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         let results: Vec<(f64, Vec<f32>)> = crate::utils::worker_pool().install(|| {
             compiled
                 .par_iter()
@@ -273,12 +461,25 @@ impl DecomposedMddLoss {
                 .map(|(i, (constraints, real_problem))| {
                     let start = i * number_vars * domain_size;
                     let sample_probs = &probs_data[start..start + number_vars * domain_size];
+                    let no_evidence;
+                    let evidence = match evidence.get(i) {
+                        Some(evidence) => evidence,
+                        None => {
+                            no_evidence = Evidence {
+                                assignment: Vec::new(),
+                                decided: Vec::new(),
+                            };
+                            &no_evidence
+                        }
+                    };
                     sample_loss_and_gradient(
                         constraints,
                         real_problem,
                         sample_probs,
                         number_vars,
                         domain_size,
+                        self.bp_rounds,
+                        evidence,
                     )
                 })
                 .collect()
@@ -691,7 +892,8 @@ mod loss_tests {
         let mdds = loss_fn.compiled_for(&problem);
 
         let probs: Vec<f32> = vec![0.2, 0.5, 0.3, 0.1, 0.3, 0.6, 0.4, 0.4, 0.2];
-        let (loss, _grad) = sample_loss_and_gradient(mdds, &problem, &probs, 3, 3);
+        let (loss, _grad) =
+            sample_loss_and_gradient(mdds, &problem, &probs, 3, 3, 0, &Evidence::free(3));
 
         let probs_f64: Vec<f64> = probs.iter().map(|&v| v as f64).collect();
         let not_equals_wmc = brute_force_not_equals(&probs_f64, 3);
@@ -717,13 +919,15 @@ mod loss_tests {
         let mdds = loss_fn.compiled_for(&problem);
 
         let probs: Vec<f32> = vec![0.2, 0.5, 0.3, 0.1, 0.3, 0.6, 0.4, 0.4, 0.2];
-        let (base_loss, grad) = sample_loss_and_gradient(mdds, &problem, &probs, 3, 3);
+        let (base_loss, grad) =
+            sample_loss_and_gradient(mdds, &problem, &probs, 3, 3, 0, &Evidence::free(3));
 
         let eps = 1e-4f32;
         for i in 0..probs.len() {
             let mut bumped = probs.clone();
             bumped[i] += eps;
-            let (bumped_loss, _) = sample_loss_and_gradient(mdds, &problem, &bumped, 3, 3);
+            let (bumped_loss, _) =
+                sample_loss_and_gradient(mdds, &problem, &bumped, 3, 3, 0, &Evidence::free(3));
             let finite_diff = (bumped_loss - base_loss) / eps as f64;
             assert!(
                 (finite_diff - grad[i] as f64).abs() < 1e-2,
@@ -1014,6 +1218,164 @@ mod loss_tests {
             "wmc={wmc} brute={brute} -- masked wmc must match assignments honouring the given"
         );
     }
+    /// A problem with an `AllDifferent` over three variables and a `NotEquals` over the first two,
+    /// compiled.
+    fn two_constraint_problem() -> (Arc<Problem>, DecomposedMddLoss) {
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(3, vec![0, 1, 2]);
+        all_different(&mut problem, vars.clone());
+        not_equals(&mut problem, vars[0], vars[1]);
+        let problem = Arc::new(problem);
+        let mut loss_fn = DecomposedMddLoss::new(MddCompilationConfig::default(), 3);
+        loss_fn.compile(&[Arc::clone(&problem)]);
+        (problem, loss_fn)
+    }
+
+    const TWO_CONSTRAINT_PROBS: [f32; 9] = [0.2, 0.5, 0.3, 0.1, 0.3, 0.6, 0.4, 0.4, 0.2];
+
+    #[test]
+    fn belief_propagation_changes_the_loss_of_several_constraints() {
+        let (problem, loss_fn) = two_constraint_problem();
+        let mdds = loss_fn.compiled_for(&problem);
+        let free = Evidence::free(3);
+        let (plain, _) =
+            sample_loss_and_gradient(mdds, &problem, &TWO_CONSTRAINT_PROBS, 3, 3, 0, &free);
+        let (refined, grad) =
+            sample_loss_and_gradient(mdds, &problem, &TWO_CONSTRAINT_PROBS, 3, 3, 1, &free);
+        assert!(refined.is_finite() && grad.iter().all(|g| g.is_finite()));
+        assert!(
+            (plain - refined).abs() > 1e-6,
+            "the other constraints should change the labels: {plain} vs {refined}"
+        );
+    }
+
+    #[test]
+    fn belief_propagation_changes_nothing_for_a_single_constraint() {
+        let mut problem = Problem::default();
+        let vars = problem.add_variables(3, vec![0, 1, 2]);
+        all_different(&mut problem, vars);
+        let problem = Arc::new(problem);
+        let mut loss_fn = DecomposedMddLoss::new(MddCompilationConfig::default(), 3);
+        loss_fn.compile(&[Arc::clone(&problem)]);
+        let mdds = loss_fn.compiled_for(&problem);
+        let free = Evidence::free(3);
+
+        let (plain, plain_grad) =
+            sample_loss_and_gradient(mdds, &problem, &TWO_CONSTRAINT_PROBS, 3, 3, 0, &free);
+        for rounds in [1, 5] {
+            let (refined, grad) = sample_loss_and_gradient(
+                mdds,
+                &problem,
+                &TWO_CONSTRAINT_PROBS,
+                3,
+                3,
+                rounds,
+                &free,
+            );
+            assert!((plain - refined).abs() < 1e-9, "{plain} vs {refined}");
+            for (a, b) in plain_grad.iter().zip(&grad) {
+                assert!((a - b).abs() < 1e-5, "{plain_grad:?} vs {grad:?}");
+            }
+        }
+    }
+
+    /// The gradient treats the messages of belief propagation as constants, so it is checked
+    /// against finite differences of the loss with the cavity factors held fixed.
+    #[test]
+    fn gradient_through_the_tilt_matches_finite_differences_with_fixed_messages() {
+        let (problem, loss_fn) = two_constraint_problem();
+        let mdds = loss_fn.compiled_for(&problem);
+        let free = Evidence::free(3);
+        let factors = sample_cavity_factors(mdds, &problem, &TWO_CONSTRAINT_PROBS, 3, 3, 2, &free);
+
+        let total = |probs: &[f32]| -> (f64, Vec<f32>) {
+            let mut grad = vec![0.0f32; 9];
+            let mut loss = 0.0;
+            for (index, constraint) in mdds.iter().enumerate() {
+                loss += mdd_loss_and_gradient(
+                    constraint,
+                    &problem,
+                    probs,
+                    3,
+                    Some(factors[index].as_slice()),
+                    &mut grad,
+                );
+            }
+            (loss, grad)
+        };
+        let (base, grad) = total(&TWO_CONSTRAINT_PROBS);
+        let eps = 1e-3f32;
+        for i in 0..9 {
+            let mut bumped = TWO_CONSTRAINT_PROBS;
+            bumped[i] += eps;
+            let finite_difference = (total(&bumped).0 - base) / eps as f64;
+            assert!(
+                (finite_difference - grad[i] as f64).abs() < 1e-2,
+                "index {i}: analytic={} finite_diff={finite_difference}",
+                grad[i],
+            );
+        }
+    }
+
+    #[test]
+    fn wmc_loss_with_belief_propagation_is_finite_and_differs_from_without() {
+        let device = NdArrayDevice::default();
+        let (batch, loss_fn) = two_sample_batch::<NdArray>(&device, 1.0);
+        let flat: Vec<f32> = [0.2, 0.5, 0.3, 0.1, 0.3, 0.6, 0.4, 0.4, 0.2]
+            .iter()
+            .chain(&[0.6, 0.3, 0.1, 0.2, 0.2, 0.6, 0.5, 0.25, 0.25])
+            .copied()
+            .collect();
+        let probs = || -> Tensor<NdArray, 3> {
+            Tensor::<NdArray, 1>::from_data(flat.as_slice(), &device).reshape([2, 3, 3])
+        };
+        let value = |loss: Tensor<NdArray, 1>| loss.into_data().to_vec::<f32>().unwrap()[0];
+
+        let plain = value(loss_fn.wmc_loss(probs(), &batch));
+        let refined = value(loss_fn.with_bp_rounds(3).wmc_loss(probs(), &batch));
+        assert!(refined.is_finite());
+        assert!((plain - refined).abs() > 1e-6, "{plain} vs {refined}");
+    }
+
+    /// Confident networks give near one-hot probabilities that the other constraints rule out,
+    /// which must neither collapse the weights of a diagram nor overflow its gradient.
+    #[test]
+    fn belief_propagation_keeps_the_loss_and_gradient_finite_for_extreme_probabilities() {
+        use rand::rngs::StdRng;
+        use rand::{RngExt, SeedableRng};
+
+        let (problem, loss_fn) = two_constraint_problem();
+        let mdds = loss_fn.compiled_for(&problem);
+        let mut rng = StdRng::seed_from_u64(7);
+        for trial in 0..200 {
+            let mut probs = Vec::new();
+            for _ in 0..3 {
+                // Logits spread over up to 40 nats: probabilities down to 1e-17 and exact zeros
+                // once rounded to f32.
+                let logits: Vec<f64> = (0..3).map(|_| rng.random_range(-20.0..20.0)).collect();
+                let largest = logits.iter().copied().fold(f64::MIN, f64::max);
+                let weights: Vec<f64> = logits.iter().map(|l| (l - largest).exp()).collect();
+                let total: f64 = weights.iter().sum();
+                probs.extend(weights.iter().map(|w| (w / total) as f32));
+            }
+            for rounds in [1, 3, 5] {
+                let (loss, grad) = sample_loss_and_gradient(
+                    mdds,
+                    &problem,
+                    &probs,
+                    3,
+                    3,
+                    rounds,
+                    &Evidence::free(3),
+                );
+                assert!(
+                    loss.is_finite() && grad.iter().all(|g| g.is_finite()),
+                    "trial {trial}, {rounds} rounds: probs {probs:?} gave {loss} and {grad:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn log_add_exp_matches_the_direct_sum_and_survives_extremes() {
         assert!((log_add_exp(0.3f64.ln(), 0.2f64.ln()) - 0.5f64.ln()).abs() < 1e-12);

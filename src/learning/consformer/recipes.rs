@@ -146,6 +146,7 @@ pub fn train_consformer_mdd(
     network_config: ConsFormerConfig,
     training_config: TrainingConfig,
     compilation: MddCompilationConfig,
+    bp_rounds: usize,
     checkpoint_dir: &Path,
 ) -> Result<(), String> {
     dispatch_backend!(
@@ -156,6 +157,7 @@ pub fn train_consformer_mdd(
         network_config,
         training_config,
         compilation,
+        bp_rounds,
         checkpoint_dir,
     )
 }
@@ -163,7 +165,12 @@ pub fn train_consformer_mdd(
 /// Trains ConsFormer against the exact weighted model count of the MDD of each constraint (see
 /// [`DecomposedMddLoss`]), on the backend `B`. Otherwise like [`train_consformer_on`]: same network,
 /// same split, same checkpoint. Every variable is masked, so there is no destroy operator.
-/// `compilation` says how the MDDs are compiled, once, for all the problems.
+/// `compilation` says how the MDDs are compiled, once, for all the problems. `bp_rounds` is the
+/// number of rounds of belief propagation that label the diagrams before the loss is computed:
+/// with zero the diagrams are labelled with the probabilities of the network themselves, with more
+/// the loss also sees what the other constraints say about each variable (see
+/// [`DecomposedMddLoss`]).
+#[allow(clippy::too_many_arguments)]
 pub fn train_consformer_mdd_on<B: AutodiffBackend>(
     device: B::Device,
     problems: Vec<Arc<Problem>>,
@@ -171,13 +178,15 @@ pub fn train_consformer_mdd_on<B: AutodiffBackend>(
     network_config: ConsFormerConfig,
     training_config: TrainingConfig,
     compilation: MddCompilationConfig,
+    bp_rounds: usize,
     checkpoint_dir: &Path,
 ) -> Result<(), String> {
     prepare_checkpoint_dir(checkpoint_dir, &network_config)?;
 
     let (all_problems, problems, validation_problems) =
         split_train_validation(problems, validation);
-    let loss = DecomposedMddLoss::new(compilation, network_config.domain_size);
+    let loss =
+        DecomposedMddLoss::new(compilation, network_config.domain_size).with_bp_rounds(bp_rounds);
     let train_dataset = ConsFormerDataset::<B>::new(problems, &device);
     let validation_dataset =
         ConsFormerDataset::<B::InnerBackend>::new(validation_problems, &device);

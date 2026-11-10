@@ -310,6 +310,70 @@ pub fn belief_propagation(
     decided: &[bool],
     iterations: usize,
 ) -> Vec<Vec<f64>> {
+    propagate(mdds, probs, assignment, decided, iterations).0
+}
+
+/// What the other constraints say about each variable of each MDD, after `iterations` rounds of
+/// belief propagation: the *cavity factors* that tilt the prior into the labels of the MDD.
+///
+/// Returned as `factors[mdd_index][layer]`, a distribution over the domain of the variable of
+/// that layer, proportional to $\prod_{c^\prime \neq c} \mu_{c^\prime \to x}$ for the MDD $c$ and
+/// its variable $x$ (the messages of the last round, see the module documentation). The labels
+/// that belief propagation puts on the edges of $c$ are then the prior of $x$ times this factor,
+/// normalised: $\mu_{x \to c} \propto q_x \cdot \text{factors}$. A decided variable has a
+/// factor that is uniform: its one-hot prior is all there is to say. With no round the factors
+/// are uniform and the labels are the priors.
+///
+/// The factors are returned apart from the prior, rather than the labels themselves, so that a
+/// caller who differentiates with respect to the prior can treat the factors as constants.
+///
+/// # Panics
+///
+/// Under the same conditions as [`belief_propagation`].
+pub fn cavity_factors(
+    mdds: &[CompiledConstraint],
+    probs: &[Vec<f64>],
+    assignment: &[ValueIndex],
+    decided: &[bool],
+    iterations: usize,
+) -> Vec<Vec<Vec<f64>>> {
+    let (_, local_beliefs) = propagate(mdds, probs, assignment, decided, iterations);
+    let var_to_mdds = build_var_to_mdds(mdds, probs.len());
+    mdds.iter()
+        .enumerate()
+        .map(|(mdd_index, mdd)| {
+            (0..mdd.number_decisions())
+                .map(|layer| {
+                    let var = mdd.decision_at_layer(layer).0;
+                    let domain_size = probs[var].len();
+                    if decided[var] {
+                        return vec![1.0 / domain_size as f64; domain_size];
+                    }
+                    let mut log_factor = vec![0.0; domain_size];
+                    for &(other, other_layer) in &var_to_mdds[var] {
+                        if other == mdd_index {
+                            continue;
+                        }
+                        for (d, log_d) in log_factor.iter_mut().enumerate() {
+                            *log_d += safe_ln(local_beliefs[other][other_layer][d]);
+                        }
+                    }
+                    log_combine_and_normalize(log_factor)
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// The belief propagation itself: the marginals, and the local beliefs of the constraints at the
+/// last round (all ones if there was none), from which the cavity messages are made.
+fn propagate(
+    mdds: &[CompiledConstraint],
+    probs: &[Vec<f64>],
+    assignment: &[ValueIndex],
+    decided: &[bool],
+    iterations: usize,
+) -> (Vec<Vec<f64>>, Vec<Vec<Vec<f64>>>) {
     let num_vars = probs.len();
     check_inputs(mdds, probs, assignment, decided);
     let var_to_mdds = build_var_to_mdds(mdds, num_vars);
@@ -392,7 +456,7 @@ pub fn belief_propagation(
         }
     }
 
-    marginal
+    (marginal, local_beliefs)
 }
 
 #[cfg(test)]
@@ -473,6 +537,53 @@ mod tests {
         let decided = vec![false; 2];
         let marginals = belief_propagation(&mdds, &probs, &assignment, &decided, 0);
         assert_eq!(marginals, probs);
+    }
+
+    #[test]
+    fn cavity_factors_are_what_the_other_constraints_say_about_a_variable() {
+        // x != y and y != z over {0, 1}. After one round from the priors, the constraint y != z
+        // tells y the reverse of z's prior, and x != y tells it the reverse of x's. Each diagram
+        // is told about y by the *other* one; x and z have no other constraint.
+        let mut problem = Problem::default();
+        let x = problem.add_variable(vec![0, 1]);
+        let y = problem.add_variable(vec![0, 1]);
+        let z = problem.add_variable(vec![0, 1]);
+        not_equals(&mut problem, x, y);
+        not_equals(&mut problem, y, z);
+        let problem = Arc::new(problem);
+        let constraints: Vec<ConstraintIndex> = problem.iter_constraints().collect();
+        let mdds: Vec<CompiledConstraint> = constraints
+            .iter()
+            .map(|&c| build_mdd(problem.clone(), &[c]))
+            .collect();
+
+        let probs = vec![vec![0.9, 0.1], vec![0.5, 0.5], vec![0.2, 0.8]];
+        let assignment = vec![ValueIndex(0); 3];
+        let decided = vec![false; 3];
+        let factors = cavity_factors(&mdds, &probs, &assignment, &decided, 1);
+
+        let factor = |mdd: usize, variable: usize| -> Vec<f64> {
+            let layer = (0..mdds[mdd].number_decisions())
+                .find(|&layer| mdds[mdd].decision_at_layer(layer).0 == variable)
+                .unwrap();
+            factors[mdd][layer].clone()
+        };
+        let assert_close = |actual: Vec<f64>, expected: [f64; 2]| {
+            for (a, e) in actual.iter().zip(expected) {
+                assert!((a - e).abs() < 1e-9, "{actual:?} != {expected:?}");
+            }
+        };
+        assert_close(factor(0, 1), [0.8, 0.2]); // x != y hears from y != z: reverse of z
+        assert_close(factor(1, 1), [0.1, 0.9]); // y != z hears from x != y: reverse of x
+        assert_close(factor(0, 0), [0.5, 0.5]); // nobody else constrains x
+        assert_close(factor(1, 2), [0.5, 0.5]); // nor z
+
+        // No round, no information: every factor is uniform.
+        for per_mdd in cavity_factors(&mdds, &probs, &assignment, &decided, 0) {
+            for per_layer in per_mdd {
+                assert_close(per_layer, [0.5, 0.5]);
+            }
+        }
     }
 
     #[test]

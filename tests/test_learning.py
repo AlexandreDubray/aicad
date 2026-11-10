@@ -64,6 +64,17 @@ def test_recipe_replace_routes_names():
         Recipe.named("nope")
 
 
+def test_bp_rounds_is_a_recipe_setting_of_the_mdd_loss():
+    r = Recipe.named("consformer-mdd")
+    assert r.bp_rounds == 1
+    assert r.replace(bp_rounds=0).bp_rounds == 0
+    assert r.replace(bp_rounds=7).bp_rounds == 7
+    assert r.bp_rounds == 1  # the original is untouched
+    for bad in (-1, 1.5, "2", True):
+        with pytest.raises(ValueError):
+            r.replace(bp_rounds=bad)
+
+
 def test_the_default_optimiser_is_adam_and_its_settings_can_be_replaced():
     r = Recipe.named("consformer")
     assert r.training.optimiser == Adam()
@@ -138,6 +149,25 @@ def test_load_checks_the_checkpoint(tmp_path):
     (tmp_path / "weights.mpk").write_bytes(b"")
     with pytest.raises(CheckpointError):
         learning.load(tmp_path)  # no domain_size
+
+
+@needs_learning
+@pytest.mark.parametrize("bp_rounds", [0, 1, 3])
+def test_fit_with_the_mdd_loss_for_any_number_of_bp_rounds(tmp_path, bp_rounds):
+    ckpt = learning.fit(
+        Dataset.split(problems(8), 0.25, seed=0),
+        "consformer-mdd",
+        checkpoint_dir=tmp_path / "ckpt",
+        seed=0,
+        epochs=2,
+        batch_size=2,
+        validation_interval=1,
+        embedding_size=16,
+        hidden_size=16,
+        expand_size=16,
+        bp_rounds=bp_rounds,
+    )
+    assert ckpt.domain_size == 3
 
 
 @needs_learning

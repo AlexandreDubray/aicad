@@ -38,7 +38,9 @@ them. The `coloring` function is the one of the previous chapter.
 
 A network is described by its configuration (`ConsFormerConfig`), and the optimisation by a
 `TrainingConfig`. `train_consformer_mdd` scores the network with the exact probability that its
-predictions satisfy each constraint, computed on the constraint's diagram; `train_consformer` uses a
+predictions satisfy each constraint, computed on the constraint's diagram, labelled beforehand by
+`bp_rounds` rounds of belief propagation (0 scores the predictions as they are, the messages being
+constants of the gradient); `train_consformer` uses a
 hand-written penalty per constraint type. Both run on the best device found (CUDA if there is a GPU,
 the CPU otherwise), and have an `_on` variant that takes the backend. They write the best network and
 its configuration to the checkpoint directory.
