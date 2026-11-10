@@ -2,20 +2,163 @@
 //! exact MDD.
 //!
 //! For a sample with constraints $c_1, \dots, c_m$ and network probabilities $p$, the loss is
-//! $\frac{1}{m}\sum_j -\log(\mathrm{WMC}_{c_j}(p) + \varepsilon)$, where $\mathrm{WMC}_{c_j}$ is the
+//! $\frac{1}{m}\sum_j - \log(\mathrm{WMC}\_{c_j}(p) + \varepsilon)$, where $\mathrm{WMC}\_{c_j}$ is the
 //! weighted model count of the MDD of $c_j$ with the probabilities of the network on its edges.
 //! The loss of a batch is the mean over its samples.
 //!
-//! With `bp_rounds` above zero, the weights of each diagram are first refined by belief
-//! propagation (see [`crate::bp`]): the network's probabilities are the prior of every variable,
-//! and the diagram of $c_j$ is labelled with the prior tilted by what the *other* constraints say
-//! about the variable (the cavity message, which leaves out $c_j$ itself), renormalised to the
-//! prior's mass. $\mathrm{WMC}_{c_j}$ is then the probability that $c_j$ holds under what the rest
-//! of the problem believes, so the loss sees the other constraints, and the weights are those that
-//! the belief-propagation search labels its diagrams with. The messages are constants of the
-//! gradient: it is taken with respect to the prior, through the tilt and its renormalisation, and
-//! not through the rounds of belief propagation. With no round the labels are the probabilities
-//! themselves.
+//! # Without belief propagation
+//!
+//! Let $X_c$ be the scope of $c$ and $q_x$ the probabilities of the network for the variable $x$
+//! (one weight $q_x(v)$ per value $v$; a value outside the real domain of $x$ has weight $0$). The
+//! weighted model count of $c$ under per-variable weights $w$ is
+//!
+//! $$\mathrm{WMC}\_c(w) = \sum_{\tau \models c} \ \prod_{x \in X_c} w_x(\tau(x)),$$
+//!
+//! the sum of the weights of the paths of the MDD of $c$, where the edge of the layer of $x$ with
+//! value $v$ has weight $w_x(v)$ (see [`crate::mdd::wmc`]). With $\varepsilon = 10^{-6}$, the loss
+//! of $c$ is $L_c = -\ln(\mathrm{WMC}\_c(q) + \varepsilon)$: the labels of the MDD are the
+//! probabilities of the network themselves.
+//!
+//! # With belief propagation (`bp_rounds` $= k > 0$)
+//!
+//! The labels of the MDD of $c$ are no longer $q$. They are what belief propagation (see
+//! [`crate::bp`] for the messages and its notation) would put on the MDD of $c$ after $k$ rounds,
+//! with the network as the permanent prior of every variable. The loss then scores $c$ under what
+//! the *rest* of the problem believes about its variables. The computation has four steps, for each
+//! sample.
+//!
+//! ## 1. The cavity factors
+//!
+//! Run $k$ rounds of belief propagation from the priors $q$. Variables that the network does not
+//! re-predict are `decided`: their prior is a one-hot on their current value. Let
+//! $\mu_{c^\prime \to x}$ be the message of the constraint $c^\prime$ to the variable $x$ in the last round
+//! (a likelihood, see [`crate::bp`]). The *cavity factor* of $x$ for $c$ is the evidence about $x$
+//! that comes from the constraints *other than $c$*:
+//!
+//! $$f_{c,x}(v) \ \propto \prod_{c^\prime \ni x,\ c^\prime \neq c} \mu_{c^\prime \to x}(v).$$
+//!
+//! It is the marginal of $x$ with the prior $q_x$ and the message $\mu_{c \to x}$ of $c$ itself
+//! divided out: $f_{c,x} \propto m_x / (q_x \  \mu_{c \to x})$. A variable that is in no other
+//! constraint, or no round, gives a uniform factor. Only the shape of $f$ matters, since it is
+//! renormalised below. To keep every label in the range of ordinary floating point numbers, a
+//! factor is floored at $10^{-12}$ times its largest entry ([`FACTOR_FLOOR`]).
+//!
+//! ## 2. The labels
+//!
+//! The label of $x$ in the MDD of $c$ is the cavity message of $x$ to $c$, which is the prior
+//! multiplied by the factor and normalised, $\mu_{x \to c} \propto q_x \odot f_{c,x}$, where
+//! $\odot$ is the product value by value, $(q \odot f)(v) = q(v) f(v)$. It is written as a
+//! function of $q$ because the gradient is taken with respect to $q$. Let
+//! $s_x = \sum_v q_x(v)$ be the mass of the prior: it is $1$ unless some values were masked out of
+//! the domain, and keeping it means that probability put outside the domain is still penalised,
+//! as it is without belief propagation. With $Z_{c,x} = \sum_v q_x(v) f_{c,x}(v)$,
+//!
+//! $$w_{c,x}(v) = s_x \  \frac{q_x(v) f_{c,x}(v)}{Z_{c,x}}.$$
+//!
+//! With $f$ uniform, $w_{c,x} = q_x$: a variable that no other constraint speaks about keeps its
+//! probabilities.
+//!
+//! ## 3. The count
+//!
+//! The loss of $c$ is $L_c = -\ln(\mathrm{WMC}\_c(w_c) + \varepsilon)$ with $w_c = (w_{c,x})\_{x \in
+//! X_c}$, which is the probability that $c$ holds if each of its variables is drawn from the
+//! network's distribution *tilted* by the evidence of the other constraints. The loss of a sample
+//! is the mean of the $L_c$ over its constraints.
+//!
+//! ## 4. The gradient
+//!
+//! The forward-backward pass of [`crate::mdd::wmc`] on the MDD of $c$, with the labels $w_c$,
+//! returns $\ln \mathrm{WMC}\_c$ and $g_{x}(v) = \partial \ln \mathrm{WMC}\_c / \partial w_{c,x}(v)$.
+//! With $\rho = \mathrm{WMC}\_c / (\mathrm{WMC}\_c + \varepsilon)$, the gradient of $L_c$ with respect
+//! to the *labels* is $G_x(v) = -\rho\  g_x(v)$. This is the only gradient that the passes over
+//! the diagram give, and it is the one that is used when there is no belief propagation. The
+//! network outputs $q$, not $w$, so $G$ goes back through step 2, for each variable $x$ of $X_c$
+//! separately, **holding $f_{c,x}$ constant**. Differentiating $w_{c,x}(v) = s_x\  q_x(v) f(v) /
+//! Z$ gives
+//!
+//! $$\frac{\partial w_{c,x}(v)}{\partial q_x(u)} = \frac{w_{c,x}(v)}{s_x} + \frac{s_x f(u)}{Z}\Bigl(\delta_{vu} - \frac{w_{c,x}(v)}{s_x}\Bigr),$$
+//!
+//! where the first term is the effect of $q_x(u)$ on the mass $s_x$ (all the labels scale together)
+//! and the second one its effect through the product with $f$, followed by the normalisation.
+//! Summing over $v$ with the weights $G_x(v)$, with $f = f_{c,x}$ and $Z = Z_{c,x}$,
+//!
+//! $$\frac{\partial L_c}{\partial q_x(u)} = T + \frac{s_x f(u)}{Z}\bigl(G_x(u) - T\bigr),
+//! \qquad T = \frac{1}{s_x} \sum_v w_{c,x}(v)\  G_x(v).$$
+//!
+//! This is `tilt_backward`. The contributions of all the constraints that contain $x$ are added.
+//! When $f$ is uniform, $Z = s_x$ and $w = q$, and the formula gives back $G_x(u)$: there is no
+//! change for a single constraint, or without a round.
+//!
+//! ### What the gradient says
+//!
+//! The count is linear in the labels of each layer, since every path crosses the layer once. So
+//! $w_{c,x}(v)\  g_x(v) = \Pr(x = v \mid c \text{ holds})$ under the labels, and these sum to one:
+//!
+//! $$g_x(v) = \frac{\Pr(x = v \mid c)}{w_{c,x}(v)}, \qquad \sum_v w_{c,x}(v)\  g_x(v) = 1.$$
+//!
+//! So $g_x(v) > 1$ when satisfying $c$ makes $v$ more likely than the labels say, and $T =
+//! -\rho / s_x$ is a constant. Therefore $G_x(u) - T = -\rho\ (g_x(u) - 1/s_x)$, and for
+//! $s_x = 1$
+//!
+//! $$\frac{\partial L_c}{\partial q_x(u)} = -\rho \Bigl[\  1 + \frac{f(u)}{Z}\bigl(g_x(u) - 1\bigr) \Bigr].$$
+//!
+//! - The $1$ is the same for all values, and the softmax of the network removes it.
+//! - $g_x(u) - 1$ is the *advantage* of the value $u$: the probability of $u$ given that $c$ holds,
+//!   relative to its label. The network is pushed to raise $q_x(u)$ when it is positive, as a
+//!   policy gradient with a baseline.
+//! - $f(u) / Z$ is how much the label of $u$ moves when $q_x(u)$ moves. A value that the other
+//!   constraints rule out ($f(u) \approx 0$) hardly gets any signal from $c$, and the signal
+//!   grows when the network puts its mass where the others disagree (small $Z$).
+//!
+//! # Design notes
+//!
+//! - **The messages are constants.** The factors $f$ are computed from the probabilities
+//!   $q$ of all the variables, so $q_y$ also changes the labels that $x$ sees through $f_{c,x}$.
+//!   That effect is ignored: the gradient flows from $c$ to the variables of its scope through its
+//!   own labels, and not through the rounds of belief propagation. This is cheap, but biased; the
+//!   principled alternative is to differentiate through the rounds, as in approximation-aware
+//!   training of graphical models (Stoyanov et al., AISTATS 2011).
+//! - **Which round.** The factors are made of the beliefs of the *last* round, which were computed
+//!   from the labels of the round before: with $k = 1$ the other constraints speak from the plain
+//!   priors, and each further round adds one hop of information.
+//! - **Nothing to say.** A constraint whose labels give it no path of positive weight sends the
+//!   uniform message (see [`crate::bp`]), so its factor tells nothing. With peaked probabilities
+//!   (a low temperature of the network) this happens often, and the factors carry little.
+//! - **Cost.** A round is a forward-backward pass over each MDD, as the count itself is: a step
+//!   costs about $k + 1$ times the passes of the loss without belief propagation, plus a few
+//!   operations per layer for the tilt.
+//!
+//! # Example
+//!
+//! Take $x \neq y$ and $y \neq z$ over $\lbrace 0, 1 \rbrace$ with $q_x = (0.9, 0.1)$,
+//! $q_y = (0.5, 0.5)$ and $q_z = (0.2, 0.8)$, and one round. Without belief propagation both
+//! counts are $0.5$. With it, $y$ hears from $y \neq z$ the reverse of $q_z$, and from $x \neq y$
+//! the reverse of $q_x$:
+//!
+//! - In $x \neq y$, $f_y = (0.8, 0.2)$ and $Z = 0.5$, so the labels of $y$ are $(0.8, 0.2)$ and
+//!   $\mathrm{WMC} = 0.9 \cdot 0.2 + 0.1 \cdot 0.8 = 0.26$. Given that the constraint holds,
+//!   $y = 1$ has probability $0.69$ against a label of $0.2$, so $g_y = (0.385, 3.46)$. With
+//!   $\rho \approx 1$, $T = -1$ and $f / Z = (1.6, 0.4)$, the gradient is
+//!   $\partial L / \partial q_y = (-1, -1) + (1.6, 0.4) \odot (0.615, -2.46) \approx (-0.02, -1.98)$:
+//!   the network is pushed towards $y = 1$, which is what $x \neq y$ needs when $x$ is likely $0$
+//!   and $z$ already pulls $y$ towards $0$.
+//! - In $y \neq z$, $f_y = (0.1, 0.9)$ and $\mathrm{WMC} = 0.26$ as well. $x$ and $z$ are in one
+//!   constraint each, so their labels are their probabilities.
+//!
+//! # References
+//!
+//! - The loss on the count of a constraint is the semantic loss of Xu et al., "A Semantic Loss
+//!   Function for Deep Learning with Symbolic Knowledge", ICML 2018, here on the MDD of each
+//!   constraint. Taking the constraints one by one, as a product of their probabilities, is the
+//!   first independence assumption of Ahmed et al., "Semantic Strengthening of Neuro-Symbolic
+//!   Learning", AISTATS 2023.
+//! - The messages, the cavity and the permanent prior are those of [`crate::bp`]: Pesant, "From
+//!   Support Propagation to Belief Propagation in Constraint Programming", JAIR 2019, and Manibod
+//!   et al., "Constrained Sequential Inference in Machine Learning Using Constraint Programming",
+//!   IJCAI 2025.
+//! - Training through approximate inference: Stoyanov, Ropson and Eisner, "Empirical Risk
+//!   Minimization of Graphical Model Parameters Given Approximate Inference, Decoding, and Model
+//!   Structure", AISTATS 2011.
 //!
 //! The gradient is computed by hand, by a sink-to-root pass over each diagram
 //! ([`crate::mdd::wmc`]), and handed to Burn's autodiff with the stop-gradient identity described

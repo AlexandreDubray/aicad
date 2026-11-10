@@ -230,7 +230,7 @@ pub(crate) fn train_consformer(
         pymerge=PyMergeHeuristic::StateSimilarity,
         pyselect=PySelectHeuristic::Greedy,
         validation=None,
-        bp_rounds=1))]
+        bp_rounds=0))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn train_consformer_mdd(
     py: Python<'_>,

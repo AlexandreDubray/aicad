@@ -282,11 +282,13 @@ class Recipe:
     weighted model count is taken: the network's probabilities are the prior of each variable, and
     the diagram of a constraint is labelled with that prior tilted by what the *other* constraints
     say about the variable. The loss then sees the other constraints, and scores the weights that
-    the search labels its diagrams with. ``0`` labels the diagrams with the network's probabilities
-    as they are; the gradient is taken with respect to them, the messages of belief propagation
+    the search labels its diagrams with. ``0``, the default, labels the diagrams with the network's
+    probabilities as they are; the gradient is taken with respect to them, the messages of belief propagation
     being constants. The setting has no effect on the ``"classical"`` loss.
 
     >>> Recipe.named("consformer-mdd").bp_rounds
+    0
+    >>> Recipe.named("consformer-mdd").replace(bp_rounds=1).bp_rounds
     1
     >>> Recipe.named("consformer-mdd").replace(bp_rounds=5).bp_rounds
     5
@@ -298,7 +300,7 @@ class Recipe:
     training: Training = field(default_factory=Training)
     order: Union[str, Tuple[int, ...]] = "auto"  # how constraint MDDs are ordered ("mdd" loss)
     merge: str = "state_similarity"  # and merged ("mdd" loss); has no effect on an exact compile
-    bp_rounds: int = 1  # "mdd" loss: rounds of belief propagation that label the diagrams
+    bp_rounds: int = 0  # "mdd" loss: rounds of belief propagation that label the diagrams
 
     def __post_init__(self) -> None:
         if self.loss not in ("classical", "mdd"):

@@ -66,10 +66,10 @@ def test_recipe_replace_routes_names():
 
 def test_bp_rounds_is_a_recipe_setting_of_the_mdd_loss():
     r = Recipe.named("consformer-mdd")
-    assert r.bp_rounds == 1
-    assert r.replace(bp_rounds=0).bp_rounds == 0
+    assert r.bp_rounds == 0
+    assert r.replace(bp_rounds=1).bp_rounds == 1
     assert r.replace(bp_rounds=7).bp_rounds == 7
-    assert r.bp_rounds == 1  # the original is untouched
+    assert r.bp_rounds == 0  # the original is untouched
     for bad in (-1, 1.5, "2", True):
         with pytest.raises(ValueError):
             r.replace(bp_rounds=bad)
