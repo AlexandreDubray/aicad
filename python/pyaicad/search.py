@@ -4,8 +4,9 @@
 assignment and repeatedly destroys part of it and repairs it, until it satisfies the model or a
 limit is reached. Every search runs the same loop; they differ in how they repair. A
 :class:`BeliefPropagationSearch` repairs with belief propagation on the diagrams of the
-constraints; :class:`NeuralPriorSearch` starts from the predictions of a trained network, and
-:class:`NeuralPriorBPSearch` then refines them with belief propagation.
+constraints; :class:`NeuralPriorSearch` starts from the predictions of a trained network,
+:class:`NeuralPriorBPSearch` then refines them with belief propagation, and
+:class:`NeuralRelaxedMddSearch` samples them along the paths of a relaxed diagram of the model.
 
 >>> import pyaicad as ac
 >>> m = ac.Model()
@@ -16,8 +17,8 @@ constraints; :class:`NeuralPriorSearch` starts from the predictions of a trained
 >>> result.status, m.check(result.assignment)
 (<Status.FEASIBLE: 'feasible'>, True)
 
-A local search cannot prove that a model has no solution; for that, compile it
-(:class:`pyaicad.Compiler`).
+Only :class:`NeuralRelaxedMddSearch` can prove that a model has no solution, when its relaxed
+diagram has no path; otherwise, compile the model (:class:`pyaicad.Compiler`).
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ __all__ = [
     "NeuralPriorSearch",
     "NeuralPriorBPSearch",
     "BeliefPropagationSearch",
+    "NeuralRelaxedMddSearch",
 ]
 
 
@@ -48,7 +50,16 @@ class Status(str, enum.Enum):
     """What a search established."""
 
     FEASIBLE = "feasible"  #: a solution was found
-    UNKNOWN = "unknown"  #: none was found before a limit; a local search never proves infeasibility
+    INFEASIBLE = "infeasible"  #: proved to have no solution (only by NeuralRelaxedMddSearch)
+    UNKNOWN = "unknown"  #: none was found before a limit
+
+
+# The native status of a solution, by the name of its variant, as a Status.
+_STATUS = {
+    "Satisfiable": Status.FEASIBLE,
+    "Unsatisfiable": Status.INFEASIBLE,
+    "Unknown": Status.UNKNOWN,
+}
 
 
 @dataclass(frozen=True)
@@ -154,7 +165,7 @@ class _LocalSearch:
         )
         return [
             Result(
-                status=Status.UNKNOWN if s.solution is None else Status.FEASIBLE,
+                status=_STATUS[str(s.status).rsplit(".", 1)[-1]],
                 assignment=None if s.solution is None else list(s.solution),
                 runtime=s.runtime,
                 compile_time=s.compilation_runtime,
@@ -318,8 +329,61 @@ class BeliefPropagationSearch(_LocalSearch):
         )
 
 
-Search = Union[NeuralPriorSearch, NeuralPriorBPSearch, BeliefPropagationSearch]
-_SEARCHES = (NeuralPriorSearch, NeuralPriorBPSearch, BeliefPropagationSearch)
+@dataclass(frozen=True)
+class NeuralRelaxedMddSearch(_LocalSearch):
+    """Solves by local search guided by a trained network whose predictions weight the paths of a
+    relaxed MDD of the whole problem, compiled once per problem with at most ``width`` nodes per
+    layer: at each iteration, part of the current assignment is destroyed and repaired with a path
+    sampled from the diagram, the other variables keeping their values (almost surely).
+
+    A diagram without any path proves its problem infeasible, which is then reported without
+    being searched. The sampling of the paths does not follow the ``seed`` of
+    :func:`local_search`, so two runs may differ.
+
+    What problems a network accepts depends on the network: see its documentation in the Rust
+    crate (``neural::consformer`` for ConsFormer).
+
+    Args:
+        checkpoint: The trained network, a :class:`~pyaicad.learning.Checkpoint` or the path of
+            one.
+        destroy: Which variables are repaired at each iteration; see :class:`NeuralPriorSearch`.
+        destroy_fraction: The fraction of the variables repaired at each iteration.
+        width: The largest number of nodes of a layer of the relaxed MDD, at least 1.
+        batch_size: How many problems are stepped together on the device; see
+            :class:`NeuralPriorSearch`.
+    """
+
+    checkpoint: Union[Checkpoint, str, "os.PathLike[str]"]
+    destroy: str = "related"
+    destroy_fraction: float = 1.0
+    width: int = 1
+    batch_size: Optional[int] = None
+
+    name = "neural-relaxed-mdd"
+
+    def __post_init__(self) -> None:
+        require_learning("NeuralRelaxedMddSearch")
+        _check_search(self.destroy, self.destroy_fraction, self.batch_size)
+        if self.width < 1:
+            raise ValueError("width must be at least 1")
+
+    def _checkpoint(self) -> Optional[Checkpoint]:
+        return _load(self.checkpoint)
+
+    def _search(self) -> Any:
+        return _core.PySearch.NeuralRelaxedMdd(
+            destroy_kind=_DESTROY[self.destroy],
+            destroy_fraction=self.destroy_fraction,
+            width=self.width,
+        )
+
+
+Search = Union[
+    NeuralPriorSearch, NeuralPriorBPSearch, BeliefPropagationSearch, NeuralRelaxedMddSearch
+]
+_SEARCHES = (
+    NeuralPriorSearch, NeuralPriorBPSearch, BeliefPropagationSearch, NeuralRelaxedMddSearch
+)
 
 
 @overload
@@ -355,8 +419,9 @@ def local_search(
     Args:
         problems: A model, giving one result, or a list of models, giving a list of results in the
             same order.
-        search: How the search repairs: :class:`NeuralPriorSearch`, :class:`NeuralPriorBPSearch`
-            or :class:`BeliefPropagationSearch`, with their settings.
+        search: How the search repairs: :class:`NeuralPriorSearch`, :class:`NeuralPriorBPSearch`,
+            :class:`BeliefPropagationSearch` or :class:`NeuralRelaxedMddSearch`, with their
+            settings.
         limits: When to stop, per problem. No limit by default: a search that finds no solution
             then runs forever.
         seed: Makes the run reproducible: it seeds the search and every other source of randomness
@@ -364,8 +429,8 @@ def local_search(
     """
     if not isinstance(search, _SEARCHES):
         raise TypeError(
-            "search must be a NeuralPriorSearch, a NeuralPriorBPSearch or a "
-            f"BeliefPropagationSearch, got {search!r}"
+            "search must be a NeuralPriorSearch, a NeuralPriorBPSearch, a "
+            f"BeliefPropagationSearch or a NeuralRelaxedMddSearch, got {search!r}"
         )
     limits = Limits() if limits is None else limits
     single = isinstance(problems, Model)

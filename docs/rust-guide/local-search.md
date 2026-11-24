@@ -8,8 +8,7 @@ limit. The searches differ only in how they repair:
 
 - the **belief propagation** search repairs with belief propagation on the diagrams of the
   constraints, from uniform probabilities. It needs nothing but the problems;
-- the **neural prior** searches (`NeuralPrior`, `NeuralPriorBp`) start from the predictions of a
-  trained network (see [](learning.md); needs the `learning` feature).
+- the **neural prior** searches (`NeuralPrior`, `NeuralPriorBp`, `NeuralRelaxedMdd`) start from the predictions of a trained network (see [](learning.md); needs the `learning` feature).
 
 A local search finds solutions but cannot prove that there are none: to prove it, compile the
 problem. Many problems can be searched together: they are stepped as one batch. A search that is not

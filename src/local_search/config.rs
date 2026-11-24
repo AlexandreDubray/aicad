@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use super::bp_search::BeliefPropagationSearchConfig;
 #[cfg(feature = "learning")]
-use super::neural_prior::{NeuralPriorBpSearchConfig, NeuralPriorSearchConfig};
+use super::neural_prior::{
+    NeuralPriorBpSearchConfig, NeuralPriorSearchConfig, NeuralRelaxedMddSearchConfig,
+};
 
 /// Stopping criterion for the search; whichever limit is first reached stops it.
 #[derive(Debug, Clone, Copy)]
@@ -41,6 +43,10 @@ pub enum SearchConfig {
     NeuralPriorBp(NeuralPriorBpSearchConfig),
     /// Belief propagation on the MDDs from uniform probabilities, on the CPU only.
     BeliefPropagation(BeliefPropagationSearchConfig),
+    /// A trained network whose probabilities weight the paths of a relaxed MDD of the problem.
+    /// Needs the `learning` feature.
+    #[cfg(feature = "learning")]
+    NeuralRelaxedMdd(NeuralRelaxedMddSearchConfig),
 }
 
 impl Default for SearchConfig {

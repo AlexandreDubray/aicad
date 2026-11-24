@@ -52,7 +52,7 @@ pub use config::{Budget, SearchConfig, SolveConfig};
 #[cfg(feature = "learning")]
 pub use neural_prior::{
     NeuralPriorBpSearch, NeuralPriorBpSearchConfig, NeuralPriorSearch, NeuralPriorSearchConfig,
-    solve_with_network,
+    NeuralRelaxedMddSearch, NeuralRelaxedMddSearchConfig, solve_with_network,
 };
 
 use std::path::Path;
@@ -134,6 +134,14 @@ pub trait SearchState {
     /// Drops the rows not flagged in `keep`; the others keep their order. Does nothing by default,
     /// for a state that holds nothing per row.
     fn retain(&mut self, _keep: &[bool]) {}
+
+    /// Whether what the state prepared for `row` proves its problem has no solution. Asked once,
+    /// right after [`SearchArchitecture::setup`], while the rows still follow the order of the
+    /// problems: such a problem is reported unsatisfiable and its row is never stepped. `false` by
+    /// default, for a state that proves nothing.
+    fn unsatisfiable(&self, _row: usize) -> bool {
+        false
+    }
 }
 
 /// A random starting assignment for each of `problems`, each value drawn from its domain by `rng`,
@@ -246,6 +254,20 @@ impl LocalSearch {
         let preprocessing_start = Instant::now();
         let mut state = self.architecture.setup(problems)?;
         let preprocessing_runtime = preprocessing_start.elapsed().as_secs_f64();
+
+        // The problems the state proves unsatisfiable are reported as such now, and never stepped.
+        for (problem_idx, solution) in solutions.iter_mut().enumerate() {
+            if state.unsatisfiable(problem_idx) {
+                *solution = Some(
+                    Solution::unsatisfiable()
+                        .with_runtime(stop.start.elapsed().as_secs_f64(), preprocessing_runtime)
+                        .with_iterations(0),
+                );
+                if let Some(bar) = progress {
+                    bar.inc(1);
+                }
+            }
+        }
 
         // Continues while the budget is not finished, and there is unsolved problem in the batch
         while !stop.is_exhausted() && solutions.iter().any(Option::is_none) {

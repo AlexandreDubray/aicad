@@ -21,6 +21,9 @@ a limit. The searches differ only in how they repair:
   constraints, from uniform probabilities. It needs nothing but the problem.
 - {class}`~pyaicad.NeuralPriorSearch` and {class}`~pyaicad.NeuralPriorBPSearch` start from the
   predictions of a trained network (see [](learning.md); full build).
+- {class}`~pyaicad.NeuralRelaxedMddSearch` also starts from a trained network, and repairs along a
+  path of a relaxed diagram of the whole model, of at most `width` nodes per layer, sampled with
+  the network's probabilities (full build).
 
 A local search finds solutions but cannot prove that there are none: to prove it, compile the model.
 

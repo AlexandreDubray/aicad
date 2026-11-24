@@ -50,6 +50,9 @@
 .. autoclass:: NeuralPriorBPSearch
    :members:
 
+.. autoclass:: NeuralRelaxedMddSearch
+   :members:
+
 .. autoclass:: Limits
    :members:
 

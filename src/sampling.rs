@@ -123,7 +123,8 @@ pub fn uniform_weights(mdd: &Mdd) -> Vec<Vec<f64>> {
 /// share of the total contains it is taken.
 ///
 /// The path is a solution if `mdd` is exact; a relaxed diagram can yield an assignment that
-/// violates a constraint. The random generator is the thread's own (see `crate::utils`).
+/// violates a constraint. The random generator is the thread's own (see `crate::utils`); use
+/// [`sample_solution_with`] to draw from your own.
 ///
 /// # Panics
 ///
@@ -131,6 +132,18 @@ pub fn uniform_weights(mdd: &Mdd) -> Vec<Vec<f64>> {
 /// if a row is shorter than the largest value of its layer, or if every edge leaving a node on the
 /// way has a weight of zero.
 pub fn sample_solution(mdd: &Mdd, weights: &[Vec<f64>]) -> Vec<ValueIndex> {
+    crate::utils::with_rng(|rng| sample_solution_with(mdd, weights, rng))
+}
+/// Like [`sample_solution`] but drawing from its generator.
+///
+/// # Panics
+///
+/// As [`sample_solution`].
+pub fn sample_solution_with<R: Rng + ?Sized>(
+    mdd: &Mdd,
+    weights: &[Vec<f64>],
+    rng: &mut R,
+) -> Vec<ValueIndex> {
     assert!(
         !mdd.is_unsat(),
         "cannot sample a solution from an unsatisfiable diagram"
@@ -153,7 +166,7 @@ pub fn sample_solution(mdd: &Mdd, weights: &[Vec<f64>]) -> Vec<ValueIndex> {
             edge_weights.iter().sum::<f64>() > 0.0,
             "every edge leaving node {node:?} has a weight of zero: nothing can be sampled"
         );
-        let edge = edges[sample_categorical(&edge_weights)];
+        let edge = edges[sample_categorical_with(&edge_weights, rng)];
         path.push(mdd[edge].assignment());
         node = mdd[edge].to();
     }
@@ -327,5 +340,20 @@ mod tests {
     #[should_panic(expected = "has a weight of zero")]
     fn weights_that_forbid_every_edge_cannot_be_sampled() {
         sample_solution(&skewed(), &[vec![0.0, 0.0], vec![1.0, 1.0]]);
+    }
+
+    #[test]
+    fn the_same_seed_samples_the_same_paths() {
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+        let mdd = skewed();
+        let weights = uniform_weights(&mdd);
+        let draw = |seed| {
+            let mut rng = StdRng::seed_from_u64(seed);
+            (0..20)
+                .map(|_| sample_solution_with(&mdd, &weights, &mut rng))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(draw(7), draw(7));
     }
 }

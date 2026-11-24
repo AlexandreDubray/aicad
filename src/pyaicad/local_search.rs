@@ -10,7 +10,9 @@ use crate::destroy::DestroyKind;
 use crate::destroy::DestroyOperator;
 use crate::local_search::{BeliefPropagationSearchConfig, SearchConfig, SolveConfig, solve};
 #[cfg(feature = "learning")]
-use crate::local_search::{NeuralPriorBpSearchConfig, NeuralPriorSearchConfig};
+use crate::local_search::{
+    NeuralPriorBpSearchConfig, NeuralPriorSearchConfig, NeuralRelaxedMddSearchConfig,
+};
 use crate::modelling::{Problem, Solution, Status};
 
 use super::problem::PyProblem;
@@ -140,6 +142,13 @@ pub enum PySearch {
         bp_iterations: usize,
         bp_tolerance: f64,
     },
+    /// A trained network whose probabilities weight the paths of a relaxed MDD of the problem, of
+    /// at most `width` nodes per layer. Needs the `learning` feature to run.
+    NeuralRelaxedMdd {
+        destroy_kind: PyDestroyKind,
+        destroy_fraction: f64,
+        width: usize,
+    },
 }
 
 impl TryFrom<&PySearch> for SearchConfig {
@@ -187,8 +196,20 @@ impl TryFrom<&PySearch> for SearchConfig {
                 bp_iterations: *bp_iterations,
                 bp_tolerance: *bp_tolerance,
             }),
+            #[cfg(feature = "learning")]
+            PySearch::NeuralRelaxedMdd {
+                destroy_kind,
+                destroy_fraction,
+                width,
+            } => SearchConfig::NeuralRelaxedMdd(NeuralRelaxedMddSearchConfig {
+                destroy_kind: destroy_kind.into(),
+                destroy_fraction: *destroy_fraction,
+                width: *width,
+            }),
             #[cfg(not(feature = "learning"))]
-            PySearch::NeuralPrior { .. } | PySearch::NeuralPriorBp { .. } => {
+            PySearch::NeuralPrior { .. }
+            | PySearch::NeuralPriorBp { .. }
+            | PySearch::NeuralRelaxedMdd { .. } => {
                 return Err(
                     "the neural searches need a build of pyaicad with the `learning` \
                      feature"

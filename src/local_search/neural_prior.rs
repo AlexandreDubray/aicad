@@ -1,5 +1,6 @@
 //! The local searches driven by a trained network: NeuralPrior, which decodes the logits of the
-//! network, and NeuralPriorBP, which combines them with belief propagation over the constraints.
+//! network, NeuralPriorBP, which combines them with belief propagation over the constraints, and
+//! NeuralRelaxedMdd, which samples the repairs along the paths of a relaxed MDD of the problem.
 //!
 //! # Meaning
 //!
@@ -7,9 +8,11 @@
 //! variable: a prior over what each freed variable should become. [`NeuralPriorSearch`] takes
 //! the most likely value (or samples one) from it. [`NeuralPriorBpSearch`] treats it as the prior
 //! of belief propagation over the decomposed MDDs of the constraints, so the values it chooses
-//! agree with the constraints.
+//! agree with the constraints. [`NeuralRelaxedMddSearch`] weights the paths of a relaxed MDD of
+//! the whole problem by it, and repairs along a sampled path; a relaxed MDD without any path
+//! proves its problem unsatisfiable, which the search reports without stepping it.
 //!
-//! Both are generic over the network and the [`Batch`] it reads, so any architecture of
+//! All three are generic over the network and the [`Batch`] it reads, so any architecture of
 //! [`crate::neural`] can drive them. What problems a batch can hold together is the batch type's
 //! requirement ([`Batch::check_problems`]): setup asks it, and nothing else here knows it.
 //!
@@ -35,6 +38,7 @@ use burn::tensor::{Distribution, Int, Tensor};
 use rand::rngs::StdRng;
 
 use crate::destroy::{DestroyKind, DestroyOperator};
+use crate::local_search::repair::{BatchRelaxedRepair, RelaxedMddRepair};
 use crate::mdd::arena::MddCompilationConfig;
 use crate::modelling::Problem;
 use crate::modelling::Solution;
@@ -420,6 +424,135 @@ where
     }
 }
 
+/// The settings of the NeuralRelaxedMdd local search, which repairs along the paths of a relaxed
+/// MDD of the problem, weighted by the predictions of the network.
+#[derive(Debug, Clone)]
+pub struct NeuralRelaxedMddSearchConfig {
+    /// Destroy operator choosing the variables to free at each iteration.
+    pub destroy_kind: DestroyKind,
+    /// Fraction of the variables the destroy operator frees at each iteration, in `[0, 1]`.
+    pub destroy_fraction: f64,
+    /// Largest number of nodes of a layer of the relaxed MDD, at least 1.
+    pub width: usize,
+}
+
+impl Default for NeuralRelaxedMddSearchConfig {
+    fn default() -> Self {
+        Self {
+            destroy_kind: DestroyKind::default(),
+            destroy_fraction: 1.0,
+            width: 1,
+        }
+    }
+}
+
+/// The NeuralRelaxedMdd local search: a trained network whose probabilities weight the paths of a
+/// relaxed MDD of each problem, compiled once per batch. The freed variables are repaired along a
+/// path sampled in the diagram, and a diagram without any path proves its problem unsatisfiable.
+pub struct NeuralRelaxedMddSearch<B: Backend, Ba, N> {
+    /// The network and destroy operator.
+    core: Core<B, Ba, N>,
+    /// Largest number of nodes of a layer of the relaxed MDDs.
+    width: usize,
+}
+
+impl<B, Ba, N> NeuralRelaxedMddSearch<B, Ba, N>
+where
+    B: Backend,
+    Ba: Batch<B>,
+    N: Network<B, Ba>,
+{
+    /// Builds the search from its network and settings. Nothing depends on the problems being
+    /// solved, so it can be reused across batches.
+    pub fn new(network: N, config: &NeuralRelaxedMddSearchConfig, device: B::Device) -> Self {
+        Self {
+            core: Core {
+                network,
+                destroy_op: config.destroy_kind.build(config.destroy_fraction),
+                device,
+                batch: PhantomData,
+            },
+            width: config.width,
+        }
+    }
+}
+
+impl<B, Ba, N> SearchArchitecture for NeuralRelaxedMddSearch<B, Ba, N>
+where
+    B: Backend,
+    Ba: Batch<B>,
+    N: Network<B, Ba>,
+{
+    fn setup<'a>(&'a self, problems: &[Arc<Problem>]) -> Result<Box<dyn SearchState + 'a>, String> {
+        Ba::check_problems(problems)?;
+        let repair = RelaxedMddRepair::new(self.width);
+        Ok(Box::new(NeuralRelaxedMddState {
+            search: self,
+            repair: BatchRelaxedRepair::new(repair, problems),
+        }))
+    }
+}
+
+/// The state of a NeuralRelaxedMdd search over a batch: the relaxed MDD of each row.
+struct NeuralRelaxedMddState<'a, B: Backend, Ba, N> {
+    /// The components of the search.
+    search: &'a NeuralRelaxedMddSearch<B, Ba, N>,
+    /// Repairs the freed variables on the rows.
+    repair: BatchRelaxedRepair,
+}
+
+impl<B, Ba, N> SearchState for NeuralRelaxedMddState<'_, B, Ba, N>
+where
+    B: Backend,
+    Ba: Batch<B>,
+    N: Network<B, Ba>,
+{
+    fn step(
+        &mut self,
+        problems: &[Arc<Problem>],
+        assignments: &mut [Vec<isize>],
+        pending: &[bool],
+        rng: &mut StdRng,
+    ) {
+        let proposal = self
+            .search
+            .core
+            .propose(problems, assignments, pending, rng);
+        let seeds = row_seeds(problems.len(), rng);
+        let [_, n, domain_width] = proposal.logits.dims();
+        let probs: Vec<f32> = softmax(proposal.logits, 2)
+            .into_data()
+            .to_vec::<f32>()
+            .expect("softmax output should be f32-convertible");
+        self.repair.repair_rows(
+            problems,
+            assignments,
+            &proposal.destroyed,
+            &seeds,
+            |row, variable, value| {
+                // The network may predict fewer values than the batch's alphabet.
+                if value < domain_width {
+                    f64::from(probs[row * n * domain_width + variable * domain_width + value])
+                } else {
+                    0.0
+                }
+            },
+        );
+    }
+
+    fn solved(&mut self, solved: &[bool]) {
+        self.repair.solved(solved);
+    }
+
+    fn retain(&mut self, keep: &[bool]) {
+        self.repair.retain(keep);
+    }
+
+    fn unsatisfiable(&self, row: usize) -> bool {
+        self.repair.unsatisfiable(row)
+    }
+}
+
 /// Solves `problems` with the neural search of `config` and the ConsFormer network of the
 /// checkpoint, on the best device found. See [`super::solve`].
 pub(super) fn solve_with_consformer(
@@ -488,6 +621,11 @@ where
         SearchConfig::NeuralPriorBp(c) => LocalSearch::new(Box::new(
             NeuralPriorBpSearch::<B, Ba, N>::new(network, c, device),
         )),
+        SearchConfig::NeuralRelaxedMdd(c) => {
+            LocalSearch::new(Box::new(NeuralRelaxedMddSearch::<B, Ba, N>::new(
+                network, c, device,
+            )))
+        }
         SearchConfig::BeliefPropagation(_) => {
             return Err("the belief-propagation search uses no network".to_string());
         }
@@ -566,6 +704,39 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_neural_relaxed_mdd_search_reports_an_unsatisfiable_problem_without_searching_it() {
+        use crate::modelling::Status;
+
+        // Both have four variables over three values: the first only needs three of them
+        // different, the second needs all four different, which is impossible.
+        let mut feasible = Problem::default();
+        let vars = feasible.add_variables(4, vec![0, 1, 2]);
+        all_different(&mut feasible, vars[..3].to_vec());
+        let problems = vec![Arc::new(feasible), clique(4, 3)];
+
+        let config = NeuralRelaxedMddSearchConfig {
+            width: 100,
+            ..NeuralRelaxedMddSearchConfig::default()
+        };
+        let search = NeuralRelaxedMddSearch::<NdArray, Batch, Net>::new(
+            network(&problems),
+            &config,
+            NdArrayDevice::default(),
+        );
+        let budget = Budget {
+            iteration_limit: 30,
+            ..Budget::default()
+        };
+        let solutions = LocalSearch::new(Box::new(search))
+            .run(&problems, budget, 0, None)
+            .unwrap();
+
+        assert_eq!(solutions[1].status(), Status::Unsatisfiable);
+        assert_eq!(solutions[1].iterations(), Some(0));
+        assert_eq!(solutions[0].status(), Status::Satisfiable);
     }
 
     #[test]

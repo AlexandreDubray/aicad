@@ -9,8 +9,8 @@ The three things you do with it:
   heuristics hands out an :class:`MDD`, as exact or as relaxed as you ask, to count, sample and
   refine.
 * **Search** for solutions with :func:`local_search`, repairing with a trained network
-  (:class:`NeuralPriorSearch`, :class:`NeuralPriorBPSearch`) or with belief propagation alone
-  (:class:`BeliefPropagationSearch`).
+  (:class:`NeuralPriorSearch`, :class:`NeuralPriorBPSearch`, :class:`NeuralRelaxedMddSearch`) or
+  with belief propagation alone (:class:`BeliefPropagationSearch`).
 
 Networks for the neural searches are trained with :mod:`pyaicad.learning`.
 
@@ -54,6 +54,7 @@ from .search import (
     Limits,
     NeuralPriorBPSearch,
     NeuralPriorSearch,
+    NeuralRelaxedMddSearch,
     Result,
     Status,
     local_search,
@@ -84,6 +85,7 @@ __all__ = [
     "NeuralPriorSearch",
     "NeuralPriorBPSearch",
     "BeliefPropagationSearch",
+    "NeuralRelaxedMddSearch",
     "Limits",
     "Result",
     "Status",
